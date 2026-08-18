@@ -1,0 +1,36 @@
+{
+  "name": "@aies/core",
+  "version": "0.0.1",
+  "private": true,
+  "description": "AIES-core runtime v0 — bucle de decisión dueño de AIES; pi como motor de workers (ADR-009).",
+  "type": "module",
+  "bin": {
+    "aies": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "spike": "node dist/spike.js",
+    "test:loop": "node dist/self-check/loop.js",
+    "test:persist": "node dist/self-check/persistence.js",
+    "test:orch": "node dist/self-check/orchestrator.js",
+    "test:compaction": "node dist/self-check/compaction.js",
+    "test:no-workers": "node dist/self-check/workers.js",
+    "test": "node dist/self-check/loop.js && node dist/self-check/persistence.js && node dist/self-check/orchestrator.js && node dist/self-check/compaction.js && node dist/self-check/workers.js",
+    "research:metrics": "node dist/research/metrics.js",
+    "research:baseline": "node dist/research/baseline.js",
+    "smoke": "node dist/cli.js run --cwd fixtures/smoke-repo \"añade una función greet() a src/math.ts que devuelva 'hello'\"",
+    "help": "node dist/cli.js --help"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "~0.84.2",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/node": "^22"
+  }
+}

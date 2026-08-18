@@ -1,0 +1,40 @@
+{
+  "cwd": "/Users/ezequiel/DEV/AIES/06-research/experiments/e01-data/r1/t02-clamp-capitalize-base",
+  "tarea": "añade clamp(n, min, max) a src/math.js (n acotado a [min,max]: si n<min → min; si n>max → max; resto → n) y capitalize(s) a src/strings.js (primera letra en mayúscula, resto igual; vacío → '') sin tocar add/multiply/upper",
+  "provider": "minimax",
+  "modelo": "MiniMax-M3",
+  "tools": [
+    "bash",
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "write"
+  ],
+  "telemetry": {
+    "usage": {
+      "tokens": {
+        "input": 7979,
+        "output": 932,
+        "cacheRead": 60672,
+        "cacheWrite": 0,
+        "total": 69583
+      },
+      "cost": 0.007152419999999999
+    },
+    "contextUsage": {
+      "tokens": 8399,
+      "contextWindow": 1000000,
+      "percent": 0.8399
+    },
+    "telemetryUnavailable": false
+  },
+  "assistantText": "Listo. Añadidas las dos funciones sin tocar las existentes, y la verificación del `AGENTS.md` pasa:\n\n- **`src/math.js`** → `clamp(n, min, max)` con `Math.min(Math.max(n, min), max)`.\n- **`src/strings.js`** → `capitalize(s)` que devuelve `''` para cadena vacía y `s[0].toUpperCase() + s.slice(1)` en otro caso.\n\n`add`, `multiply` y `upper` siguen intactas.",
+  "tiempo_ms": 14538,
+  "verificacion": {
+    "comando": "node -e \"Promise.all([import('./src/math.js'), import('./src/strings.js')]).then(([m, s]) => { const checks = [ [m.clamp(5, 0, 10), 5], [m.clamp(-1, 0, 10), 0], [m.clamp(11, 0, 10), 10], [m.clamp(4, 4, 4), 4], [s.capitalize('hola mundo'), 'Hola mundo'], [s.capitalize('aBc'), 'ABc'], [s.capitalize(''), ''] ]; for (const [got, want] of checks) if (got !== want) throw new Error(JSON.stringify({ got, want })); console.log('PASS'); })\"",
+    "exitCode": 0,
+    "output": "PASS\n"
+  }
+}

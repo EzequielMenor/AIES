@@ -1,0 +1,8 @@
+[eval]:1
+import('./src/math.js').then(m => { const r = m.greet('aies'); if (r === 'hello aies') console.log('PASS'); else throw new Error('greet(aies)=' + r); })
+                                                ^
+
+TypeError: m.greet is not a function
+    at [eval]:1:49
+
+Node.js v26.7.0

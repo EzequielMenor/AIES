@@ -1,0 +1,40 @@
+{
+  "cwd": "/Users/ezequiel/DEV/AIES/06-research/experiments/e01-data/r3/t02-clamp-capitalize-base",
+  "tarea": "añade clamp(n, min, max) a src/math.js (n acotado a [min,max]: si n<min → min; si n>max → max; resto → n) y capitalize(s) a src/strings.js (primera letra en mayúscula, resto igual; vacío → '') sin tocar add/multiply/upper",
+  "provider": "minimax",
+  "modelo": "MiniMax-M3",
+  "tools": [
+    "bash",
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "write"
+  ],
+  "telemetry": {
+    "usage": {
+      "tokens": {
+        "input": 7733,
+        "output": 898,
+        "cacheRead": 53120,
+        "cacheWrite": 0,
+        "total": 61751
+      },
+      "cost": 0.006584700000000001
+    },
+    "contextUsage": {
+      "tokens": 8312,
+      "contextWindow": 1000000,
+      "percent": 0.8311999999999999
+    },
+    "telemetryUnavailable": false
+  },
+  "assistantText": "Listo. Añadidas las dos funciones, verificado con los 7 casos del AGENTS.md → `PASS`.\n\n- `src/math.js`: `clamp(n, min, max)` añadido tras `multiply`; `add` y `multiply` intactos.\n- `src/strings.js`: `capitalize(s)` añadido tras `upper`; `upper` intacto.",
+  "tiempo_ms": 18747,
+  "verificacion": {
+    "comando": "node -e \"Promise.all([import('./src/math.js'), import('./src/strings.js')]).then(([m, s]) => { const checks = [ [m.clamp(5, 0, 10), 5], [m.clamp(-1, 0, 10), 0], [m.clamp(11, 0, 10), 10], [m.clamp(4, 4, 4), 4], [s.capitalize('hola mundo'), 'Hola mundo'], [s.capitalize('aBc'), 'ABc'], [s.capitalize(''), ''] ]; for (const [got, want] of checks) if (got !== want) throw new Error(JSON.stringify({ got, want })); console.log('PASS'); })\"",
+    "exitCode": 0,
+    "output": "PASS\n"
+  }
+}

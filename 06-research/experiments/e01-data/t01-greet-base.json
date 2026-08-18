@@ -1,0 +1,40 @@
+{
+  "cwd": "/Users/ezequiel/DEV/AIES/06-research/experiments/e01-data/t01-greet-base",
+  "tarea": "añade greet(name) a src/math.js que devuelva `hello ${name}`",
+  "provider": "minimax",
+  "modelo": "MiniMax-M3",
+  "tools": [
+    "bash",
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "write"
+  ],
+  "telemetry": {
+    "usage": {
+      "tokens": {
+        "input": 142,
+        "output": 295,
+        "cacheRead": 21120,
+        "cacheWrite": 0,
+        "total": 21557
+      },
+      "cost": 0.0016638
+    },
+    "contextUsage": {
+      "tokens": 7308,
+      "contextWindow": 1000000,
+      "percent": 0.7308
+    },
+    "telemetryUnavailable": false
+  },
+  "assistantText": "PASS. `src/math.js` ya contiene `greet(name)` que devuelve `` `hello ${name}` `` con `add` intacto:\n\n```js\nexport function greet(name) {\n\treturn `hello ${name}`;\n}\n```",
+  "tiempo_ms": 9425,
+  "verificacion": {
+    "comando": "node -e \"import('./src/math.js').then(m => { const r = m.greet('aies'); if (r === 'hello aies') console.log('PASS'); else throw new Error('greet(aies)=' + r); })\"",
+    "exitCode": 0,
+    "output": "PASS\n"
+  }
+}

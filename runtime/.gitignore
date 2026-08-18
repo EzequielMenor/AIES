@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+# Estado de runtime AIES: fuera del repo del proyecto y efímero por máquina (ADR-008)
+.aies/
+# Nunca versionar claves
+.env

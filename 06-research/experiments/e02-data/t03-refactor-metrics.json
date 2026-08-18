@@ -1,0 +1,62 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/a76c10f8e4bc43fb/log.jsonl",
+  "entradas": 15,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 81092,
+      "por_iter_ms": [
+        null,
+        -3982,
+        -4100,
+        -3714,
+        -3104,
+        -3406,
+        -6111,
+        null
+      ]
+    },
+    "coste": {
+      "total": 0.03738031499999999,
+      "orquestador": 0.012230639999999997,
+      "por_unidad": {
+        "1": 0,
+        "u0": 0.00472536,
+        "u1": 0.00460842,
+        "u2": 0.00521988,
+        "u3": 0.005435519999999999,
+        "u4": 0.005160494999999999
+      }
+    },
+    "contexto": {
+      "tokens_total": 224547,
+      "pct_min": 0.32820000000000005,
+      "pct_max": 4.45458984375,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "Objetivo cumplido y verificado: lógica de acotación extraída a src/range.js (clamp), usada desde src/math.js y src/format.js, con las 6 aserciones de AGENTS.md devolviendo PASS."
+    },
+    "observabilidad": {
+      "decisiones": 8,
+      "resultados": 7,
+      "compactions": 0,
+      "parseFail": 0,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 1,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

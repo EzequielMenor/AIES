@@ -1,0 +1,40 @@
+{
+  "cwd": "/Users/ezequiel/DEV/AIES/06-research/experiments/e01-data/t02-clamp-capitalize-base",
+  "tarea": "añade clamp(n, min, max) a src/math.js (n acotado a [min,max]: si n<min → min; si n>max → max; resto → n) y capitalize(s) a src/strings.js (primera letra en mayúscula, resto igual; vacío → '') sin tocar add/multiply/upper",
+  "provider": "minimax",
+  "modelo": "MiniMax-M3",
+  "tools": [
+    "bash",
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "write"
+  ],
+  "telemetry": {
+    "usage": {
+      "tokens": {
+        "input": 7511,
+        "output": 864,
+        "cacheRead": 23168,
+        "cacheWrite": 0,
+        "total": 31543
+      },
+      "cost": 0.00468018
+    },
+    "contextUsage": {
+      "tokens": 8270,
+      "contextWindow": 1000000,
+      "percent": 0.827
+    },
+    "telemetryUnavailable": false
+  },
+  "assistantText": "Listo. Funciones añadidas, `add`/`multiply`/`upper` intactas, verificación `PASS`.\n\n**src/math.js**\n```js\nexport function add(a, b) {\n\treturn a + b;\n}\n\nexport function multiply(a, b) {\n\treturn a * b;\n}\n\nexport function clamp(n, min, max) {\n\tif (n < min) return min;\n\tif (n > max) return max;\n\treturn n;\n}\n```\n\n**src/strings.js**\n```js\nexport function upper(s) {\n\treturn s.toUpperCase();\n}\n\nexport function capitalize(s) {\n\tif (s.length === 0) return \"\";\n\treturn s[0].toUpperCase() + s.slice(1);\n}\n```",
+  "tiempo_ms": 16608,
+  "verificacion": {
+    "comando": "node -e \"Promise.all([import('./src/math.js'), import('./src/strings.js')]).then(([m, s]) => { const checks = [ [m.clamp(5, 0, 10), 5], [m.clamp(-1, 0, 10), 0], [m.clamp(11, 0, 10), 10], [m.clamp(4, 4, 4), 4], [s.capitalize('hola mundo'), 'Hola mundo'], [s.capitalize('aBc'), 'ABc'], [s.capitalize(''), ''] ]; for (const [got, want] of checks) if (got !== want) throw new Error(JSON.stringify({ got, want })); console.log('PASS'); })\"",
+    "exitCode": 0,
+    "output": "PASS\n"
+  }
+}

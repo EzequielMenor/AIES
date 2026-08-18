@@ -1,0 +1,154 @@
+// src/observability.ts — forma de las entradas de log.jsonl (Decision-Model.md §11, MVP-v0-Scope §8).
+// Dominio puro. `log.jsonl` es el único artefacto de observabilidad y el dataset de `06-research` (ADR-008).
+// Una línea = un objeto JSON; append-only. Por vuelta: una entrada decisión + una entrada resultado (cuando hay operación).
+
+import type { AjustePlan, Capability, Decision, Operation, OperationResult, ResultKind } from "./core/state.js";
+import type { CompactionObservation, ContextUsage, TelemetryUsage, WorkerTelemetry } from "./telemetry/types.js";
+
+export interface DecisionLogEntry {
+	type: "decision";
+	iter: number;
+	operación: Operation;
+	ajustePlan: AjustePlan | null;
+	motivo: string;
+	unidad: string | null;
+	capacidad: Capability | null;
+	condición: string | null;
+	parseFail: boolean;
+	/** Telemetría de la vuelta del orquestador (ADR-009/RNF-17: usage por orquestador). Ausente en entradas sintéticas sin vuelta de host. */
+	usage?: TelemetryUsage | null;
+	contextUsage?: ContextUsage | null;
+	telemetryUnavailable?: boolean;
+	telemetryReason?: string | null;
+	/** Marca temporal (ISO) al emitir; instrumentación de tiempo de AIES-core (NFR §3, 06-research). Opcional: ausente en tests. */
+	ts?: string;
+}
+
+export interface ResultLogEntry {
+	type: "resultado";
+	iter: number;
+	resultado: string;
+	kind: ResultKind;
+	unidadId: string | null;
+	usage: TelemetryUsage | null;
+	contextUsage: ContextUsage | null;
+	telemetryUnavailable: boolean;
+	telemetryReason: string | null;
+	límite_alcanzado: string | null;
+	/** E-01A: marca experimental. Si vale "orquestador", metrics.ts atribuye los tokens/coste
+	 * de esta entrada al orquestador (sesión local efímera, sin frontera de delegación). Ausente
+	 * en modo normal. */
+	atribución?: "orquestador" | null;
+	/** Marca temporal (ISO) al emitir; instrumentación de tiempo de AIES-core (NFR §3, 06-research). Opcional: ausente en tests. */
+	ts?: string;
+}
+
+/**
+ * Entrada de compactación del host (RNF-18/19). No es una vuelta del bucle: es un
+ * acontecimiento de contexto (threshold/overflow/manual) que ocurre durante un turno
+ * y deja huella del techo de contexto aplicado (reconstrucción RNF-11).
+ */
+export interface CompactionLogEntry {
+	type: "compaction";
+	fase: "start" | "end";
+	reason: string;
+	summary: string | null;
+	firstKeptEntryId: string | null;
+	tokensBefore: number | null;
+	estimatedTokensAfter: number | null;
+	aborted: boolean | null;
+	willRetry: boolean | null;
+	errorMessage: string | null;
+	/** Marca temporal (ISO) al emitir; instrumentación de tiempo de AIES-core (NFR §3, 06-research). Opcional: ausente en tests. */
+	ts?: string;
+}
+
+export type LogEntry = DecisionLogEntry | ResultLogEntry | CompactionLogEntry;
+
+export function serializeEntry(entry: LogEntry): string {
+	return JSON.stringify(entry);
+}
+
+function telemetryFields(telemetry: WorkerTelemetry): Pick<DecisionLogEntry, "usage" | "contextUsage" | "telemetryUnavailable" | "telemetryReason"> {
+	return {
+		usage: telemetry.usage,
+		contextUsage: telemetry.contextUsage,
+		telemetryUnavailable: telemetry.telemetryUnavailable,
+		telemetryReason: telemetry.reason ?? null,
+	};
+}
+
+export function decisionEntry(iter: number, decision: Decision, parseFail = false, telemetry?: WorkerTelemetry): DecisionLogEntry {
+	return {
+		type: "decision",
+		iter,
+		operación: decision.operación,
+		ajustePlan: decision.ajustePlan,
+		motivo: decision.motivo,
+		unidad: decision.unidad,
+		capacidad: decision.capacidad,
+		condición: decision.condición,
+		parseFail,
+		...(telemetry ? telemetryFields(telemetry) : {}),
+	};
+}
+
+export function resultEntry(
+	iter: number,
+	result: OperationResult,
+	telemetry: WorkerTelemetry,
+	límiteAlcanzado: string | null = null,
+	atribución: "orquestador" | null = null,
+): ResultLogEntry {
+	return {
+		type: "resultado",
+		iter,
+		resultado: result.text,
+		kind: result.kind,
+		unidadId: result.unidadId,
+		usage: telemetry.usage,
+		contextUsage: telemetry.contextUsage,
+		telemetryUnavailable: telemetry.telemetryUnavailable,
+		telemetryReason: telemetry.reason ?? null,
+		límite_alcanzado: límiteAlcanzado,
+		atribución,
+	};
+}
+
+/** Entrada artificial para sendas sin operación ejecutada (parse fail reentrante / límite / intervención). */
+export function syntheticDecision(
+	iter: number,
+	operación: Operation,
+	motivo: string,
+	parseFail = false,
+	telemetry?: WorkerTelemetry,
+): DecisionLogEntry {
+	return {
+		type: "decision",
+		iter,
+		operación,
+		ajustePlan: null,
+		motivo,
+		unidad: null,
+		capacidad: null,
+		condición: null,
+		parseFail,
+		...(telemetry ? telemetryFields(telemetry) : {}),
+	};
+}
+
+/** Entrada de compactación del host (RNF-18/19): observación del techo de contexto aplicado. */
+export function compactionEntry(obs: CompactionObservation): CompactionLogEntry {
+	return {
+		type: "compaction",
+		fase: obs.fase,
+		reason: obs.reason,
+		summary: obs.summary,
+		firstKeptEntryId: obs.firstKeptEntryId,
+		tokensBefore: obs.tokensBefore,
+		estimatedTokensAfter: obs.estimatedTokensAfter,
+		aborted: obs.aborted,
+		willRetry: obs.willRetry,
+		errorMessage: obs.errorMessage,
+	};
+}

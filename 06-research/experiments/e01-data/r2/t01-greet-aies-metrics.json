@@ -1,0 +1,60 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/a9c3662a6bf1a5a0/log.jsonl",
+  "entradas": 11,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 120306,
+      "por_iter_ms": [
+        null,
+        -7050,
+        -11776,
+        -39495,
+        -26189,
+        null
+      ]
+    },
+    "coste": {
+      "total": 0.018144465000000002,
+      "orquestador": 0.006985199999999999,
+      "por_unidad": {
+        "u1-explorar-src-mathjs": 0,
+        "u0": 0.0032004749999999995,
+        "u1": 0.00427884,
+        "u2": 0.00367995
+      }
+    },
+    "contexto": {
+      "tokens_total": 85317,
+      "orquestador_tokens": 26965,
+      "workers_tokens": 58352,
+      "pct_min": 0.2643,
+      "pct_max": 3.626953125,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "Objetivo cumplido y verificado: u1 añadió greet(name) a src/math.js, y u2 ejecutó `node -e \"import('./src/math.js').then(m => { const r = m.greet('aies'); if (r === 'hello aies') console.log('PASS'); else throw new Error('greet(aies)=' + r); })\"` con resultado PASS. La función `add` permanece intacta. Cierre Completada."
+    },
+    "observabilidad": {
+      "decisiones": 6,
+      "resultados": 5,
+      "compactions": 0,
+      "parseFail": 0,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 1,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

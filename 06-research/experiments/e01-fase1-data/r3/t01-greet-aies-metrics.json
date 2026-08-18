@@ -1,0 +1,53 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/0a99f623822294ec/log.jsonl",
+  "entradas": 5,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 33705,
+      "por_iter_ms": [
+        27152,
+        7
+      ]
+    },
+    "coste": {
+      "total": 0.0069348,
+      "orquestador": 0.0026603999999999994,
+      "por_unidad": {
+        "u1": 0.0042744
+      }
+    },
+    "contexto": {
+      "tokens_total": 36247,
+      "orquestador_tokens": 5823,
+      "workers_tokens": 30424,
+      "pct_min": 0.2306,
+      "pct_max": 0.7938000000000001,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 0,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "cumplida — greet('aies') === 'hello aies' verificado con PASS; no queda trabajo pendiente que aporte a la condición de finalización."
+    },
+    "observabilidad": {
+      "decisiones": 3,
+      "resultados": 2,
+      "compactions": 0,
+      "parseFail": 0,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 0,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

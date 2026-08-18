@@ -1,0 +1,13 @@
+{
+  "provider": "anthropic",
+  "models": {
+    "orchestrator": "claude-sonnet-4-5",
+    "explorer": "claude-haiku-4-5",
+    "implementer": "claude-sonnet-4-5",
+    "verifier": "claude-haiku-4-5"
+  },
+  "orchestratorThinkingLevel": "low",
+  "limits": {
+    "maxIterations": 12
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/4c5870e8c0a1c0f4/log.jsonl",
+  "entradas": 15,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 335556,
+      "por_iter_ms": [
+        null,
+        -10461,
+        -10235,
+        -58013,
+        -128373,
+        -2119,
+        -7894,
+        null
+      ]
+    },
+    "coste": {
+      "total": 0.05768502,
+      "orquestador": 0.022191179999999998,
+      "por_unidad": {
+        "u-01": 0,
+        "u0": 0.0041848350000000005,
+        "u1": 0.011989919999999998,
+        "u2": 0.00999369,
+        "u3": 0.005755979999999999,
+        "u4": 0.0035694149999999994
+      }
+    },
+    "contexto": {
+      "tokens_total": 308542,
+      "pct_min": 0.4138,
+      "pct_max": 4.84228515625,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 1,
+      "terminado": true,
+      "condicion": "Completada: objetivo cumplido y verificado con el comando exacto de AGENTS.md (PASS en 5/5 casos). Cambio mínimo restringido a src/count.js."
+    },
+    "observabilidad": {
+      "decisiones": 8,
+      "resultados": 7,
+      "compactions": 0,
+      "parseFail": 0,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 1,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

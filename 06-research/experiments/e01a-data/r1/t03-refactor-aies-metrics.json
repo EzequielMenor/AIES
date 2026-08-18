@@ -1,0 +1,57 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/cad704060391d122/log.jsonl",
+  "entradas": 13,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 124718,
+      "por_iter_ms": [
+        5,
+        17104,
+        32481,
+        42622,
+        17385,
+        8
+      ]
+    },
+    "coste": {
+      "total": 0.04323997499999999,
+      "orquestador": 0.04323997499999999,
+      "por_unidad": {
+        "explorar-codigo-actual": 0
+      }
+    },
+    "contexto": {
+      "tokens_total": 252479,
+      "orquestador_tokens": 252479,
+      "workers_tokens": 0,
+      "pct_min": 0.6865,
+      "pct_max": 4.00244140625,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "cumplida: objetivo cumplido y verificado — duplicación extraída a src/range.js (clamp), math.js (clampReport) y format.js (formatRange) la usan vía import, exports públicos preservados, package.json intacto, verificación PASS."
+    },
+    "observabilidad": {
+      "decisiones": 7,
+      "resultados": 6,
+      "compactions": 0,
+      "parseFail": 0,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 1,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

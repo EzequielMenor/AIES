@@ -1,0 +1,58 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/efccfeb83eac9c62/log.jsonl",
+  "entradas": 12,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 295577,
+      "por_iter_ms": [
+        null,
+        -10327,
+        -231769,
+        -3399,
+        -9276,
+        null
+      ]
+    },
+    "coste": {
+      "total": 0.022557675000000003,
+      "orquestador": 0.01209072,
+      "por_unidad": {
+        "U1": 0,
+        "u0": 0.006189285,
+        "u3": 0,
+        "u4": 0.00427767
+      }
+    },
+    "contexto": {
+      "tokens_total": 101672,
+      "pct_min": 0.45319999999999994,
+      "pct_max": 4.1611328125,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "Objetivo cumplido y verificado: clamp(n, min, max) presente en src/math.js y capitalize(s) presente en src/strings.js con la semántica exacta del enunciado; add, multiply y upper intactas; verificación PASS ejecutada con node -e sobre los 7 casos exigidos."
+    },
+    "observabilidad": {
+      "decisiones": 7,
+      "resultados": 5,
+      "compactions": 0,
+      "parseFail": 1,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 2,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

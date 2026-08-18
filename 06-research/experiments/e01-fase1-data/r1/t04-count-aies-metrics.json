@@ -1,0 +1,59 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/28f05dc2aa7a423a/log.jsonl",
+  "entradas": 11,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 302047,
+      "por_iter_ms": [
+        8,
+        18564,
+        46232,
+        34277,
+        9
+      ]
+    },
+    "coste": {
+      "total": 0.04722783,
+      "orquestador": 0.01985712,
+      "por_unidad": {
+        "explore-count": 0,
+        "u0": 0.0039734850000000006,
+        "u1": 0.01242294,
+        "u2": 0.010974285
+      }
+    },
+    "contexto": {
+      "tokens_total": 195890,
+      "orquestador_tokens": 56955,
+      "workers_tokens": 138935,
+      "pct_min": 0.3955,
+      "pct_max": 4.72802734375,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "cumplida: objetivo cumplido (countWords cuenta correctamente con whitespace múltiple intermedio, p.ej. 'a  b'→2 y 'hola  mundo'→2) y verificado (el comando de AGENTS.md imprime 'PASS' para los 5 casos, incluido el de cadena vacía → 0), con cambio mínimo y limitado a src/count.js, sin nuevos dependencias ni build, conservando el export nombrado ESM."
+    },
+    "observabilidad": {
+      "decisiones": 6,
+      "resultados": 5,
+      "compactions": 0,
+      "parseFail": 0,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 1,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "fuente": "/Users/ezequiel/.pi/agent/aies/ac9dea49430ec116/log.jsonl",
+  "entradas": 13,
+  "dimensiones": {
+    "tiempo": {
+      "total_ms": 98172,
+      "por_iter_ms": [
+        null,
+        -3733,
+        -3870,
+        -5669,
+        -5390,
+        null
+      ]
+    },
+    "coste": {
+      "total": 0.02322552,
+      "orquestador": 0.011950800000000001,
+      "por_unidad": {
+        "u-explore": 0,
+        "u0": 0.0033729,
+        "u1": 0.00431052,
+        "u2": 0.0035913000000000004
+      }
+    },
+    "contexto": {
+      "tokens_total": 108608,
+      "orquestador_tokens": 50101,
+      "workers_tokens": 58507,
+      "pct_min": 0.3548,
+      "pct_max": 3.58642578125,
+      "window": 1000000
+    },
+    "calidad": {
+      "verify_pass": 1,
+      "verify_fail": 0,
+      "terminado": true,
+      "condicion": "cumplida — greet(name) añadido a src/math.js como named export con retorno `hello ${name}`, add preservado, y verificación del AGENTS.md ejecutada con VEREDICTO PASS"
+    },
+    "observabilidad": {
+      "decisiones": 8,
+      "resultados": 5,
+      "compactions": 0,
+      "parseFail": 2,
+      "limites": 0
+    },
+    "fiabilidad": {
+      "fallos": 1,
+      "parse_errors": 0
+    }
+  },
+  "hipotesis": {
+    "H-01": "contexto: comparar tokens_total (orquestador+workers, telemetría cerrada) contra baseline agente-único a paridad — datos listos, baseline en E-01.",
+    "H-02": "coste/tiempo vs complejidad: correlaciona coste.total (incluye orquestador) + tiempo.total con nº de unidades/iter — datos listos.",
+    "H-03": "calidad: verify_pass/verify_fail + terminado; comparar contra baselines — datos AIES listos.",
+    "H-04": "especialización: desglose por unidad (coste.por_unidad) + veredictos — datos limitados (la capacidad va en la decisión, aparear por iter).",
+    "H-05": "persistencia: NO medible desde un único log (requiere experimento con/sin state.json restore).",
+    "H-06": "modelos económicos: comparar coste.total ahora con orquestador incluido; NO decidible solo desde el log (requiere config por rol + baseline)."
+  }
+}

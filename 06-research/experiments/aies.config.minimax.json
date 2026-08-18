@@ -1,0 +1,13 @@
+{
+  "provider": "minimax",
+  "models": {
+    "orchestrator": "MiniMax-M3",
+    "implementer": "MiniMax-M3",
+    "explorer": "MiniMax-M2.7",
+    "verifier": "MiniMax-M2.7"
+  },
+  "orchestratorThinkingLevel": "low",
+  "limits": {
+    "maxIterations": 12
+  }
+}
