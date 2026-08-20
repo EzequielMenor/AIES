@@ -4,7 +4,8 @@
 // cubre C3 (tope 3 parse-fail → intervención) y ADR-005 (límite → intervención, no Fallida).
 
 import assert from "node:assert/strict";
-import { runLoop, dumpJsonl, type LoopHooks } from "../core/loop.js";
+import { runLoop, dumpJsonl } from "../core/loop.js";
+import type { AiesEventHandlers, ExecuteOutcome, WorkerEventSink } from "../core/events.js";
 import type { Decision } from "../core/state.js";
 import { initState, type RuntimeState } from "../core/state.js";
 import type { DecisionLogEntry, LogEntry } from "../observability.js";
@@ -29,9 +30,9 @@ function dec(op: Decision["operación"], rest: Partial<Decision>): Decision {
 	};
 }
 
-function capture(): { entries: LogEntry[]; hooks: Pick<LoopHooks, "emit"> } {
+function capture(): { entries: LogEntry[]; handlers: Pick<AiesEventHandlers, "onLogEntry"> } {
 	const entries: LogEntry[] = [];
-	return { entries, hooks: { emit: (e) => entries.push(e) } };
+	return { entries, handlers: { onLogEntry: (e) => entries.push(e) } };
 }
 
 async function runHappy(): Promise<void> {
@@ -53,15 +54,15 @@ async function runHappy(): Promise<void> {
 		dec("terminar", { condición: "finalización cumplida y verificada", motivo: "unidad verificada, resultado conforme" }),
 	];
 	let i = 0;
-	const { entries, hooks } = capture();
+	const { entries, handlers } = capture();
 	const finalState = await runLoop(state, {
-		...hooks,
+		...handlers,
 		decide: async () => {
 			const decision = script[i] ?? script[script.length - 1]!;
 			i++;
 			return { decision, telemetry: TELEM, raw: EMPTY_RAW, parseFail: false };
 		},
-		execute: async (_s, decision) => {
+		execute: async (_s, decision, _events: WorkerEventSink): Promise<ExecuteOutcome> => {
 			if (decision.operación === "terminar") return { result: { kind: "terminación", text: "completada", unidadId: null, passed: true }, telemetry: TELEM };
 			if (decision.operación === "obtener información") return { result: { kind: "info", text: "info obtenida", unidadId: null, passed: null }, telemetry: TELEM };
 			const unitId = decision.unidad ?? "u?";
@@ -101,11 +102,11 @@ async function runHappy(): Promise<void> {
 
 async function runParseFailCap(): Promise<void> {
 	const state = initState({ objetivo: "x", alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: "x" });
-	const { entries, hooks } = capture();
+	const { entries, handlers } = capture();
 	const finalState = await runLoop(state, {
-		...hooks,
+		...handlers,
 		decide: async () => ({ decision: dec("obtener información", {}), telemetry: TELEM, raw: "not-json{{", parseFail: true, parseError: "JSON malformado" }),
-		execute: async () => ({ result: { kind: "info", text: "", unidadId: null, passed: null }, telemetry: TELEM }),
+		execute: async (_s, _d, _e): Promise<ExecuteOutcome> => ({ result: { kind: "info", text: "", unidadId: null, passed: null }, telemetry: TELEM }),
 	});
 
 	// C3: no crash, no reinicio; 3 fallos consecutivos → pedir intervención, tarea NO terminal (reanudable).
@@ -123,11 +124,11 @@ async function runParseFailCap(): Promise<void> {
 
 async function runLimitIntervene(): Promise<void> {
 	const state = initState({ objetivo: "x", alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: "x" }, { maxIterations: 2 });
-	const { entries, hooks } = capture();
+	const { entries, handlers } = capture();
 	const finalState = await runLoop(state, {
-		...hooks,
+		...handlers,
 		decide: async () => ({ decision: dec("obtener información", { motivo: "siempre falta info" }), telemetry: TELEM, raw: "{}", parseFail: false }),
-		execute: async () => ({ result: { kind: "info", text: "info", unidadId: null, passed: null }, telemetry: TELEM }),
+		execute: async (_s, _d, _e): Promise<ExecuteOutcome> => ({ result: { kind: "info", text: "info", unidadId: null, passed: null }, telemetry: TELEM }),
 	});
 
 	// ADR-005: al límite de iteraciones → pedir intervención (defecto), NO terminal (reanudable).
@@ -147,9 +148,9 @@ async function runDeclaredTermination(): Promise<void> {
 	// Fix 3: outcomes {execution, verification, scope} se calculan en loop.ts y se consultan en
 	// setTerminal (state.ts). Regla B.1: Completada iff execution=success AND verification≠fail.
 	const state = initState({ objetivo: "x", alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: "x" });
-	const { entries, hooks } = capture();
+	const { entries, handlers } = capture();
 	const finalState = await runLoop(state, {
-		...hooks,
+		...handlers,
 		decide: async () => ({
 			decision: dec("terminar", { ajustePlan: { tipo: "determinar el proceso", unidades: [
 				{ objetivo: "u-objetivo", alcance: null, infoNecesaria: null, resultadoEsperado: "hecho", condicionFinalizacion: "hecho", capacidad: "implementer" },
@@ -158,7 +159,7 @@ async function runDeclaredTermination(): Promise<void> {
 			raw: EMPTY_RAW,
 			parseFail: false,
 		}),
-		execute: async () => ({ result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null }, telemetry: TELEM }),
+		execute: async (_s, _d, _e): Promise<ExecuteOutcome> => ({ result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null }, telemetry: TELEM }),
 	});
 	assert.equal(finalState.taskState, "Completada", "terminado declarado-cumplida → Completada");
 	assert.equal(finalState.outcomes.execution, "success", "cumpla: execution=success");
@@ -169,9 +170,9 @@ async function runDeclaredTermination(): Promise<void> {
 	const state2 = initState({ objetivo: "x", alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: "x" });
 	const entries2 = capture();
 	const finalState2 = await runLoop(state2, {
-		...entries2.hooks,
+		...entries2.handlers,
 		decide: async () => ({ decision: dec("terminar", { condición: "inviable: sin vía viable" }), telemetry: TELEM, raw: EMPTY_RAW, parseFail: false }),
-		execute: async () => ({ result: { kind: "terminación", text: "", unidadId: null, passed: false }, telemetry: TELEM }),
+		execute: async (_s, _d, _e): Promise<ExecuteOutcome> => ({ result: { kind: "terminación", text: "", unidadId: null, passed: false }, telemetry: TELEM }),
 	});
 	assert.equal(finalState2.taskState, "Fallida", "terminado declarado-inviable → Fallida");
 	assert.equal(finalState2.outcomes.execution, "fail", "inviable: execution=fail");
@@ -196,15 +197,15 @@ async function runDeclaredTerminationWithVerifierFail(): Promise<void> {
 		dec("terminar", { condición: "cumplida — el orquestador declara éxito" }),
 	];
 	let i = 0;
-	const { entries, hooks } = capture();
+	const { entries, handlers } = capture();
 	const finalState = await runLoop(state, {
-		...hooks,
+		...handlers,
 		decide: async () => {
 			const decision = script[i] ?? script[script.length - 1]!;
 			i++;
 			return { decision, telemetry: TELEM, raw: EMPTY_RAW, parseFail: false };
 		},
-		execute: async (_s, decision) => {
+		execute: async (_s, decision, _e): Promise<ExecuteOutcome> => {
 			if (decision.operación === "terminar") return { result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null }, telemetry: TELEM };
 			// unidad verifier falla
 			return { result: { kind: "unidad", text: "**FAIL** — typecheck no pasa", unidadId: "u0", passed: false }, telemetry: TELEM };

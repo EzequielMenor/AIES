@@ -1,169 +1,489 @@
 #!/usr/bin/env node
-// AIES-core runtime CLI (v0). Entrypoint dueño del bucle; pi es el motor de workers (ADR-009).
-// `aies run "<tarea>"` | `aies resume` | `aies --help` | `aies --stop` (v0: SIGINT durante run).
+// src/cli.ts — entrypoint CLI de AIES (oneshot + REPL interactivo).
+//
+// Punto único que conecta runtime (core/loop), orquestador (orchestrator/decide),
+// workers (workers/tools) y renderizador (ui/stream-renderer) con la terminal.
+//
+// Modos (resolución desde argv):
+//   1) ONESHOT  — `aies "<tarea>"`: ejecuta una sola tarea y sale con código 0/1.
+//   2) REPL     — `aies`: arranca el bucle interactivo con prompt `❯ `.
+//
+// Persistencia (ADR-008, en cwd-relative `.aies/`):
+//   - state.json: snapshot final de RuntimeState tras cada ciclo.
+//   - log.jsonl:  entradas estructuradas del bus onLogEntry.
+//
+// SIGINT (Ctrl+C):
+//   - Si hay un run en curso, aborta el worker vía AbortSignal y marca el bucle como
+//     interrumpido (stopSignal → setTerminal fail → onTaskFailed). El proceso NO muere.
+//   - En REPL vuelve al prompt. En oneshot sale con código 1.
 
+import {
+	realpathSync,
+} from "node:fs";
 import * as path from "node:path";
-import { parseArgs } from "node:util";
+import { createRequire } from "node:module";
+import { stdin as input, stdout as output } from "node:process";
+import * as readline from "node:readline/promises";
 
-import { loadConfig } from "./config.js";
-import { createHost } from "./pi-binding/index.js";
-import { createStore } from "./persistence/file_store.js";
-import { isResumable, recover } from "./persistence/recover.js";
-import { ORCHESTRATOR_SYSTEM_PROMPT, createDecide } from "./orchestrator/index.js";
-import { createExecute } from "./workers/index.js";
-import { CAPABILITY_TOOLS } from "./workers/capabilities.js";
-import { createStopSignal } from "./intervention.js";
-import { limitsFromConfig } from "./limits.js";
-import { initState, type RuntimeState, type Task } from "./core/state.js";
-import type { CompactionObservation } from "./telemetry/types.js";
+import { LocalStore } from "./cli-persistence.js";
+
+const nodeRequire = createRequire(import.meta.url);
+import type {
+	AiesEventHandlers,
+	DecideOutcome,
+	ExecuteOutcome,
+	WorkerEventSink,
+} from "./core/events.js";
 import { runLoop } from "./core/loop.js";
-import { compactionEntry, syntheticDecision } from "./observability.js";
+import {
+	type Decision,
+	type Limits,
+	type OperationResult,
+	type RuntimeState,
+	type Task,
+	initState,
+} from "./core/state.js";
+import { loadConfig } from "./config.js";
+import { limitsFromConfig } from "./limits.js";
+import { createDecide, type ResolvedModel } from "./orchestrator/decide.js";
+import { runWorker, type WorkerToolContext } from "./workers/tools.js";
+import { StreamRenderer } from "./ui/stream-renderer.js";
+import { serializeEntry, type LogEntry } from "./observability.js";
+import type { WorkerTelemetry } from "./telemetry/types.js";
 
-function printHelp(): void {
-	console.log(`aies — AIES-core runtime (v0)
+const NO_TELEM: WorkerTelemetry = {
+	usage: null,
+	contextUsage: null,
+	telemetryUnavailable: false,
+};
 
-Uso:
-  aies run "<tarea>"     Inicia o (si ya hay tarea En curso/Recibida) reanuda el bucle sobre la tarea
-  aies resume            Reanuda la tarea no-terminal desde su "siguiente paso" (ADR-008 §4)
-  aies --stop            v0: la intervención se hace con SIGINT (Ctrl-C) durante un run (Runtime §7)
+// ──────────────────────────────────────────────────────────────────────────────
+// Persistencia local — ver src/cli-persistence.ts (LocalStore en .aies/ cwd-relative).
+// ──────────────────────────────────────────────────────────────────────────────
 
-Opciones:
-  --cwd <dir>            Directorio del proyecto (defecto: process.cwd())
-  -h, --help             Muestra esta ayuda
+// ──────────────────────────────────────────────────────────────────────────────
+// Ejecución: compone los handlers AIES (StreamRenderer + decide + execute) y
+// corre el bucle hasta terminal. Persiste al final del ciclo.
+// ──────────────────────────────────────────────────────────────────────────────
 
-Persistencia (ADR-008):  <agentDir>/aies/<hash(cwd)>/{state.json, log.jsonl}
-Config:                  runtime/aies.config.json (provider+modelos por rol; SIN claves)
-Claves:                  por env (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, ...)
-
-Intervención: SIGINT detiene ordenadamente (Tarea → Fallida por intervención). 2ª SIGINT fuerza salida.
-`);
+function taskFromArg(taskArg: string): Task {
+	return {
+		objetivo: taskArg.trim(),
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "tarea completada o fallida",
+	};
 }
 
-function deriveCompletion(tarea: string): string {
-	return `objetivo cumplido y verificado: ${tarea}`;
-}
+type ExecuteFn = (
+	state: RuntimeState,
+	decision: Decision,
+	events: WorkerEventSink,
+) => Promise<ExecuteOutcome>;
 
-async function runRuntime(command: "run" | "resume", tarea: string | undefined, cwd: string): Promise<void> {
-	const config = loadConfig();
-	const host = await createHost({
-		cwd,
-		provider: config.provider,
-		models: config.models,
-		thinking: { orchestrator: config.orchestratorThinkingLevel },
-		workerTools: CAPABILITY_TOOLS,
-		orchestratorSystemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
-	});
-
-	const store = createStore(host.agentDir, cwd);
-	const rec = recover(host.agentDir, cwd, (m) => console.error(`[persistencia] ${m}`));
-
-	let state: RuntimeState;
-	if (command === "resume") {
-		if (!isResumable(rec.state)) {
-			console.error("No hay tarea reanudable (state.json ausente/corrupto o ya terminal). Usa `aies run \"<tarea>\"`.");
-			process.exit(2);
-		}
-		state = rec.state!;
-		console.log(`[resume] reanudando tarea (${state.taskState}, iter ${state.iterations})`);
-	} else {
-		// run: si hay tarea no-terminal previa → se reanuda (MVP-v0-Scope §3, aceptación §6).
-		if (isResumable(rec.state)) {
-			state = rec.state!;
-			console.warn(`[run] existe una tarea ${state.taskState} (iter ${state.iterations}); reanudando. (Nueva tarea ignorada.)`);
-		} else {
-			if (!tarea) {
-				console.error("Uso: aies run \"<tarea>\"");
-				process.exit(2);
+function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined): ExecuteFn {
+	return async (state, decision, events) => {
+		switch (decision.operación) {
+			case "comunicar al desarrollador": {
+				const text = decision.comunicación ?? "";
+				return {
+					result: { kind: "comunicación", text, unidadId: null, passed: null } satisfies OperationResult,
+					telemetry: NO_TELEM,
+				};
 			}
-			const task: Task = { objetivo: tarea, alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: deriveCompletion(tarea) };
-			state = initState(task, limitsFromConfig(config));
-			if (rec.corrupt) store.appendLog(syntheticDecision(0, "comunicar al desarrollador", "sesión limpia (state.json corrupto); log previo conservado"));
-			else if (rec.absent) store.appendLog(syntheticDecision(0, "comunicar al desarrollador", "sesión nueva (sin state.json previo)"));
-			console.log(`[run] nueva tarea: ${tarea}`);
+			case "terminar": {
+				const cond = decision.condición ?? "";
+				const inviable =
+					/sin (continuación|v([íi])a viable)|no hay (continuación|v([íi])a)|^inviable|irrecuperable/i.test(cond);
+				return {
+					result: {
+						kind: "terminación",
+						text: inviable ? cond || "sin continuación viable" : "finalización declarada",
+						unidadId: null,
+						passed: inviable ? false : null,
+					} satisfies OperationResult,
+					telemetry: NO_TELEM,
+				};
+			}
+			case "obtener información": {
+				const lastResult = state.results[state.results.length - 1];
+				const contexto = lastResult?.text ?? state.knownInfo.join("; ");
+				const objetivo = decision.motivo || "obtener información relevante para continuar la tarea";
+				const r = await runWorker("explorer", { objetivo, contexto }, wctx, signal, events);
+				if (r.status === "failed") {
+					return {
+						result: { kind: "fallo", text: r.error, unidadId: null, passed: false } satisfies OperationResult,
+						telemetry: r.telemetry,
+					};
+				}
+				return {
+					result: { kind: "info", text: r.text, unidadId: null, passed: null } satisfies OperationResult,
+					telemetry: r.telemetry,
+				};
+			}
+			case "ejecutar una unidad": {
+				const unitId = decision.unidad;
+				const unit = unitId ? state.units.find((u) => u.id === unitId) ?? null : null;
+				if (!unit) {
+					return {
+						result: {
+							kind: "fallo",
+							text: `unidad no encontrada en el estado: ${unitId ?? "(sin unidad)"}`,
+							unidadId: unitId,
+							passed: false,
+						} satisfies OperationResult,
+						telemetry: NO_TELEM,
+					};
+				}
+				const cap = (decision.capacidad ?? unit.capacidad) as "explorer" | "implementer" | "verifier";
+				if (cap !== "explorer" && cap !== "implementer" && cap !== "verifier") {
+					return {
+						result: { kind: "fallo", text: `capacidad desconocida: ${cap}`, unidadId: unit.id, passed: false } satisfies OperationResult,
+						telemetry: NO_TELEM,
+					};
+				}
+				const r = await runWorker(
+					cap,
+					{ objetivo: unit.objetivo, contexto: state.knownInfo.join("; "), unidad: unit.id },
+					wctx,
+					signal,
+					events,
+				);
+				if (r.status === "failed") {
+					return {
+						result: { kind: "fallo", text: r.error, unidadId: unit.id, passed: false } satisfies OperationResult,
+						telemetry: r.telemetry,
+					};
+				}
+				const passed = cap === "verifier" ? r.verdict === "PASS" : true;
+				return {
+					result: { kind: "unidad", text: r.text, unidadId: unit.id, passed } satisfies OperationResult,
+					telemetry: r.telemetry,
+				};
+			}
+		}
+	};
+}
+
+export interface RunCycleOptions {
+	cwd: string;
+	model: ResolvedModel | undefined;
+	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
+	limits: Limits;
+	signal: AbortSignal | undefined;
+	store: LocalStore;
+	renderer?: StreamRenderer | undefined;
+	decideOverride?: (state: RuntimeState) => Promise<DecideOutcome>;
+	executeOverride?: ExecuteFn;
+}
+
+export interface RunCycleResult {
+	state: RuntimeState;
+	interrupted: boolean;
+	completed: boolean;
+}
+
+export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCycleResult> {
+	const initial = initState(task, opts.limits);
+	const wctx: WorkerToolContext = {
+		cwd: opts.cwd,
+		model: opts.model,
+		thinkingLevel: opts.thinkingLevel,
+	};
+	const decideCtx = { cwd: opts.cwd, model: opts.model, thinkingLevel: opts.thinkingLevel, signal: opts.signal };
+	const renderer = opts.renderer ?? new StreamRenderer(output);
+	const decide: (state: RuntimeState) => Promise<DecideOutcome> =
+		opts.decideOverride ?? createDecide(decideCtx);
+	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal);
+
+	const handlers: AiesEventHandlers = StreamRenderer.merge(renderer, { decide, execute });
+	handlers.onLogEntry = (entry) => {
+		try {
+			opts.store.appendLog(entry);
+		} catch {
+			/* log best-effort (P-02: el bus es fire-and-forget) */
+		}
+	};
+	handlers.stopSignal = () => Boolean(opts.signal?.aborted);
+
+	const before = Date.now();
+	let finalState: RuntimeState;
+	try {
+		finalState = await runLoop(initial, handlers);
+	} finally {
+		try {
+			renderer.finalize();
+		} catch {
+			/* finalize best-effort */
 		}
 	}
+	opts.store.saveState(finalState);
 
-	// Observación del techo de contexto del host (RNF-18/19): cada compaction_start/end
-	// deja huella en log.jsonl (06-research/H-01). No es una vuelta del bucle.
-	const emitCompaction = (o: CompactionObservation) => store.appendLog({ ...compactionEntry(o), ts: new Date().toISOString() });
-
-	const orchSession = await host.createOrchestrator(emitCompaction);
-	const stop = createStopSignal();
-	const out = (m: string) => console.log(`\n[orquestador → desarrollador] ${m}`);
-
-	const finalState = await runLoop(state, {
-		decide: createDecide({ session: orchSession }),
-		execute: createExecute({
-			host,
-			out,
-			onCompaction: emitCompaction,
-			// E-01A experimental: con AIES_NO_WORKERS=1, las delegaciones usan una sesión local
-			// efímera por unidad (misma persona/tools/modelo que un worker normal) en lugar de
-			// host.createWorker. La telemetría resultante se atribuye al orquestador en metrics.ts.
-			localSessionFactory: process.env.AIES_NO_WORKERS === "1"
-				? (cap) => host.createLocalSession(cap, emitCompaction)
-				: undefined,
-		}),
-		emit: (entry) => store.appendLog({ ...entry, ts: new Date().toISOString() }),
-		onLimit: () => "intervenir",
-		stopSignal: stop.stopSignal,
-	});
-
-	orchSession.dispose();
-	stop.dispose();
-	store.saveState(finalState);
-
-	console.log("\n=== resumen ===");
-	console.log(`tarea          : ${finalState.task.objetivo}`);
-	console.log(`estado terminal: ${finalState.taskState}`);
-	console.log(`iteraciones    : ${finalState.iterations} / ${finalState.limits.maxIterations}`);
-	if (finalState.terminalCondition) console.log(`condición       : ${finalState.terminalCondition}`);
-	if (finalState.taskState === "En curso" || finalState.taskState === "Recibida") {
-		console.log(`siguiente paso  : ${finalState.nextStep}`);
-		console.log("(tarea no terminal: `aies resume` para continuar tras intervención/clave.)");
+	const interrupted = Boolean(opts.signal?.aborted) && finalState.taskState !== "Completada";
+	const completed = finalState.taskState === "Completada";
+	if (interrupted) {
+		// Marca explícita en el log: el usuario lo pidió.
+		try {
+			opts.store.appendLog({
+				type: "compaction",
+				fase: "start",
+				reason: "user:interrupt",
+				summary: `interrumpido por el usuario tras ${Date.now() - before}ms`,
+				firstKeptEntryId: null,
+				tokensBefore: null,
+				estimatedTokensAfter: null,
+				aborted: true,
+				willRetry: false,
+				errorMessage: null,
+			} satisfies LogEntry);
+		} catch {
+			/* best-effort */
+		}
 	}
-	console.log(`state.json     : ${store.stateFile}`);
-	console.log(`log.jsonl      : ${store.logFile}  (${store.readLog().length} entradas)`);
+	return { state: finalState, interrupted, completed };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Banner y comandos REPL
+// ──────────────────────────────────────────────────────────────────────────────
+
+function banner(): void {
+	const bar = "─".repeat(50);
+	const top = `┌${bar}┐`;
+	const bot = `└${bar}┘`;
+	const l1 = "│  AIES — Autonomous Software Engineering Harness │";
+	const l2 = "│  Escribe tu tarea o /help para comandos       │";
+	const pad = (s: string) => {
+		const width = 52; // incluye los │ inicial y final
+		const inner = s.length;
+		const spaces = Math.max(0, width - inner);
+		return s + " ".repeat(spaces);
+	};
+	output.write(`${top}\n${pad(l1)}\n${pad(l2)}\n${bot}\n`);
+}
+
+const HELP_TEXT = [
+	"Comandos disponibles:",
+	"  /help              — muestra esta ayuda",
+	"  /state             — imprime el JSON resumido del RuntimeState actual",
+	"  /clear             — limpia la pantalla",
+	"  /exit | /quit      — cierra la sesión",
+	"",
+	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
+	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
+	" Ctrl+C durante una tarea la aborta limpiamente (sin matar el proceso).",
+].join("\n");
+
+function helpText(): string {
+	return HELP_TEXT;
+}
+
+function clearScreen(): void {
+	// ANSI: ESC[2J (borrar pantalla) + ESC[H (cursor arriba-izquierda).
+	output.write("\x1b[2J\x1b[H");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Entry point
+// ──────────────────────────────────────────────────────────────────────────────
+
+export interface CliOptions {
+	cwd: string;
+	taskArg: string | null;
+	repl: boolean;
+}
+
+function resolveModel(modelStr: string | undefined): ResolvedModel | undefined {
+	// CLI real: la resolución del modelo (provider + id → instancia) ocurre vía ModelRuntime.create
+	// en `decide.ts`/worker. Aquí sólo devolvemos undefined → el host usará su modelo por defecto.
+	// Si en el futuro se quiere aceptar --model en argv, se puede resolver aquí contra pi.
+	return undefined;
 }
 
 async function main(): Promise<void> {
-	const { values, positionals } = parseArgs({
-		allowPositionals: true,
-		options: {
-			help: { type: "boolean", short: "h" },
-			cwd: { type: "string" },
-			stop: { type: "boolean" },
-		},
-	});
+	const argv = process.argv.slice(2);
+	const taskArg = argv.length > 0 ? argv.join(" ").trim() : null;
+	const repl = taskArg === null || taskArg.length === 0;
+	const cwd = process.cwd();
 
-	if (values.help) {
-		printHelp();
-		process.exit(0);
-	}
-	if (values.stop) {
-		console.log("aies --stop (v0): la intervención se realiza con SIGINT (Ctrl-C) durante `aies run`. No hay daemon en v0.");
-		process.exit(0);
-	}
-	if (positionals.length === 0) {
-		printHelp();
-		process.exit(0);
-	}
-
-	const command = positionals[0];
-	const tarea = positionals.slice(1).join(" ") || undefined;
-	const cwd = path.resolve(values.cwd ?? process.cwd());
-
-	if (command !== "run" && command !== "resume") {
-		console.error(`aies: comando desconocido "${command}". Ver --help.`);
+	let cfg;
+	try {
+		cfg = loadConfig();
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		output.write(`aies: aies.config.json ausente o inválido: ${msg}\n`);
 		process.exit(2);
 	}
+	const limits: Limits = limitsFromConfig(cfg);
+	const model: ResolvedModel | undefined = resolveModel(process.env.AIES_MODEL);
+	const thinkingLevel = cfg.orchestratorThinkingLevel;
 
-	try {
-		await runRuntime(command, tarea, cwd);
-	} catch (e) {
-		console.error(`\n[fatal] ${e instanceof Error ? e.message : String(e)}`);
-		process.exit(1);
+	if (repl) {
+		await runRepl({ cwd, limits, model, thinkingLevel });
+	} else {
+		const exitCode = await runOneshot(taskArg!, { cwd, limits, model, thinkingLevel });
+		process.exit(exitCode);
 	}
 }
 
-main();
+async function runOneshot(
+	taskArg: string,
+	ctx: { cwd: string; limits: Limits; model: ResolvedModel | undefined; thinkingLevel: "off" | "low" | "medium" | "high" | undefined },
+): Promise<number> {
+	const task = taskFromArg(taskArg);
+	const store = new LocalStore(ctx.cwd);
+	const controller = new AbortController();
+	const onSigint = () => controller.abort(new Error("Interrumpido por el usuario"));
+	process.once("SIGINT", onSigint);
+
+	const result = await runCycle(task, {
+		cwd: ctx.cwd,
+		model: ctx.model,
+		thinkingLevel: ctx.thinkingLevel,
+		limits: ctx.limits,
+		signal: controller.signal,
+		store,
+	});
+
+	process.off("SIGINT", onSigint);
+
+	if (result.completed) return 0;
+	if (result.interrupted) {
+		output.write("\naies: tarea interrumpida por el usuario.\n");
+		return 1;
+	}
+	output.write(`\naies: tarea terminó en estado ${result.state.taskState}.\n`);
+	return result.state.taskState === "Fallida" ? 1 : 1;
+}
+
+async function runRepl(ctx: {
+	cwd: string;
+	limits: Limits;
+	model: ResolvedModel | undefined;
+	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
+}): Promise<void> {
+	const store = new LocalStore(ctx.cwd);
+	banner();
+
+	const rl = readline.createInterface({ input, output, terminal: true });
+	let currentState: RuntimeState | null = store.loadState();
+	let runInProgress = false;
+	let activeAbort: AbortController | null = null;
+
+	const onSigint = () => {
+		if (runInProgress && activeAbort) {
+			activeAbort.abort(new Error("Interrumpido por el usuario"));
+		}
+	};
+	process.on("SIGINT", onSigint);
+
+	// Cierre limpio del REPL con /exit o EOF.
+	const close = () => {
+		process.off("SIGINT", onSigint);
+		rl.close();
+	};
+
+	try {
+		while (true) {
+			let line: string;
+			try {
+				line = await rl.question("❯ ");
+			} catch {
+				// readline aborted (Ctrl+D / cierre del stream).
+				break;
+			}
+			const input0 = line.trim();
+			if (!input0) continue;
+
+			if (input0 === "/help") {
+				output.write(`${helpText()}\n`);
+				continue;
+			}
+			if (input0 === "/clear") {
+				clearScreen();
+				continue;
+			}
+			if (input0 === "/exit" || input0 === "/quit") {
+				break;
+			}
+			if (input0 === "/state") {
+				const snapshot = currentState ?? store.loadState();
+				if (!snapshot) {
+					output.write("aies: sin estado cargado todavía. Escribe una tarea para empezar.\n");
+				} else {
+					output.write(`${JSON.stringify(summarizeState(snapshot), null, 2)}\n`);
+				}
+				continue;
+			}
+
+			// Nueva tarea sobre el proyecto (manteniendo persistencia).
+			const task = taskFromArg(input0);
+			runInProgress = true;
+			activeAbort = new AbortController();
+			const before = currentState;
+			try {
+				const result = await runCycle(task, {
+					cwd: ctx.cwd,
+					model: ctx.model,
+					thinkingLevel: ctx.thinkingLevel,
+					limits: ctx.limits,
+					signal: activeAbort.signal,
+					store,
+				});
+				currentState = result.state;
+				if (result.interrupted) {
+					output.write("\naies: tarea interrumpida por el usuario (Ctrl+C). Volviendo al prompt.\n");
+				}
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				output.write(`\naies: error — ${msg}\n`);
+			} finally {
+				runInProgress = false;
+				activeAbort = null;
+				// Si abortamos por SIGINT, currentState queda en el último snapshot persistido.
+				if (before && !currentState) currentState = before;
+			}
+		}
+	} finally {
+		close();
+	}
+}
+
+function summarizeState(s: RuntimeState): Record<string, unknown> {
+	return {
+		taskState: s.taskState,
+		objetivo: s.task.objetivo,
+		iterations: s.iterations,
+		maxIterations: s.limits.maxIterations,
+		terminalCondition: s.terminalCondition,
+		nextStep: s.nextStep,
+		outcomes: s.outcomes,
+		units: s.units.map((u) => ({ id: u.id, capacidad: u.capacidad, estado: u.estado, objetivo: u.objetivo })),
+		resultsCount: s.results.length,
+	};
+}
+
+// Ejecuta main sólo cuando se invoca como entrypoint real (no en tests).
+// Detección portable: comparamos la URL real (realpath resuelve symlinks tipo /tmp → /private/tmp
+// en macOS) de process.argv[1] contra import.meta.url.
+const isEntrypoint = ((): boolean => {
+	try {
+		const entry = process.argv[1];
+		if (!entry) return false;
+		const entryReal = realpathSync(path.resolve(entry));
+		const { fileURLToPath } = nodeRequire("node:url") as typeof import("node:url");
+		const metaReal = realpathSync(fileURLToPath(import.meta.url));
+		return entryReal === metaReal;
+	} catch {
+		return false;
+	}
+})();
+
+if (isEntrypoint) {
+	main().catch((e) => {
+		const msg = e instanceof Error ? e.message : String(e);
+		output.write(`aies: error fatal — ${msg}\n`);
+		process.exit(2);
+	});
+}

@@ -18,7 +18,18 @@ export interface TelemetryUsage {
 	cost: number;
 }
 
-/** Techo de contexto observado (vía getContextUsage/RNF-18). tokens null = incidencia. */
+/**
+ * Techo de contexto observado (vía getContextUsage/RNF-18).
+ * `tokens: null` significa "incidencia": el host devolvió telemetría de contexto
+ * NO disponible (post-compaction, pre-respuesta, error de instrumentación). NO
+ * se debe confundir con cero ni con el último valor conocido (RNF-17 sin
+ * continuación silenciosa sobre techo de contexto).
+ *
+ * `percent` está normalizado a escala 0..100 (entero). `null` cuando `tokens`
+ * es `null` o cuando la instrumentación no pudo calcular la fracción.
+ * Esta escala la garantiza `pi-binding/events.ts:mapContextUsage` (un único punto
+ * de normalización) — los componentes de presentación NO aplican heurísticas.
+ */
 export interface ContextUsage {
 	tokens: number | null;
 	contextWindow: number;

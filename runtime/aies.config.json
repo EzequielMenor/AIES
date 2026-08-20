@@ -1,10 +1,10 @@
 {
-  "provider": "anthropic",
+  "provider": "minimax",
   "models": {
-    "orchestrator": "claude-sonnet-4-5",
-    "explorer": "claude-haiku-4-5",
-    "implementer": "claude-sonnet-4-5",
-    "verifier": "claude-haiku-4-5"
+    "orchestrator": "MiniMax-M2.7",
+    "explorer": "MiniMax-M2.7",
+    "implementer": "MiniMax-M2.7",
+    "verifier": "MiniMax-M2.7"
   },
   "orchestratorThinkingLevel": "low",
   "limits": {

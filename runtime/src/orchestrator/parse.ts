@@ -35,7 +35,7 @@ const DecisionSchema = z
 	.object({
 		operación: OperationSchema,
 		ajustePlan: z.union([AjustePlanSchema, z.null()]).optional(),
-		unidad: z.union([z.string().max(100), z.null()]).optional(),
+		unidad: z.union([z.string().regex(/^u\d+$/), z.null()]).optional(),
 		capacidad: z.union([CapabilitySchema, z.null()]).optional(),
 		comunicación: z.union([TEXT(4000), z.null()]).optional(),
 		motivo: z.string().min(1).max(2000),
@@ -136,6 +136,24 @@ function mapDecision(d: z.infer<typeof DecisionSchema>): Decision {
 	};
 }
 
+function normalizeKeys(obj: unknown): unknown {
+	if (typeof obj !== "object" || obj === null) return obj;
+	if (Array.isArray(obj)) return obj.map(normalizeKeys);
+	const res: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+		let key = k;
+		if (k === "infoNecesada" || k === "info_necesaria" || k === "infonecesaria") key = "infoNecesaria";
+		if (k === "resultado_esperado" || k === "resultadoesperado") key = "resultadoEsperado";
+		if (k === "condicion_finalizacion" || k === "condicionfinalizacion") key = "condicionFinalizacion";
+		if (k === "ajuste_plan" || k === "ajusteplan") key = "ajustePlan";
+		if (k === "operacion") key = "operación";
+		if (k === "comunicacion") key = "comunicación";
+		if (k === "condicion") key = "condición";
+		res[key] = typeof v === "object" && v !== null ? normalizeKeys(v) : v;
+	}
+	return res;
+}
+
 /**
  * Parsea la salida del orquestador a una Decisión.
  * Fallos (vacío / JSON malformado / schema reject / semántica / contenido ejecutable) → parseFail:true
@@ -162,7 +180,7 @@ export function parseDecision(text: string): ParseOutcome {
 		}
 	}
 
-	const unwrapped = unwrapIfWrapper(obj);
+	const unwrapped = normalizeKeys(unwrapIfWrapper(obj));
 	const parsed = DecisionSchema.safeParse(unwrapped);
 	if (!parsed.success) return { decision: empty, parseFail: true, parseError: `schema: ${summarizeZod(parsed.error)}` };
 

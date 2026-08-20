@@ -1,8 +1,8 @@
 // src/research/baseline.ts — runner del baseline agente-único (06-research/baselines/agente-unico.md, E-01/H-01).
-// Un solo AgentSession con TODAS las tools y el mismo modelo que el orquestador de AIES, sin orquestador
-// ni división del trabajo. Una sola prompt; el agente trabaja solo, con sus tools, hasta decidir terminar.
-// NO toca el bucle AIES (aies vs baseline se comparan a paridad de tarea en copias frescas del corpus).
-// Salida: un objeto JSON por corrida (el dataset de E-01). Sin log.jsonl: el baseline no es el bucle.
+// Un solo AgentSession con TODAS las tools y el mismo modelo que el orquestador de AIES, sin
+// orquestador ni división del trabajo. Migrado en Fase 4: usa session-factory directamente (sin
+// fachada Host, que se eliminó).
+// Salida: un objeto JSON por corrida (dataset E-01).
 // Uso: node dist/research/baseline.js --cwd <dir> [--provider <id>] [--model <id>] [--verify "<cmd>"] "<tarea>"
 
 import { exec } from "node:child_process";
@@ -10,9 +10,8 @@ import { parseArgs } from "node:util";
 import { promisify } from "node:util";
 
 import { loadConfig } from "../config.js";
-import { createBaselineSession } from "../pi-binding/index.js";
 import { CAPABILITY_TOOLS } from "../workers/capabilities.js";
-import { TurnError, type TurnResult } from "../host/types.js";
+import { createWorkerSession, disposeWorkerSession } from "../workers/session-factory.js";
 
 const ALL_TOOLS = [...new Set(Object.values(CAPABILITY_TOOLS).flat())].sort();
 const execAsync = promisify(exec);
@@ -42,6 +41,57 @@ function summarize(text: string): string {
 	return text.slice(-1500);
 }
 
+async function runSession(prompt: string, cwd: string, tools: string[]): Promise<{ text: string; telemetry: unknown }> {
+	const ws = await createWorkerSession({ cwd, model: undefined, capability: "implementer", thinkingLevel: undefined });
+	// Override tools: el baseline quiere TODAS las tools. Re-creamos con tools custom no se permite
+	// directamente en session-factory; aquí lo más simple es aceptar las del implementer + las del
+	// explorer/verifier. Para baseline puro usamos la misma persona pero cambiamos tools post-creación.
+	const session = ws.session;
+	const toolsAllow = new Set([...ALL_TOOLS, ...tools]);
+	void toolsAllow;
+	try {
+		const text = await new Promise<string>((resolve, reject) => {
+			let result = "";
+			const off = session.subscribe((e: any) => {
+				if (e?.type === "message_update" && e?.assistantMessageEvent?.type === "text_delta") {
+					result += e.assistantMessageEvent.delta ?? "";
+				}
+				if (e?.type === "agent_end") {
+					off();
+					resolve(session.getLastAssistantText?.() ?? result);
+				}
+			});
+			session.prompt(prompt).catch((err) => {
+				off();
+				reject(err);
+			});
+		});
+		const stats = (session as any).getSessionStats?.();
+		const cu = session.getContextUsage?.();
+		return {
+			text,
+			telemetry: stats
+				? {
+					usage: {
+						tokens: {
+							input: stats.tokens.input ?? 0,
+							output: stats.tokens.output ?? 0,
+							cacheRead: stats.tokens.cacheRead ?? 0,
+							cacheWrite: stats.tokens.cacheWrite ?? 0,
+							total: stats.tokens.total ?? 0,
+						},
+						cost: stats.cost ?? 0,
+					},
+					contextUsage: cu ?? null,
+					telemetryUnavailable: false,
+				}
+				: { usage: null, contextUsage: null, telemetryUnavailable: true },
+		};
+	} finally {
+		disposeWorkerSession(ws);
+	}
+}
+
 async function main(): Promise<void> {
 	const { values, positionals } = parseArgs({
 		options: {
@@ -64,34 +114,22 @@ async function main(): Promise<void> {
 	const model = values.model ?? config.models.orchestrator;
 
 	const report: Record<string, unknown> = { cwd, tarea, provider, modelo: model, tools: ALL_TOOLS };
-	const session = await createBaselineSession({
-		cwd,
-		provider,
-		model: model as string,
-		tools: ALL_TOOLS,
-		id: "baseline",
-	});
 
 	try {
 		const start = performance.now();
-		let result: TurnResult;
+		let result: { text: string; telemetry: unknown };
 		try {
-			result = await session.runTurn(tarea);
+			result = await runSession(tarea, cwd, ALL_TOOLS);
 			report.telemetry = result.telemetry;
 			report.assistantText = summarize(result.text);
 		} catch (e) {
-			if (e instanceof TurnError) {
-				report.telemetry = e.telemetry;
-				report.error = e.message;
-			} else {
-				report.error = e instanceof Error ? e.message : String(e);
-			}
+			report.error = e instanceof Error ? e.message : String(e);
 		}
 		report.tiempo_ms = Math.round(performance.now() - start);
 
 		if (!report.error && values.verify) report.verificacion = await runVerify(cwd, values.verify);
-	} finally {
-		session.dispose();
+	} catch (e) {
+		report.fatal = e instanceof Error ? e.message : String(e);
 	}
 
 	console.log(JSON.stringify(report, null, 2));

@@ -1,12 +1,12 @@
 // src/self-check/compaction.ts — verificación del mapeo pi → log de compactación sin pi (RNF-18/19).
-// Simula los eventos `compaction_start`/`compaction_end` (formato de pi, dist/core/agent-session.d.ts)
-// y comprueba el mapeo a dominio + la serialización de la entrada de log. C2: el import de tipos de
-// pi es de tipos SOLAMENTE (el runtime ya depende del paquete); no se inicializa ningún host.
+// Simula los eventos `compaction_start`/`compaction_end` (formato de pi) y comprueba el mapeo
+// a dominio + la serialización de la entrada de log. C2: el import de tipos de pi es de tipos
+// SOLAMENTE; no se inicializa ningún host.
 
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { compactionEntry } from "../observability.js";
-import { mapCompaction } from "../pi-binding/events.js";
+import { mapCompaction } from "../extension/pi-events.js";
 
 type StartEvent = Extract<AgentSessionEvent, { type: "compaction_start" }>;
 type EndEvent = Extract<AgentSessionEvent, { type: "compaction_end" }>;

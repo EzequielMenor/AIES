@@ -1,6 +1,18 @@
 node_modules/
 dist/
+dist-test/
 .DS_Store
 .env
 .env.local
 *.log
+
+# Editors / tooling locales (no se sincronizan a la nube)
+.aies/
+.codegraph/
+.cursor/
+.kilo/
+
+# Notas privadas / outputs generados
+.tui-*.md
+repomix-output.xml
+scratch_test_dir/

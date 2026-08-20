@@ -1,9 +1,17 @@
 // src/core/loop.ts — el bucle. AIES-core es el dueño (ADR-009); pi es sólo el motor inyectado.
-// Dominio puro: decide/execute son interfaces inyectadas (DecideFn/ExecuteFn). El step 3 lo verifica
-// con stubs in-memory (no pi); el step 5/6 las cablea contra pi. Parseo robusto (C3) y límites (ADR-005) viven aquí.
+//
+// P-02: el bucle es 100% puro. Toda interacción con el exterior ocurre vía el bus de eventos
+// tipado definido en `./events.ts` (AiesEventHandlers). El bucle no importa nada de UI/TUI/console:
+// decide/execute son interfaces inyectadas; las primitivas de control (onLimit, stopSignal) y los
+// callbacks de log (onLogEntry, onLoopObservation, onRaw) se exponen como parte del mismo contrato.
+//
+// Orden por turno (C3): aplica ajustePlan al estado ANTES de ejecutar la operación del mismo turno.
+// Parse fail (C3): no crash, no reinicio → tratar como info-insuficiente y reentrar; tope 3 → intervención.
 
-import type { WorkerTelemetry } from "../telemetry/types.js";
-import { decisionEntry, resultEntry, serializeEntry, syntheticDecision, type LogEntry } from "../observability.js";
+import type { AiesEventHandlers, TaskTelemetry, UnitResult, WorkerEventSink, WorkerInfo } from "./events.js";
+import { type ObservationHook, safeObserve } from "./observation.js";
+import { decisionEntry, resultEntry, syntheticDecision, type LogEntry } from "../observability.js";
+import type { WorkerTelemetry, TelemetryUsage } from "../telemetry/types.js";
 import {
 	type Decision,
 	type OperationResult,
@@ -16,39 +24,6 @@ import {
 	markUnitState,
 	setTerminal,
 } from "./state.js";
-
-export interface DecideOutcome {
-	decision: Decision;
-	telemetry: WorkerTelemetry;
-	raw: string;
-	parseFail: boolean;
-	parseError?: string;
-}
-
-export interface ExecuteOutcome {
-	result: OperationResult;
-	telemetry: WorkerTelemetry;
-	/** E-01A: marca experimental de atribución. Si está, el bucle la propaga a resultEntry
-	 * para que metrics.ts sume tokens/coste al orquestador en lugar de a workers. */
-	atribución?: "orquestador" | null;
-}
-
-/** Decide: orquestador (AgentSession noTools) lee el estado y emite decisión JSON. Inyectada. */
-export type DecideFn = (state: RuntimeState) => Promise<DecideOutcome>;
-/** Execute: ejecuta la operación (delega a worker capability según MVP-v0 §1). Inyectada. */
-export type ExecuteFn = (state: RuntimeState, decision: Decision) => Promise<ExecuteOutcome>;
-
-export interface LoopHooks {
-	decide: DecideFn;
-	execute: ExecuteFn;
-	emit: (entry: LogEntry) => void;
-	/** Repertorio al alcanzar límite (ADR-005): por defecto "intervenir". */
-	onLimit?: (state: RuntimeState) => "intervenir" | "terminar";
-	/** Intervención externa (Runtime §7): el desarrollador detiene → entra como resultado. */
-	stopSignal?: () => boolean;
-	/** Log(optional) del texto crudo del orquestador para depuración. */
-	onRaw?: (iter: number, raw: string) => void;
-}
 
 function telemetryEmpty(): WorkerTelemetry {
 	return { usage: null, contextUsage: null, telemetryUnavailable: true, reason: "sintético: sin vuelta de host" };
@@ -66,53 +41,163 @@ function applyOperationResult(state: RuntimeState, decision: Decision, result: O
 	return s;
 }
 
+/** Construye un sink vacío (todos los callbacks son no-op) para `execute` cuando el handler
+ *  no implementa eventos de granularidad fina. */
+function emptyWorkerSink(): WorkerEventSink {
+	return {};
+}
+
+/** Helper interno: crea un `WorkerEventSink` que despacha a los handlers del bucle, prefijando
+ *  el `unitId` que el bucle conoce. Si un handler no está, el callback correspondiente queda
+ *  como no-op. */
+function buildWorkerSink(handlers: AiesEventHandlers, unitId: string): WorkerEventSink {
+	const sink: WorkerEventSink = {};
+	if (handlers.onWorkerToolCall) {
+		const cb = handlers.onWorkerToolCall;
+		sink.onWorkerToolCall = (tool, args) => safeCallback(() => cb(unitId, tool, args));
+	}
+	if (handlers.onWorkerToolResult) {
+		const cb = handlers.onWorkerToolResult;
+		sink.onWorkerToolResult = (tool, result, isError) => safeCallback(() => cb(unitId, tool, result, isError));
+	}
+	if (handlers.onVerificationStart) {
+		const cb = handlers.onVerificationStart;
+		sink.onVerificationStart = (command) => safeCallback(() => cb(unitId, command));
+	}
+	if (handlers.onVerificationResult) {
+		const cb = handlers.onVerificationResult;
+		sink.onVerificationResult = (verdict, output) => safeCallback(() => cb(unitId, verdict, output));
+	}
+	return sink;
+}
+
+/** Despacha un callback tipado a través de un try/catch — un consumer que falle no rompe el bucle. */
+function safeCallback(fn: () => void): void {
+	try {
+		fn();
+	} catch {
+		/* un handler que falla no rompe el bucle (P-02: el bus es fire-and-forget) */
+	}
+}
+
+/** Despacha un evento del bucle de forma segura. */
+function emit(handlers: AiesEventHandlers, name: keyof AiesEventHandlers, fn: () => void): void {
+	if (typeof handlers[name] !== "function") return;
+	safeCallback(fn);
+}
+
+/** Suma métricas de telemetría de una vuelta (orquestador) o de una operación (worker) sobre el
+ *  acumulador global del bucle. `null` cuando esa vuelta no reportó usage fiable: se conserva el
+ *  acumulado previo (el coste conocido nunca se pierde por una vuelta sin telemetría). */
+type TelemetryAccumulator = { totalCost: number; totalTokens: number; known: boolean };
+function accUsage(acc: TelemetryAccumulator, usage: TelemetryUsage | null | undefined): void {
+	if (!usage) return;
+	acc.totalCost += usage.cost;
+	acc.totalTokens += usage.tokens.total;
+	acc.known = true;
+}
+
+/** Serializa el acumulador de telemetría a TaskTelemetry (null si nada es conocido). */
+function telemetryToTask(acc: TelemetryAccumulator, iterations: number, startTs: number, endTs: number): TaskTelemetry {
+	return {
+		iterations,
+		totalCost: acc.known ? acc.totalCost : null,
+		totalTokens: acc.known ? acc.totalTokens : null,
+		startTs,
+		endTs,
+	};
+}
+
 /**
  * Ejecuta el bucle sobre una tarea En curso hasta terminal (Completada/Fallida) o intervención.
- * Orden por turno (C3): aplica ajustePlan al estado ANTES de ejecutar la operación del mismo turno.
- * Parse fail (C3): no crash, no reinicio → tratar como info-insuficiente y reentrar; tope 3 → intervención.
+ * Devuelve el `RuntimeState` final.
+ *
+ * Eventos emitidos (en orden, sobre `handlers`):
+ *   1. `onTaskStart(state)` — una vez, antes del primer turno.
+ *   2. Por turno: `onDecideStart(iter)` → `decide` → `onDecideSuccess(decision)` → `execute` →
+ *      `onWorkerStart`/`onWorkerFinish` (si ejecutó una unidad) → `onTaskCompleted`/`onTaskFailed` (si terminó).
  */
-export async function runLoop(initial: RuntimeState, hooks: LoopHooks): Promise<RuntimeState> {
+export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers): Promise<RuntimeState> {
 	let state = initial;
+	const startTs = Date.now();
+	// Acumulador global de telemetría (RNF-07/17): suma coste/tokens de orquestador + workers a lo
+	// largo de TODOS los turnos (incluidos parse-fails, cuya vuelta de orquestador sí se factura).
+	const telemetryAcc: TelemetryAccumulator = { totalCost: 0, totalTokens: 0, known: false };
+	const observe: ObservationHook | undefined = handlers.onLoopObservation
+		? (obs) => safeCallback(() => handlers.onLoopObservation?.(obs))
+		: undefined;
+	const emitLog: (entry: LogEntry) => void = handlers.onLogEntry
+		? (entry) => safeCallback(() => handlers.onLogEntry?.(entry))
+		: () => undefined;
 
-	// El bucle corre mientras la tarea no sea terminal (Recibida|En curso). La primera decisión
-	// (determinar el proceso) aplica el ajustePlan que lleva Recibida→En curso (Lifecycle §5, applyAjustePlan).
+	emit(handlers, "onTaskStart", () => handlers.onTaskStart?.(state));
+
 	while (state.taskState === "Recibida" || state.taskState === "En curso") {
 		// Intervención externa (Runtime §7) — se procesa como una entrada más (detención).
-		if (hooks.stopSignal?.()) {
-			hooks.emit(syntheticDecision(state.iterations, "comunicar al desarrollador", "intervención: detención por el desarrollador"));
-			hooks.emit(resultEntry(state.iterations, { kind: "límite", text: "tarea detenida por intervención", unidadId: null, passed: null }, telemetryEmpty()));
+		if (handlers.stopSignal?.()) {
+			emitLog(syntheticDecision(state.iterations, "comunicar al desarrollador", "intervención: detención por el desarrollador"));
+			emitLog(resultEntry(state.iterations, { kind: "límite", text: "tarea detenida por intervención", unidadId: null, passed: null }, telemetryEmpty()));
+			safeObserve(observe, { phase: "intervention:stopped", state });
 			state = setTerminal(state, { execution: "fail", verification: "unknown", scope: "unknown" }, "intervención del desarrollador (detención)");
+			emit(handlers, "onTaskFailed", () => {
+				const reason = state.terminalCondition ?? "intervención del desarrollador (detención)";
+				handlers.onTaskFailed?.(reason);
+			});
 			break;
 		}
 
 		// Límite de iteraciones (ADR-005) — el backstop duro; pedir intervención por defecto.
 		if (state.iterations >= state.limits.maxIterations) {
-			const action = hooks.onLimit?.(state) ?? "intervenir";
+			const action = (await handlers.onLimit?.(state)) ?? "intervenir";
+			safeObserve(observe, {
+				phase: "limit:reached",
+				state,
+				action,
+				reason: `límite de iteraciones alcanzado (${state.limits.maxIterations})`,
+			});
 			if (action === "intervenir") {
 				// ADR-005: "pedir intervención" es la respuesta por defecto — NO falla la tarea:
 				// queda En curso y reanudable; observable (RNF-19), nunca continuación silenciosa.
-				hooks.emit(syntheticDecision(state.iterations, "comunicar al desarrollador", `límite de iteraciones alcanzado (${state.limits.maxIterations})`));
-				hooks.emit(resultEntry(state.iterations, { kind: "límite", text: `intervención requerida: límite de iteraciones (${state.limits.maxIterations})`, unidadId: null, passed: null }, telemetryEmpty(), `iteraciones=${state.limits.maxIterations}`));
+				emitLog(syntheticDecision(state.iterations, "comunicar al desarrollador", `límite de iteraciones alcanzado (${state.limits.maxIterations})`));
+				emitLog(resultEntry(state.iterations, { kind: "límite", text: `intervención requerida: límite de iteraciones (${state.limits.maxIterations})`, unidadId: null, passed: null }, telemetryEmpty(), `iteraciones=${state.limits.maxIterations}`));
 				state = { ...state, nextStep: `intervención requerida: límite de iteraciones (${state.limits.maxIterations})` };
 				break;
 			}
 			// action === "terminar": terminación controlada por límite (pérdida de trabajo conservada).
-			hooks.emit(syntheticDecision(state.iterations, "terminar", `terminación controlada por límite de iteraciones (${state.limits.maxIterations})`));
+			emitLog(syntheticDecision(state.iterations, "terminar", `terminación controlada por límite de iteraciones (${state.limits.maxIterations})`));
 			state = setTerminal(state, { execution: "fail", verification: "unknown", scope: "unknown" }, `terminación controlada: límite de iteraciones (${state.limits.maxIterations})`);
-			hooks.emit(resultEntry(state.iterations, { kind: "terminación", text: state.terminalCondition ?? "límite", unidadId: null, passed: false }, telemetryEmpty()));
+			emitLog(resultEntry(state.iterations, { kind: "terminación", text: state.terminalCondition ?? "límite", unidadId: null, passed: false }, telemetryEmpty()));
+			safeObserve(observe, { phase: "terminated", state, reason: state.terminalCondition ?? "límite" });
+			emit(handlers, "onTaskFailed", () => {
+				const reason = state.terminalCondition ?? "límite";
+				handlers.onTaskFailed?.(reason);
+			});
 			break;
 		}
 
-		const turn = await hooks.decide(state);
-		if (hooks.onRaw) hooks.onRaw(state.iterations, turn.raw);
+		safeObserve(observe, { phase: "decision:start", state });
+		emit(handlers, "onDecideStart", () => handlers.onDecideStart?.(state.iterations));
+
+		const turn = await handlers.decide(state);
+		accUsage(telemetryAcc, turn.telemetry.usage);
+		if (handlers.onRaw) safeCallback(() => handlers.onRaw?.(state.iterations, turn.raw));
 
 		if (turn.parseFail) {
 			// C3: no crash, no reinicio → reentrada con el estado (info-insuficiente). Tope 3 → pedir intervención.
 			// La telemetría de la vuelta del orquestador se conserva incluso en fallo de parseo (RNF-17: coste por orquestador).
 			state = { ...state, consecutiveParseFailures: state.consecutiveParseFailures + 1 };
-			hooks.emit(syntheticDecision(state.iterations, "obtener información", turn.parseError ?? "salida del orquestador no parseable", true, turn.telemetry));
+			safeObserve(observe, {
+				phase: "decision:resolved",
+				state,
+				decision: null,
+				parseFail: true,
+				parseError: turn.parseError ?? "salida del orquestador no parseable",
+				raw: turn.raw,
+				telemetry: turn.telemetry,
+			});
+			emitLog(syntheticDecision(state.iterations, "obtener información", turn.parseError ?? "salida del orquestador no parseable", true, turn.telemetry));
 			if (state.consecutiveParseFailures >= 3) {
-				hooks.emit(resultEntry(state.iterations, { kind: "parse_error", text: "intervención requerida: 3 fallos consecutivos de parseo", unidadId: null, passed: null }, telemetryEmpty()));
+				emitLog(resultEntry(state.iterations, { kind: "parse_error", text: "intervención requerida: 3 fallos consecutivos de parseo", unidadId: null, passed: null }, telemetryEmpty()));
 				state = { ...state, nextStep: "intervención requerida: 3 fallos de parseo consecutivos del orquestador" };
 				break; // En curso → reanudable tras intervención (no Fallida: el desarrollador ajusta y resume)
 			}
@@ -122,13 +207,73 @@ export async function runLoop(initial: RuntimeState, hooks: LoopHooks): Promise<
 		// Decisión válida: reset de fallos de parseo + aplicar plan ANTES de operación (C3 orden por turno).
 		state = { ...state, consecutiveParseFailures: 0 };
 		state = applyAjustePlan(state, turn.decision.ajustePlan);
-		hooks.emit(decisionEntry(state.iterations, turn.decision, false, turn.telemetry));
+		safeObserve(observe, {
+			phase: "decision:resolved",
+			state,
+			decision: turn.decision,
+			parseFail: false,
+			parseError: null,
+			raw: turn.raw,
+			telemetry: turn.telemetry,
+		});
+		emitLog(decisionEntry(state.iterations, turn.decision, false, turn.telemetry));
+		emit(handlers, "onDecideSuccess", () => handlers.onDecideSuccess?.(turn.decision));
 
-		const out = await hooks.execute(state, turn.decision);
+		// onWorkerStart: si vamos a ejecutar una unidad, anunciamos al worker antes de invocarlo.
+		// Invariancia de IDs (fix): la decisión debe referenciar una unidad que exista en el estado.
+		// Si referencia una inexistente → error real y explícito (tarea Fallida con motivo claro),
+		// NUNCA fallback silencioso a otra unidad ni ejecución de una unidad distinta.
+		let workerUnit: RuntimeState["units"][number] | undefined;
+		if (turn.decision.operación === "ejecutar una unidad" && turn.decision.unidad) {
+			const targetId = turn.decision.unidad;
+			workerUnit = state.units.find((u) => u.id === targetId);
+			if (!workerUnit) {
+				const reason = `decisión referencia una unidad inexistente: ${targetId}`;
+				const failResult: OperationResult = { kind: "fallo", text: reason, unidadId: targetId, passed: false };
+				safeObserve(observe, { phase: "error:unidad-inexistente", state, decision: turn.decision });
+				emitLog(resultEntry(state.iterations, failResult, turn.telemetry));
+				state = setTerminal(state, { execution: "fail", verification: "unknown", scope: "unknown" }, reason);
+				emit(handlers, "onTaskFailed", () => {
+					const r = state.terminalCondition ?? reason;
+					handlers.onTaskFailed?.(r);
+				});
+				break;
+			}
+			const workerInfo: WorkerInfo = {
+				role: workerUnit.capacidad,
+				model: "unknown", // se rellenará cuando se instrumenten los modelos por capability
+			};
+			emit(handlers, "onWorkerStart", () => handlers.onWorkerStart?.(workerUnit!, workerInfo));
+		}
+
+		safeObserve(observe, { phase: "execution:start", state, decision: turn.decision });
+		const sink = workerUnit ? buildWorkerSink(handlers, workerUnit.id) : emptyWorkerSink();
+		const out = await handlers.execute(state, turn.decision, sink);
+		accUsage(telemetryAcc, out.telemetry.usage);
 		state = applyOperationResult(state, turn.decision, out.result);
 		state = appendResult(state, out.result);
 		state = { ...state, iterations: state.iterations + 1 };
-		hooks.emit(resultEntry(state.iterations, out.result, out.telemetry, null, out.atribución ?? null));
+		safeObserve(observe, {
+			phase: "execution:resolved",
+			state,
+			decision: turn.decision,
+			result: out.result,
+			telemetry: out.telemetry,
+			atribución: out.atribución ?? null,
+		});
+		emitLog(resultEntry(state.iterations, out.result, out.telemetry, null, out.atribución ?? null));
+
+		// onWorkerFinish: tras ejecutar una unidad, informamos del resultado normalizado.
+		if (turn.decision.operación === "ejecutar una unidad" && turn.decision.unidad) {
+			const unitId = turn.decision.unidad;
+			const unitResult: UnitResult = {
+				unitId,
+				text: out.result.text,
+				passed: out.result.passed,
+				kind: out.result.kind,
+			};
+			emit(handlers, "onWorkerFinish", () => handlers.onWorkerFinish?.(unitId, unitResult));
+		}
 
 		if (turn.decision.operación === "terminar") {
 			// Outcomes (Fix 3): execution preserva la semántica original (terminación declarada y
@@ -147,6 +292,26 @@ export async function runLoop(initial: RuntimeState, hooks: LoopHooks): Promise<
 							: "unknown";
 			const outcomes: Outcomes = { execution, verification, scope: "unknown" };
 			state = setTerminal(state, outcomes, turn.decision.condición ?? "terminación");
+			safeObserve(observe, {
+				phase: "terminated",
+				state,
+				reason: turn.decision.condición ?? "terminación",
+			});
+
+			// onTaskCompleted / onTaskFailed — el taskState final ya está decidido por setTerminal.
+			const endTs = Date.now();
+			const telemetry: TaskTelemetry = telemetryToTask(telemetryAcc, state.iterations, startTs, endTs);
+			if (state.taskState === "Completada") {
+				emit(handlers, "onTaskCompleted", () => {
+					const summary = state.terminalCondition ?? "tarea completada";
+					handlers.onTaskCompleted?.(summary, telemetry);
+				});
+			} else {
+				emit(handlers, "onTaskFailed", () => {
+					const reason = state.terminalCondition ?? "tarea fallida";
+					handlers.onTaskFailed?.(reason);
+				});
+			}
 			break;
 		}
 		// obtener información / ejecutar una unidad / comunicar: devuelven el control al bucle.
@@ -157,5 +322,5 @@ export async function runLoop(initial: RuntimeState, hooks: LoopHooks): Promise<
 
 /** Serializa una lista de entradas a texto .jsonl (append-only). Útil para tests y dump. */
 export function dumpJsonl(entries: LogEntry[]): string {
-	return entries.map(serializeEntry).join("\n") + (entries.length ? "\n" : "");
+	return entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : "");
 }
