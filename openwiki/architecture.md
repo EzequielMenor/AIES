@@ -61,7 +61,8 @@ The implementation lives in `runtime/src/core/loop.ts` (`runLoop`). Its invarian
 - **`ajustePlan` is a sibling**, not nested in `operación` — it mutates the plan, not the project (Decision-Model §4.2).
 - **Apply before operate** — when the decision carries an `ajustePlan`, it is applied to state first, then the operation of the same turn runs against the post-ajuste state (C3).
 - **Parse fail is recoverable** — a bad JSON decision is not a crash and not a reset. It is re-fed as info-insuficiente; three in a row → pedir intervención (`runtime/src/core/loop.ts`, C3 / REQ-F-18).
-- **Iteration cap is a backstop, not a verdict** — when `iterations ≥ maxIterations`, the loop asks for intervention by default (state remains `En curso`, runnable via `aies resume`). Termination is the controllable fallback (`ADR-005`).
+- **Non-existent unit id is not terminal** — if a decision references a `unidad` that isn't in the state, the loop records a `fallo` result, sets `nextStep` to the reason, increments `iterations`, and re-emits to the orchestrator. No fallback to a different unit; no `Fallida` at this layer. The iteration cap is the backstop if the orchestrator fails to correct (`runtime/src/core/loop.ts`, ADR-005).
+- **Iteration cap is a backstop, not a verdict** — when `iterations ≥ maxIterations`, the loop asks for intervention by default (state remains `En curso`, runnable from the REPL). Termination is the controllable fallback (`ADR-005`).
 - **Intervention is an entry** — SIGINT enters as a synthetic result and the task is marked `Fallida` (Runtime §7, `runtime/src/intervention.ts`).
 - **Compaction is observable, not enforced** — `compaction_start` / `compaction_end` from pi are mapped to `log.jsonl` entries; AIES never assumes no-overflow and keeps the iteration backstop (RNF-18/19).
 
@@ -122,10 +123,10 @@ The repertoire when a limit is hit (ADR-005) is: *pedir intervención* (default)
 | Runtime state shape | `03-Architecture/Runtime-Model.md §3.1` | `runtime/src/core/state.ts` (`RuntimeState`) |
 | Decision schema | `03-Architecture/Decision-Model.md §2/§4/§11` | `runtime/src/core/state.ts` (`Decision`), `runtime/src/orchestrator/parse.ts` |
 | Decision loop invariants | `04-Behavior/Lifecycle.md`, ADR-005/C3 | `runtime/src/core/loop.ts` |
-| Capabilities | `03-Architecture/Capability-Model.md` | `runtime/src/workers/capabilities.ts`, `runtime/src/workers/index.ts` |
-| Verifier as capability | `ADR-002` | `runtime/src/workers/index.ts::persona("verifier")`, `parseVerdict` |
+| Capabilities | `03-Architecture/Capability-Model.md` | `runtime/src/workers/capabilities.ts`, `runtime/src/workers/tools.ts` |
+| Verifier as capability | `ADR-002` | `runtime/src/workers/prompts.ts::VERIFIER_PROMPT`, `workers/tools.ts::parseVerdict` |
 | Limits policy | `ADR-005` | `runtime/src/limits.ts` |
 | Re-descomposition | `ADR-006` | `runtime/src/core/state.ts::applyAjustePlan` |
 | Telemetry types | ADR-009 / RNF-07/17 | `runtime/src/telemetry/types.ts` |
 
-See also: [Runtime](runtime.md) for how the v0 wires these, and [Conventions & decisions](conventions.md) for the principles and ADRs that bind the model.
+See also: [Runtime](runtime.md) for how the v1 wires these, and the [principles](../01-Concept/Principles.md) and [ADRs](../05-Decisions/) for the policy that binds the model.
