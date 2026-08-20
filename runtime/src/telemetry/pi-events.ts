@@ -1,4 +1,4 @@
-// src/extension/pi-events.ts — mapeo de eventos de pi → tipos de dominio AIES.
+// src/telemetry/pi-events.ts — mapeo de eventos de pi → tipos de dominio AIES.
 //
 // Único punto de traducción entre eventos crudos de pi (AgentSessionEvent) y tipos de dominio
 // (CompactionObservation, HostActivity). Reemplaza al antiguo pi-binding/events.ts.
@@ -9,7 +9,7 @@
 
 import type { AgentSessionEvent, ContextUsage as PiContextUsage } from "@earendil-works/pi-coding-agent";
 import type { CompactionObservation } from "../telemetry/types.js";
-import type { HostActivity } from "./types.js";
+import type { HostActivity } from "../core/types.js";
 
 type CompactionEvent = Extract<AgentSessionEvent, { type: "compaction_start" } | { type: "compaction_end" }>;
 

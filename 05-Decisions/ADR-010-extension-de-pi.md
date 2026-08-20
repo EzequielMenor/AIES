@@ -1,7 +1,8 @@
 # ADR-010 — AIES como extensión de Pi (migración del runtime standalone)
 
-- **Estado:** Aceptada
+- **Estado:** Deprecated
 - **Fecha:** 2026-08-20
+- **Deprecated:** 2026-08-20 — AIES usa CLI standalone (`src/cli.ts`). La extensión Pi (`src/extension/`) se conserva como código legacy y se eliminará en v2.
 - **Sustituye/Complementa:** ADR-009 (integración con pi) — la fachada Host desaparece; AIES pasa a ser una **extensión nativa** de `pi` cargada vía `pi -e ./src/extension/index.ts` o `~/.pi/agent/extensions/`.
 - **Plan de referencia:** `.kilo/plans/1787216938981-aies-pi-extension-migration.md`
 

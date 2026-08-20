@@ -1,5 +1,9 @@
 // src/extension/run-command.ts — handler de comandos /run, /resume, /status.
 //
+// @deprecated 2026-08-20: AIES usa CLI standalone (`src/cli.ts`). Este código se eliminará en v2.
+//
+// /run: arranca el bucle AIES con una tarea nueva.
+//
 // /run: arranca el bucle AIES con una tarea nueva.
 // /resume: continúa una tarea previa no terminal (guardada en state-store).
 // /status: muestra el estado actual del bucle.
@@ -13,7 +17,7 @@ import { runLoop } from "../core/loop.js";
 import type { AiesEventHandlers, ExecuteOutcome, WorkerEventSink } from "../core/events.js";
 import { initState, type Decision, type OperationResult, type RuntimeState, type Task, type Limits } from "../core/state.js";
 import type { WorkerTelemetry } from "../telemetry/types.js";
-import type { ThinkingLevel } from "./types.js";
+import type { ThinkingLevel } from "../core/types.js";
 import type { LoopObservation } from "../core/observation.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import * as path from "node:path";

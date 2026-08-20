@@ -2,16 +2,11 @@
   "name": "@aies/core",
   "version": "0.2.0",
   "private": true,
-  "description": "AIES como extensión de Pi (ADR-010): bucle de orquestación + workers efímeros; InteractiveMode provee la TUI.",
+  "description": "AIES standalone runtime: bucle de orquestación + workers efímeros sobre pi-coding-agent.",
   "type": "module",
-  "main": "src/extension/index.ts",
+  "main": "dist/cli.js",
   "bin": {
     "aies": "./dist/cli.js"
-  },
-  "exports": {
-    ".": "./src/extension/index.ts",
-    "./prompts": "./src/extension/prompts.ts",
-    "./types": "./src/extension/types.ts"
   },
   "files": [
     "dist",
@@ -35,16 +30,9 @@
     "test:orch": "node dist/self-check/orchestrator.js",
     "test:compaction": "node dist/self-check/compaction.js",
     "test:workers": "node dist/self-check/workers.js",
-    "test:extension": "node dist/self-check/extension.js",
     "test": "pnpm test:parse && pnpm test:unitid && pnpm test:loop && pnpm test:cost && pnpm test:e2e",
     "research:metrics": "node dist/research/metrics.js",
-    "research:baseline": "node dist/research/baseline.js",
-    "pi:dev": "pi -e ./src/extension/index.ts"
-  },
-  "pi": {
-    "extensions": [
-      "./src/extension/index.ts"
-    ]
+    "research:baseline": "node dist/research/baseline.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "~0.84.2",

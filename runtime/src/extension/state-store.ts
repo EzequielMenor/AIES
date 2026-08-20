@@ -1,5 +1,8 @@
 // src/extension/state-store.ts — estado AIES en memoria de la extensión.
 //
+// @deprecated 2026-08-20: AIES usa CLI standalone (`src/cli.ts`). Este código se eliminará en v2.
+//
+//
 // El estado de la tarea vive aquí (no en la sesión Pi, no en state.json). Cada /run crea/continúa
 // una tarea; /status y /resume la consultan. Persistencia: en Fase 4 podemos añadir un appendEntry
 // custom para sobrevivir recargas (ver plan §8 ADR-008).

@@ -1,4 +1,4 @@
-// src/extension/types.ts — tipos comunes a la extensión.
+// src/core/types.ts — tipos de dominio AIES.
 //
 // Tipos que antes vivían en host/types.ts (la fachada Host, eliminada en Fase 4). ThinkingLevel
 // y HostActivity son tipos de dominio AIES que se usan en la extensión (workers, events-mapping).

@@ -1,5 +1,8 @@
 // src/extension/register.ts — registro de tools, comandos y hooks de la extensión.
 //
+// @deprecated 2026-08-20: AIES usa CLI standalone (`src/cli.ts`). Este código se eliminará en v2.
+//
+//
 // Fase 3: comandos /resume y /status; hook tool_call para tracking de actividad.
 
 import { Type, type Static } from "typebox";

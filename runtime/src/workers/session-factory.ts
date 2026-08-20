@@ -20,7 +20,7 @@ import {
 	ModelRuntime,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { CAPABILITY_PROMPT } from "../extension/prompts.js";
+import { CAPABILITY_PROMPT } from "./prompts.js";
 import type { WorkerEventSink } from "../core/events.js";
 import type { Capability } from "../core/state.js";
 import { CAPABILITY_TOOLS } from "./capabilities.js";

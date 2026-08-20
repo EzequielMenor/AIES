@@ -1,4 +1,4 @@
-// src/extension/prompts.ts — system prompts para orquestador y workers (ADR-007, MVP-v0 §2).
+// src/workers/prompts.ts — system prompts para orquestador y workers (ADR-007, MVP-v0 §2).
 //
 // La metodología del orquestador se inyecta como `systemPromptOverride` en sesiones efímeras del
 // bucle (decide.ts). Los workers usan su propia persona (explorer/implementer/verifier) — la

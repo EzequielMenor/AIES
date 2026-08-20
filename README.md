@@ -78,36 +78,34 @@ El motor central opera bajo un bucle determinista regido por el estado explícit
 * 🛡️ **Límites de Ejecución e Irrecuperabilidad (ADR-005):** Control estricto de iteraciones máximas, tiempo y consumo de tokens. Sin bucles infinitos silenciosos.
 * 🌲 **Re-descomposición Dinámica (ADR-006):** Si una unidad resulta ser demasiado compleja durante su ejecución, se divide en sub-unidades sin perder el trabajo completado con éxito.
 * 💻 **Stream UI de Alto Contraste:** Presentación nativa de terminal optimizada para temas oscuros, con spinners de línea única y árboles de ejecución claros.
-* 🔌 **Integración Nativa con Pi (ADR-010):** Se integra directamente en el ecosistema `pi-coding-agent` mediante comandos (`/run`, `/resume`, `/status`) o como CLI independiente.
+* 🔌 **CLI Standalone con Persistencia:** Binario `aies` propio con modos `oneshot` y `REPL`, estado serializable entre sesiones y recuperación automática ante corrupciones.
 
 ---
 
 ## 🚀 Quickstart
 
-### Prerrequisitos
+### Instalación rápida (recomendado)
+```bash
+curl -fsSL https://raw.githubusercontent.com/EzequielMenor/AIES/main/install.sh | bash
+```
+
+Esto clona AIES en `~/.aies`, instala dependencias, compila y enlaza el binario `aies` en `~/.local/bin/`.
+
+### Instalación manual
+
+#### Prerrequisitos
 * Node.js `>= 20.0.0`
 * pnpm o npm
 
-### 1. Instalación y Build
+#### 1. Clonar y Build
 ```bash
-git clone https://github.com/tu-usuario/AIES.git
+git clone https://github.com/EzequielMenor/AIES.git
 cd AIES/runtime
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
-### 2. Uso como Extensión de Pi
-Puedes cargar AIES directamente dentro de tu sesión de `pi`:
-
-```bash
-# Ejecutar Pi cargando la extensión de AIES
-pi -e ./dist/extension/index.js
-
-# Dentro de la terminal de Pi:
-/run "Añade una función clamp(val, min, max) en src/math.ts con tests unitarios"
-```
-
-### 3. Comandos Disponibles
+### 2. Comandos Disponibles (CLI)
 * `/run <tarea>`: Inicializa el bucle AIES y ejecuta el ciclo de orquestación autónomo.
 * `/status`: Muestra el estado del runtime, unidades pendientes y telemetría de la tarea activa.
 * `/resume`: Reanuda una tarea no terminal tras una intervención o ajuste.
@@ -135,7 +133,7 @@ AIES/
 ├── 04-Behavior/        # Ciclo de vida y máquina de estados
 ├── 05-Decisions/       # Registros de Decisiones de Arquitectura (ADR-001 a ADR-010)
 ├── 06-research/        # Experimentos empíricos, corpus de pruebas y baselines
-└── runtime/            # Implementación en TypeScript (Bucle, Extension Pi, CLI, Telemetría)
+└── runtime/            # Implementación en TypeScript (Bucle, CLI standalone, Telemetría)
 ```
 
 ---

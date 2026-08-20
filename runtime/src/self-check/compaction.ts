@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { compactionEntry } from "../observability.js";
-import { mapCompaction } from "../extension/pi-events.js";
+import { mapCompaction } from "../telemetry/pi-events.js";
 
 type StartEvent = Extract<AgentSessionEvent, { type: "compaction_start" }>;
 type EndEvent = Extract<AgentSessionEvent, { type: "compaction_end" }>;
