@@ -2,8 +2,9 @@
 //
 // Verifica que existe UN ÚNICO formato canónico de IDs (`u0`, `u1`, …) y que una decisión
 // nunca ejecuta una unidad distinta de la seleccionada. Una referencia a una unidad inexistente
-// produce un error REAL y EXPLÍCITO (tarea Fallida con motivo claro) — SIN fallback silencioso
-// del tipo "si U1 no existe usa u0".
+// se registra como error y se re-emite al orquestador para que corrija (sin fallback silencioso
+// del tipo "si U1 no existe usa u0"); el orquestador puede entonces emitir `determinar el proceso`
+// con la unidad y completar el flujo.
 //
 // Sin framework externo: `node:assert/strict`. Compila con `tsc -p tsconfig.test.json`.
 
@@ -139,27 +140,35 @@ async function testPlanMultipleSelectOneUnit(): Promise<void> {
 	console.log("OK test2: plan múltiple + selección de u1 → u1 ejecutada, u0 intacta");
 }
 
-/** Test 3: referencia a unidad INEXISTENTE (con otra válida disponible) → error explícito, SIN fallback a u0. */
+/** Test 3: referencia a unidad INEXISTENTE → error registrado, re-emisión al orquestador,
+ *  SIN fallback silencioso. El orquestador corrige emitiendo `determinar el proceso` y luego
+ *  ejecuta la unidad canónica (u0). */
 async function testNonexistentUnitIsExplicitErrorNoFallback(): Promise<void> {
 	const executed: string[] = [];
 	const rec = makeRecorder();
-	// El plan crea u0 (disponible y Pendiente), pero la decisión referencia u5 (inexistente).
-	const decision = execDecision("u5", "implementer", plan("determinar el proceso", ["implementer"]));
+	// Turno 1: el orquestador intenta ejecutar u5 (inexistente) → error registrado, sin ejecutar.
+	// Turno 2: el orquestador corrige con `determinar el proceso` (crea u0) y luego ejecuta u0.
+	const script: Decision[] = [
+		execDecision("u5", "implementer", null),
+		execDecision("u0", "implementer", plan("determinar el proceso", ["implementer"])),
+		terminate(),
+	];
+	let i = 0;
 	const handlers: Pick<AiesEventHandlers, "decide" | "execute"> = {
-		decide: async () => makeDecision(decision),
+		decide: async () => makeDecision(script[i++] ?? script[script.length - 1]!),
 		execute: stubExecute((u) => executed.push(u)),
 	};
 	const final = await runLoop(baseState(), { ...rec.events, ...handlers });
 
-	assert.equal(final.taskState, "Fallida", "unidad inexistente → tarea Fallida explícita");
-	assert.match(final.terminalCondition ?? "", /unidad inexistente/, `motivo claro (got: ${final.terminalCondition})`);
-	assert.deepEqual(executed, [], "NO se ejecuta ninguna unidad (ni fallback a u0)");
-	assert.deepEqual(rec.workerFinishes, [], "no hay onWorkerFinish");
-	assert.equal(rec.taskFailed.length, 1, "un onTaskFailed explícito");
-	assert.equal(rec.taskCompleted.length, 0, "nunca onTaskCompleted");
-	const u0 = final.units.find((u) => u.id === "u0");
-	assert.ok(u0 && u0.estado === "Pendiente", "u0 permanece Pendiente: no hay desvío accidental");
-	console.log(`OK test3: unidad inexistente (u5) → Fallida explícita "${final.terminalCondition}", 0 ejecuciones`);
+	assert.deepEqual(executed, ["u0"], "u5 NUNCA se ejecuta (no fallback); u0 sí tras la corrección");
+	assert.deepEqual(rec.workerFinishes, ["u0"], "sólo u0 llega a onWorkerFinish");
+	assert.equal(rec.taskFailed.length, 0, "ningún onTaskFailed: el error se re-emite, no es terminal");
+	assert.equal(rec.taskCompleted.length, 1, "tarea Completada tras la corrección del orquestador");
+	assert.equal(final.taskState, "Completada");
+	const falloEntry = final.results.find((r) => r.kind === "fallo" && r.unidadId === "u5");
+	assert.ok(falloEntry, "queda registrado el error de u5 en state.results");
+	assert.match(falloEntry!.text, /unidad inexistente/, "motivo explícito del error");
+	console.log("OK test3: unidad inexistente (u5) → error registrado, re-emisión, orquestador corrige a u0");
 }
 
 /** Test 4: re-descomponer conserva los IDs canónicos de las unidades conservadas (transición plan/estado). */

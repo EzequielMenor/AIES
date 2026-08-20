@@ -220,9 +220,11 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 		emit(handlers, "onDecideSuccess", () => handlers.onDecideSuccess?.(turn.decision));
 
 		// onWorkerStart: si vamos a ejecutar una unidad, anunciamos al worker antes de invocarlo.
-		// Invariancia de IDs (fix): la decisión debe referenciar una unidad que exista en el estado.
-		// Si referencia una inexistente → error real y explícito (tarea Fallida con motivo claro),
-		// NUNCA fallback silencioso a otra unidad ni ejecución de una unidad distinta.
+		// Invariancia de IDs: la decisión debe referenciar una unidad que exista en el estado.
+		// Si referencia una inexistente → NO fallback silencioso a otra unidad, NO ejecución de
+		// una unidad distinta. Se registra el error y se re-emite el turno al orquestador para
+		// que corrija (p.ej. emitir primero `determinar el proceso` con la unidad en su plan).
+		// El límite de iteraciones evita bucles infinitos si el orquestador no corrige.
 		let workerUnit: RuntimeState["units"][number] | undefined;
 		if (turn.decision.operación === "ejecutar una unidad" && turn.decision.unidad) {
 			const targetId = turn.decision.unidad;
@@ -232,12 +234,9 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 				const failResult: OperationResult = { kind: "fallo", text: reason, unidadId: targetId, passed: false };
 				safeObserve(observe, { phase: "error:unidad-inexistente", state, decision: turn.decision });
 				emitLog(resultEntry(state.iterations, failResult, turn.telemetry));
-				state = setTerminal(state, { execution: "fail", verification: "unknown", scope: "unknown" }, reason);
-				emit(handlers, "onTaskFailed", () => {
-					const r = state.terminalCondition ?? reason;
-					handlers.onTaskFailed?.(r);
-				});
-				break;
+				state = appendResult(state, failResult);
+				state = { ...state, iterations: state.iterations + 1, nextStep: reason };
+				continue;
 			}
 			const workerInfo: WorkerInfo = {
 				role: workerUnit.capacidad,
