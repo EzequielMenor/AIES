@@ -6,9 +6,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		// Sólo el smoke E2E. `tests/loop.test.ts` es un self-check legacy (node:assert + main()),
-		// no usa describe/it; se ejecuta vía `pnpm test:loop` (tsc + node dist-test/...).
-		include: ["tests/smoke-e2e.test.ts"],
+		// El smoke E2E y los tests de actualización usan Vitest; los demás self-checks
+		// se ejecutan mediante sus scripts específicos.
+		include: ["tests/smoke-e2e.test.ts", "tests/update.test.ts"],
 		// El smoke test puede tardar (escribe archivo + spawna node); 30s es seguro.
 		testTimeout: 30_000,
 		// vitest por defecto es global; lo apagamos para tests más limpios.

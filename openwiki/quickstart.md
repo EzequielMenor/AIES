@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/EzequielMenor/AIES/main/install.sh 
 aies "lista los archivos del proyecto"
 ```
 
-The installer clones to `~/.aies`, builds, and symlinks `aies` into `~/.local/bin/`. Manual install:
+Use `aies update` to rerun the installer and update an existing installation. The installer clones to `~/.aies`, builds, and symlinks `aies` into `~/.local/bin/`. Manual install:
 
 ```bash
 cd runtime

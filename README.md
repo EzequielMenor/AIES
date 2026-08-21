@@ -89,7 +89,15 @@ El motor central opera bajo un bucle determinista regido por el estado explícit
 curl -fsSL https://raw.githubusercontent.com/EzequielMenor/AIES/main/install.sh | bash
 ```
 
-Esto clona AIES en `~/.aies`, instala dependencias, compila y enlaza el binario `aies` en `~/.local/bin/`.
+Esto clona AIES en `~/.aies`, instala dependencias, compila y enlaza el binario `aies` en `~/.local/bin`.
+
+Para actualizar una instalación existente:
+
+```bash
+aies update
+```
+
+El chequeo automático de nuevas versiones se puede desactivar con `AIES_NO_UPDATE_CHECK=1`.
 
 ### Instalación manual
 
@@ -106,9 +114,10 @@ pnpm run build
 ```
 
 ### 2. Comandos Disponibles (CLI)
-* `/run <tarea>`: Inicializa el bucle AIES y ejecuta el ciclo de orquestación autónomo.
-* `/status`: Muestra el estado del runtime, unidades pendientes y telemetría de la tarea activa.
-* `/resume`: Reanuda una tarea no terminal tras una intervención o ajuste.
+* `aies "<tarea>"`: Ejecuta una tarea y termina.
+* `aies`: Inicia el REPL interactivo.
+* `aies update`: Actualiza AIES mediante el instalador oficial.
+* `aies --version`: Muestra la versión y el commit actual.
 
 ---
 

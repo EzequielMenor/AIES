@@ -17,9 +17,8 @@
 //     interrumpido (stopSignal → setTerminal fail → onTaskFailed). El proceso NO muere.
 //   - En REPL vuelve al prompt. En oneshot sale con código 1.
 
-import {
-	realpathSync,
-} from "node:fs";
+import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
@@ -50,6 +49,7 @@ import { runWorker, type WorkerToolContext } from "./workers/tools.js";
 import { StreamRenderer } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
 import type { WorkerTelemetry } from "./telemetry/types.js";
+import { checkForUpdate, formatUpdateNotice, resolveInstallDir, runUpdate, type UpdateStatus } from "./update.js";
 
 const NO_TELEM: WorkerTelemetry = {
 	usage: null,
@@ -279,6 +279,18 @@ function helpText(): string {
 	return HELP_TEXT;
 }
 
+const CLI_HELP_TEXT = [
+	"Uso: aies [opción] | aies \"<tarea>\"",
+	"",
+	"  aies \"<tarea>\"     ejecuta una tarea y termina",
+	"  aies               inicia el REPL interactivo",
+	"  aies update        actualiza AIES mediante el instalador oficial",
+	"  aies -V, --version muestra la versión y el commit actual",
+	"  aies -h, --help    muestra esta ayuda",
+	"",
+	"  AIES_NO_UPDATE_CHECK=1 desactiva el chequeo automático de actualizaciones.",
+].join("\n");
+
 function clearScreen(): void {
 	// ANSI: ESC[2J (borrar pantalla) + ESC[H (cursor arriba-izquierda).
 	output.write("\x1b[2J\x1b[H");
@@ -301,8 +313,59 @@ function resolveModel(modelStr: string | undefined): ResolvedModel | undefined {
 	return undefined;
 }
 
+const UPDATE_NOTICE_TIMEOUT_MS = 3500;
+
+function packageVersion(): string {
+	const packageJson = nodeRequire("../package.json") as { version?: unknown };
+	return typeof packageJson.version === "string" ? packageJson.version : "unknown";
+}
+
+function currentHead(): Promise<string> {
+	const installDir = resolveInstallDir();
+	if (!installDir) return Promise.resolve("unknown");
+	return new Promise((resolve) => {
+		execFile("git", ["-C", installDir, "rev-parse", "--short", "HEAD"], { encoding: "utf8", timeout: 3000 }, (error, stdout) => {
+			resolve(error ? "unknown" : stdout.trim() || "unknown");
+		});
+	});
+}
+
+function waitForUpdateNotice(promise: Promise<UpdateStatus>): Promise<UpdateStatus | null> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => resolve(null), UPDATE_NOTICE_TIMEOUT_MS);
+		promise.then(
+			(status) => {
+				clearTimeout(timer);
+				resolve(status);
+			},
+			() => {
+				clearTimeout(timer);
+				resolve(null);
+			},
+		);
+	});
+}
+
+async function printVersion(): Promise<void> {
+	output.write(`aies ${packageVersion()} (${await currentHead()})\n`);
+}
+
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
+	if (argv.length === 1) {
+		const command = argv[0]!;
+		if (command === "update") {
+			process.exit(await runUpdate());
+		}
+		if (command === "--version" || command === "-V") {
+			await printVersion();
+			process.exit(0);
+		}
+		if (command === "--help" || command === "-h") {
+			output.write(`${CLI_HELP_TEXT}\n`);
+			process.exit(0);
+		}
+	}
 	const taskArg = argv.length > 0 ? argv.join(" ").trim() : null;
 	const repl = taskArg === null || taskArg.length === 0;
 	const cwd = process.cwd();
@@ -318,18 +381,22 @@ async function main(): Promise<void> {
 	const limits: Limits = limitsFromConfig(cfg);
 	const model: ResolvedModel | undefined = resolveModel(process.env.AIES_MODEL);
 	const thinkingLevel = cfg.orchestratorThinkingLevel;
+	const updatePromise = checkForUpdate();
 
 	if (repl) {
-		await runRepl({ cwd, limits, model, thinkingLevel });
+		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise });
 	} else {
-		const exitCode = await runOneshot(taskArg!, { cwd, limits, model, thinkingLevel });
+		const exitCode = await runOneshot(taskArg!, { cwd, limits, model, thinkingLevel, updatePromise });
+		const status = await waitForUpdateNotice(updatePromise);
+		const notice = formatUpdateNotice(status ?? { kind: "skipped" });
+		if (notice) output.write(`\n${notice}\n`);
 		process.exit(exitCode);
 	}
 }
 
 async function runOneshot(
 	taskArg: string,
-	ctx: { cwd: string; limits: Limits; model: ResolvedModel | undefined; thinkingLevel: "off" | "low" | "medium" | "high" | undefined },
+	ctx: { cwd: string; limits: Limits; model: ResolvedModel | undefined; thinkingLevel: "off" | "low" | "medium" | "high" | undefined; updatePromise: Promise<UpdateStatus> },
 ): Promise<number> {
 	const task = taskFromArg(taskArg);
 	const store = new LocalStore(ctx.cwd);
@@ -362,9 +429,13 @@ async function runRepl(ctx: {
 	limits: Limits;
 	model: ResolvedModel | undefined;
 	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
+	updatePromise: Promise<UpdateStatus>;
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
 	banner();
+	const updateStatus = await waitForUpdateNotice(ctx.updatePromise);
+	const updateNotice = formatUpdateNotice(updateStatus ?? { kind: "skipped" });
+	if (updateNotice) output.write(`\n${updateNotice}\n`);
 
 	const rl = readline.createInterface({ input, output, terminal: true });
 	let currentState: RuntimeState | null = store.loadState();

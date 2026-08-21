@@ -13,7 +13,7 @@ La spec está cerrada: este paquete la hace valer en código. Trazabilidad: `MVP
 ```text
 aies CLI (cli.ts, bin aies)
     │
-    ├── Modos: oneshot (aies run "<tarea>") + REPL (aies)
+    ├── Modos: oneshot (aies "<tarea>") + REPL (aies)
     │
     ├── Bucle TS (core/loop.ts)
     │   ├── State management (persistence/file_store.ts)
@@ -46,14 +46,21 @@ node dist/cli.js --help
 
 ```bash
 # oneshot: ejecuta la tarea y termina
-aies run "lista los archivos del proyecto"
-aies run "añade una función greet() a src/math.ts"
+aies "lista los archivos del proyecto"
+aies "añade una función greet() a src/math.ts"
+
+# actualizar: re-ejecuta el instalador oficial
+aies update
 
 # REPL: conversación continua
 aies
-> /run "..."
-> /status
-> /resume    # tras intervención o pausa
+> /help
+> /state
+> /exit
+
+# opciones
+aies --version
+AIES_NO_UPDATE_CHECK=1 aies
 ```
 
 ---
@@ -70,10 +77,10 @@ aies
 
 ## Estado de la implementación
 
-- [x] **v1 — CLI standalone**: `aies run` / `aies resume` + REPL, persistencia en `<agentDir>/aies/<hash(cwd)>/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
+- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL, persistencia en `<agentDir>/aies/<hash(cwd)>/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
 - [x] **Deprecated — Extensión de Pi** (`src/extension/`): se conserva como código legacy, marcado `@deprecated`, se eliminará en v2. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
 
-Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e — todos sin LLM).
+Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e y update — todos sin LLM).
 
 ---
 
@@ -85,7 +92,7 @@ Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, l
 ## scripts
 
 - `pnpm run build` / `pnpm run typecheck` — `tsc` strict (ESM, Node ≥20).
-- `pnpm test` — corre los 5 self-checks + tests vitest.
+- `pnpm test` — corre los tests de parse, unitid, loop, cost, e2e y update.
 - `pnpm run test:loop` / `test:persist` / `test:orch` / `test:compaction` / `test:workers` — self-check individual.
 - `pnpm run research:metrics -- <log.jsonl>` — métricas NFR §3 sobre el log AIES.
 - `pnpm run research:baseline -- "<tarea>"` — corrida baseline agente-único (sin bucle) para comparar.
@@ -95,7 +102,7 @@ Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, l
 ```bash
 cd runtime
 pnpm run build
-aies run "lista los archivos del proyecto"
+aies "lista los archivos del proyecto"
 ```
 
 Sin clave, el bucle degrada con gracia (3 auth-fails → intervención). Con clave configurada en env, el bucle ejecuta las fases (decide → workers → verificar → terminar).
