@@ -40,8 +40,9 @@ clone_or_update() {
     git -C "$INSTALL_DIR" pull --ff-only
   else
     if [ -d "$INSTALL_DIR" ]; then
-      warn "$INSTALL_DIR existe pero no es un repo git. Eliminando..."
-      rm -rf "$INSTALL_DIR"
+      local backup="$INSTALL_DIR.bak.$(date +%Y%m%d%H%M%S)"
+      warn "$INSTALL_DIR existe pero no es un repo git. Moviendo a $backup..."
+      mv "$INSTALL_DIR" "$backup"
     fi
     info "Clonando AIES en $INSTALL_DIR"
     git clone --depth 1 "$REPO" "$INSTALL_DIR"
@@ -51,7 +52,7 @@ clone_or_update() {
 install_deps() {
   info "Instalando dependencias ($PM install)"
   if [ "$PM" = "pnpm" ]; then
-    pnpm install --dir "$INSTALL_DIR/runtime"
+    pnpm --dir "$INSTALL_DIR/runtime" install
   else
     npm install --prefix "$INSTALL_DIR/runtime"
   fi
@@ -60,7 +61,7 @@ install_deps() {
 build() {
   info "Compilando (tsc)"
   if [ "$PM" = "pnpm" ]; then
-    pnpm run build --dir "$INSTALL_DIR/runtime"
+    pnpm --dir "$INSTALL_DIR/runtime" run build
   else
     npm run build --prefix "$INSTALL_DIR/runtime"
   fi
