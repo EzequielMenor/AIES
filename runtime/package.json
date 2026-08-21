@@ -27,11 +27,12 @@
     "test:parse": "tsc -p tsconfig.test.json && node dist-test/tests/parse.test.js",
     "test:e2e": "vitest run tests/smoke-e2e.test.ts",
     "test:update": "vitest run tests/update.test.ts",
+    "test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts",
     "test:persist": "node dist/self-check/persistence.js",
     "test:orch": "node dist/self-check/orchestrator.js",
     "test:compaction": "node dist/self-check/compaction.js",
     "test:workers": "node dist/self-check/workers.js",
-    "test": "pnpm test:parse && pnpm test:unitid && pnpm test:loop && pnpm test:cost && pnpm test:e2e && pnpm test:update",
+    "test": "pnpm test:parse && pnpm test:unitid && pnpm test:loop && pnpm test:cost && pnpm test:e2e && pnpm test:update && pnpm test:cli",
     "research:metrics": "node dist/research/metrics.js",
     "research:baseline": "node dist/research/baseline.js"
   },

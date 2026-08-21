@@ -56,6 +56,8 @@ aies update
 aies
 > /help
 > /state
+> /state --json
+> /resume
 > /exit
 
 # opciones
@@ -77,7 +79,7 @@ AIES_NO_UPDATE_CHECK=1 aies
 
 ## Estado de la implementación
 
-- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL, persistencia en `<agentDir>/aies/<hash(cwd)>/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
+- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
 - [x] **Deprecated — Extensión de Pi** (`src/extension/`): se conserva como código legacy, marcado `@deprecated`, se eliminará en v2. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
 
 Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e y update — todos sin LLM).
@@ -92,7 +94,7 @@ Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, l
 ## scripts
 
 - `pnpm run build` / `pnpm run typecheck` — `tsc` strict (ESM, Node ≥20).
-- `pnpm test` — corre los tests de parse, unitid, loop, cost, e2e y update.
+- `pnpm test` — corre los tests de parse, unitid, loop, cost, e2e, update, cli y stream-renderer.
 - `pnpm run test:loop` / `test:persist` / `test:orch` / `test:compaction` / `test:workers` — self-check individual.
 - `pnpm run research:metrics -- <log.jsonl>` — métricas NFR §3 sobre el log AIES.
 - `pnpm run research:baseline -- "<tarea>"` — corrida baseline agente-único (sin bucle) para comparar.

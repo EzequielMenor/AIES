@@ -8,7 +8,7 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-21.
+> Última revisión: 2026-08-21 (T0+T1 implementados).
 
 ---
 
@@ -110,15 +110,12 @@
 
 **Items:**
 
-0.1 **Renderizar `comunicar al desarrollador`.**
-    - Añadir un evento opcional al contrato (`core/events.ts`, p. ej.
-      `onCommunication(text, motivo)`) y emitirlo desde `core/loop.ts` tras
-      ejecutar la operación de comunicación.
-    - Renderizado diferenciado en `StreamRenderer` (bloque "El orquestador
-      comunica:", color ámbar/blanco brillante) — es el orquestador hablándole
-      al desarrollador, no un worker.
+0.1 **Renderizar `comunicar al desarrollador`.** ✅ (T0, 2026-08-21)
+    - **No** se añadió `onCommunication`. Se consume `onLoopObservation`
+      (`execution:resolved` + operación comunicar + result.kind comunicación).
+    - Bloque `💬 Orquestador: {texto}` en cyan/bright (no ámbar).
 
-0.2 **Consumir `onLoopObservation` en `cli.ts`.**
+0.2 **Consumir `onLoopObservation` en `StreamRenderer`.** ✅
     - Línea ámbar por parse-fail (con contador 1/3, 2/3, 3/3 → intervención
       requerida).
     - Línea ámbar por `limit:reached` mostrando el `nextStep` ("intervención
@@ -126,22 +123,18 @@
     - Línea ámbar por `error:unidad-inexistente`.
     - Línea por compaction (evento de contexto; RNF-18/19).
 
-0.3 **Feedback entre turnos.** Spinner "Orquestador decidiendo…" en
-    `onDecideStart`, fijado (`settle`) al llegar `onDecideSuccess`.
+0.3 **Feedback entre turnos.** ✅ Spinner "Orquestador decidiendo…" en
+    `onDecideStart`; `detachSpinner()` al llegar `onDecideSuccess`.
 
-0.4 **Preflight de arranque.** Al iniciar (REPL y oneshot): imprimir
-    provider/modelos resueltos de `aies.config.json` y avisar si falta la clave
-    del provider activo (sin bloquear — la degradación graciosa se mantiene).
+0.4 **Preflight de arranque.** ✅ (REPL y oneshot; no bloquea si falta la clave).
 
-0.5 **Cerrar el doc drift.** Alinear `runtime/README.md` y `ROADMAP.md §0.1`
-    con los comandos reales; las referencias a `/resume` y `/status` quedan
-    anotadas como "llega en T1/T3".
+0.5 **Cerrar el doc drift.** ✅ `runtime/README.md` y `ROADMAP.md §0.1`
+    alineados con comandos reales. `/status` queda anotado como T3.
 
-0.6 **Limpieza menor.** Eliminar el ternario muerto de `runOneshot` (código de
-    salida: `Completada` → 0, resto → 1) y alinear el padding del banner.
+0.6 **Limpieza menor.** ✅ `runOneshot` sale 1 en cualquier no-Completada;
+    padding del banner derivado de `bar.length + 2`.
 
-0.7 **Tests del renderer.** Vitest con stream capturado (TTY simulado y pipe):
-    cubrir comunicación, parse-fail, límite, compaction, no-TTY.
+0.7 **Tests del renderer.** ✅ `src/ui/stream-renderer.test.ts` + `src/cli.test.ts`.
 
 **Criterios de salida:**
 
@@ -163,17 +156,13 @@
 
 **Items:**
 
-1.1 **`/resume`.** Si `.aies/state.json` contiene una tarea `En curso`,
-    reanudarla en lugar de `initState` fresco: pasar el estado cargado a
-    `runCycle` como estado inicial (con su `nextStep` intacto).
+1.1 **`/resume`.** ✅ Si `.aies/state.json` contiene una tarea `En curso`,
+    `runCycle(..., { resumeFrom })` en lugar de `initState` fresco.
 
-1.2 **Arranque del REPL con estado previo `En curso`.** Mostrar resumen
-    (objetivo, iteraciones, nextStep) y avisar que `/resume` la continúa;
-    cualquier otro texto arranca tarea nueva.
+1.2 **Arranque del REPL con estado previo `En curso`.** ✅ Aviso + `/resume`.
+    Oneshot: aviso pasivo antes de sobreescribir (sin flag `--resume` en T1).
 
-1.3 **`/state` legible.** Vista humana: árbol de unidades con estado
-    (`Pendiente/Terminada/Fallida`), `nextStep`, iteraciones vs límite.
-    El JSON actual queda detrás de un flag (`/state --json`).
+1.3 **`/state` legible.** ✅ Vista humana; `/state --json` conserva el JSON.
 
 **Criterios de salida:**
 
@@ -326,6 +315,7 @@ T3 ⟂ T4 ⟂ T2   (ortogonales; pueden correr en paralelo)
 | Reanudación esperada | `MVP-v0-Scope §9`, `RNF-16` |
 | Deferred Tier 3 (observabilidad viva) | `MVP-v0-Scope §Deferred` |
 | Open questions del runtime | `runtime/README §open questions` |
+| Prototipo visual de la TUI (exploración, sin decisión) | `06-research/tui-design/README.md` |
 
 ---
 

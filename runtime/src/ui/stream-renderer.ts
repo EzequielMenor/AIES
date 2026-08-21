@@ -33,7 +33,9 @@ import type {
 	WorkerEventSink,
 	WorkerInfo,
 } from "../core/events.js";
+import type { LoopObservation } from "../core/observation.js";
 import type { Decision, RuntimeState, WorkUnit } from "../core/state.js";
+import type { LogEntry } from "../observability.js";
 
 // ── Paleta ANSI truecolor (hex exactos de las reglas de UX) ─────────────────
 function truecolor(hex: string, s: string): string {
@@ -43,10 +45,12 @@ function truecolor(hex: string, s: string): string {
 	const b = parseInt(h.slice(4, 6), 16);
 	return `\x1b[38;2;${r};${g};${b}m${s}\x1b[0m`;
 }
-const cyan = (s: string) => truecolor("#38bdf8", s);
-const green = (s: string) => truecolor("#3fb950", s);
-const red = (s: string) => truecolor("#f85149", s);
-const amber = (s: string) => truecolor("#d29922", s);
+export const cyan = (s: string) => truecolor("#38bdf8", s);
+export const green = (s: string) => truecolor("#3fb950", s);
+export const red = (s: string) => truecolor("#f85149", s);
+export const amber = (s: string) => truecolor("#d29922", s);
+/** Alias exportado para reutilizar la paleta ámbar (preflight, avisos) sin duplicarla. */
+export const amberText = amber;
 const bright = pc.bold; // énfasis (picocolors)
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -72,6 +76,7 @@ interface OpenWorker {
 }
 
 export class StreamRenderer implements AiesEventHandlers {
+	private readonly stream: NodeJS.WritableStream;
 	private readonly tty: boolean;
 	private spinner: ActiveSpinner | null = null;
 	private worker: OpenWorker | null = null;
@@ -82,18 +87,20 @@ export class StreamRenderer implements AiesEventHandlers {
 	/** Último tool invocado (para conservar el target en el `✓` de cierre). */
 	private lastTool: { tool: string; target: string | null } | null = null;
 
-	constructor(stream: NodeJS.WriteStream = process.stdout) {
-		this.tty = Boolean(stream.isTTY);
+	constructor(stream: NodeJS.WritableStream = process.stdout) {
+		this.stream = stream;
+		this.tty = Boolean("isTTY" in stream && stream.isTTY);
 	}
 
 	// ------------------------------------------------------------------ utilidades
 
 	private termWidth(): number {
-		return this.tty && process.stdout.columns ? Math.max(20, process.stdout.columns) : 80;
+		const cols = "columns" in this.stream && typeof this.stream.columns === "number" ? this.stream.columns : 0;
+		return this.tty && cols ? Math.max(20, cols) : 80;
 	}
 
 	private raw(s: string): void {
-		process.stdout.write(s);
+		this.stream.write(s);
 	}
 
 	/** Escribe una línea terminada en \n (traduciendo \r y saltos CR). */
@@ -237,7 +244,12 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.line(`${bright("▶")} Objetivo : ${cyan(state.task.objetivo)}`);
 	}
 
+	onDecideStart(_iteration: number): void {
+		this.spin("", `${cyan("◆")} Orquestador decidiendo…`);
+	}
+
 	onDecideSuccess(decision: Decision): void {
+		this.detachSpinner();
 		const esRedescomposicion =
 			decision.ajustePlan?.tipo === "re-descomponer" || decision.ajustePlan?.tipo === "cambiar de estrategia";
 		if (esRedescomposicion) {
@@ -320,6 +332,68 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.detachSpinner();
 		this.line("");
 		this.line(this.renderBar(`${red("✗ TASK FAILED")} ${bright(`(${reason})`)}`));
+	}
+
+	/**
+	 * Observaciones del bucle (T0): parse-fail, límites, unidad inexistente, intervención
+	 * y comunicación del orquestador. El resto de fases es no-op (P-02: presentación pura).
+	 *
+	 * Parse-fail: `loop.ts` incrementa `consecutiveParseFailures` *antes* de `safeObserve`,
+	 * así que el contador humano es 1/3…3/3 (nunca 0/3 en el primer fallo).
+	 */
+	onLoopObservation(obs: LoopObservation): void {
+		switch (obs.phase) {
+			case "decision:resolved": {
+				if (!obs.parseFail) return;
+				this.detachSpinner();
+				const n = obs.state.consecutiveParseFailures;
+				const err = obs.parseError ? `: ${obs.parseError}` : "";
+				this.line(`${amber("▲")} Fallo de parseo del orquestador (${n}/3)${err}`);
+				return;
+			}
+			case "limit:reached": {
+				this.detachSpinner();
+				const mode = obs.action === "terminar" ? "terminando" : "requiere intervención";
+				this.line(`${amber("▲")} límite alcanzado — ${mode}: ${obs.reason}`);
+				return;
+			}
+			case "error:unidad-inexistente": {
+				this.detachSpinner();
+				const id = obs.decision.unidad ?? "";
+				this.line(
+					`${amber("▲")} Unidad inexistente: el orquestador referenció "${id}". No se ejecuta ninguna unidad distinta.`,
+				);
+				return;
+			}
+			case "intervention:stopped": {
+				this.detachSpinner();
+				this.line(`${amber("▲")} Intervención del usuario: ejecución detenida.`);
+				return;
+			}
+			case "execution:resolved": {
+				if (obs.decision.operación !== "comunicar al desarrollador" || obs.result.kind !== "comunicación") {
+					return;
+				}
+				this.detachSpinner();
+				const texto = obs.result.text || obs.decision.comunicación || "";
+				this.line("");
+				this.line(`${cyan("💬")} ${bright("Orquestador:")} ${texto}`);
+				this.line("");
+				return;
+			}
+			default:
+				return;
+		}
+	}
+
+	onLogEntry(entry: LogEntry): void {
+		if (entry.type !== "compaction") return;
+		this.detachSpinner();
+		if (entry.fase === "start") {
+			this.line(`${amber("▲")} compactando contexto`);
+		} else {
+			this.line(`${amber("▲")} contexto compactado`);
+		}
 	}
 
 	// ------------------------------------------------------------------ utilidad pública

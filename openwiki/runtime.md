@@ -42,7 +42,7 @@ The runtime is **the only module** of this repo that imports `@earendil-works/pi
 The CLI entrypoint is `runtime/src/cli.ts`. From argv it dispatches into two modes:
 
 - **Oneshot** — `aies "<tarea>"` (or any non-empty positional argument): runs one task to a terminal state and exits 0/1.
-- **REPL** — `aies` (no args): interactive prompt `❯ `; each line is a new task over the same project. The REPL recognizes `/help`, `/state`, `/clear`, `/exit | /quit`. See `cli.ts::HELP_TEXT`.
+- **REPL** — `aies` (no args): interactive prompt `❯ `; each line is a new task over the same project. Commands: `/help`, `/state`, `/state --json`, `/resume`, `/clear`, `/exit | /quit`. See `cli.ts::HELP_TEXT`.
 
 ```text
 cli.ts
@@ -60,7 +60,7 @@ cli.ts
 
 What this means:
 
-- **Modes** — argv with positional text runs `runOneshot(taskArg)`; argv with no positional text drops into `runRepl()` and stays until `/exit`. The REPL loads any prior state from `<cwd>/.aies/state.json` and reuses it as the baseline for the next task; SIGINT during a run aborts that run without killing the process.
+- Los modos: argv con texto posicional corre `runOneshot(taskArg)`; sin texto entra en `runRepl()` hasta `/exit`. El REPL carga `.aies/state.json`; si está `En curso`, avisa y `/resume` continúa el snapshot (`resumeFrom`). SIGINT aborta el run sin matar el proceso.
 - **Persistence path** — the CLI uses `LocalStore` (`cli-persistence.ts`) at `<cwd>/.aies/{state.json,log.jsonl}`. The legacy `persistence/file_store.ts` (used by the deprecated extension) lives at `<agentDir>/aies/<sha1(cwd).slice(0,16)>/{state.json,log.jsonl}` and is still exercised by `self-check/persistence.ts`. Both write JSONL append-only and `state.json` atomically (`.tmp` + rename).
 - **`runLoop`** runs while `taskState ∈ {Recibida, En curso}`. Each iteration is `decide(state) → execute(state, decision) → applyOperationResult`. Limits, parse failures, and SIGINT are checked before each turn; see [architecture.md §3](architecture.md#3-the-decision-loop).
 - **Worker call** — `execute` invokes `workers/tools.ts::runWorker(cap, …)`, which builds an ephemeral `AgentSession` via `workers/session-factory.ts::createWorkerSession` with the capability's tool allowlist (`workers/capabilities.ts`), the persona prompt (`workers/prompts.ts::CAPABILITY_PROMPT`), and an `AbortSignal` wired to `controller.signal`.
