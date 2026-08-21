@@ -28,7 +28,8 @@ type CapturedEvent =
 	| { kind: "onWorkerStart"; unitId: string; role: WorkUnit["capacidad"] }
 	| { kind: "onWorkerFinish"; unitId: string; passed: boolean | null }
 	| { kind: "onTaskCompleted"; summary: string }
-	| { kind: "onTaskFailed"; reason: string };
+	| { kind: "onTaskFailed"; reason: string }
+	| { kind: "intervention:adjustment"; text: string };
 
 /** Captura todos los eventos del bus en una lista indexada por orden de emisión. */
 function makeRecorder(): {
@@ -42,6 +43,7 @@ function makeRecorder(): {
 		| "onWorkerFinish"
 		| "onTaskCompleted"
 		| "onTaskFailed"
+		| "onLoopObservation"
 	>;
 } {
 	const events: CapturedEvent[] = [];
@@ -58,6 +60,9 @@ function makeRecorder(): {
 			onWorkerFinish: (unitId, r) => push({ kind: "onWorkerFinish", unitId, passed: r.passed }),
 			onTaskCompleted: (summary) => push({ kind: "onTaskCompleted", summary }),
 			onTaskFailed: (reason) => push({ kind: "onTaskFailed", reason }),
+			onLoopObservation: (obs) => {
+				if (obs.phase === "intervention:adjustment") push({ kind: "intervention:adjustment", text: obs.text });
+			},
 		},
 	};
 }
@@ -291,11 +296,109 @@ async function testTerminarInviableEmitsOnTaskFailed(): Promise<void> {
 	console.log("OK terminar-inviable: emite onTaskFailed, no onTaskCompleted");
 }
 
+async function testPollInterventionAbsentNoRegression(): Promise<void> {
+	const state: RuntimeState = initState({
+		objetivo: "x",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	const rec = makeRecorder();
+	const stubs = makeStubs(buildScript());
+
+	// Sin `pollIntervention` en absoluto: comportamiento idéntico al baseline (no regresión).
+	const finalState = await runLoop(state, { ...rec.handlers, ...stubs });
+
+	assert.equal(finalState.taskState, "Completada");
+	assert.equal(finalState.iterations, 3);
+	const interventions = rec.events.filter((e) => e.kind === "intervention:adjustment");
+	assert.equal(interventions.length, 0, "sin pollIntervention: cero observaciones de ajuste");
+	assert.equal(finalState.results.filter((r) => r.kind === "intervención").length, 0);
+
+	console.log("OK pollIntervention ausente: comportamiento idéntico al baseline");
+}
+
+async function testPollInterventionAppliesAdjustment(): Promise<void> {
+	const state: RuntimeState = initState({
+		objetivo: "x",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	const rec = makeRecorder();
+	const stubs = makeStubs(buildScript());
+
+	const queue = ["verifica también el caso de borde antes de terminar", "y añade un test"];
+	let polls = 0;
+	const finalState = await runLoop(state, {
+		...rec.handlers,
+		...stubs,
+		pollIntervention: () => {
+			polls += 1;
+			if (queue.length === 0) return null;
+			return { text: queue.shift()! };
+		},
+	});
+
+	// Se consumen 2 ajustes → 2 observations; el orquestador los ve en `results` + `knownInfo`.
+	const interventions = rec.events.filter((e) => e.kind === "intervention:adjustment");
+	assert.equal(interventions.length, 2, "dos ajustes drenados en dos turnos");
+	if (interventions[0]?.kind === "intervention:adjustment") {
+		assert.match(interventions[0].text, /caso de borde/);
+	}
+	if (interventions[1]?.kind === "intervention:adjustment") {
+		assert.match(interventions[1].text, /añade un test/);
+	}
+
+	const adjResults = finalState.results.filter((r) => r.kind === "intervención");
+	assert.equal(adjResults.length, 2, "dos resultados `intervención` aplicados al estado");
+	assert.ok(finalState.knownInfo.some((k) => k.includes("caso de borde")), "primer ajuste en knownInfo");
+	assert.ok(finalState.knownInfo.some((k) => k.includes("añade un test")), "segundo ajuste en knownInfo");
+
+	// Las intervenciones NO consumen iteración: la cuenta final debe ser 3 (igual al baseline).
+	assert.equal(finalState.iterations, 3, "el ajuste no incrementa iteraciones (3 = baseline)");
+
+	console.log("OK pollIntervention: ajuste drenado, observación emitida, estado incorpora texto, iterations sin cambio");
+}
+
+async function testPollInterventionHandlerThrowsIsolated(): Promise<void> {
+	const state: RuntimeState = initState({
+		objetivo: "x",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	const rec = makeRecorder();
+	const stubs = makeStubs(buildScript());
+
+	const finalState = await runLoop(state, {
+		...rec.handlers,
+		...stubs,
+		pollIntervention: () => {
+			throw new Error("poll roto");
+		},
+	});
+
+	// Handler que lanza NO rompe el bucle (P-02): la tarea sigue su curso normal.
+	assert.equal(finalState.taskState, "Completada");
+	assert.equal(finalState.iterations, 3);
+	const interventions = rec.events.filter((e) => e.kind === "intervention:adjustment");
+	assert.equal(interventions.length, 0, "un poll que lanza no produce observaciones");
+
+	console.log("OK pollIntervention que lanza: aislado, el bucle sigue");
+}
+
 async function main(): Promise<void> {
 	await testImplementVerifyEmitsAllEventsInOrder();
 	await testParseFailDoesNotEmitDecideSuccess();
 	await testTerminarInviableEmitsOnTaskFailed();
-	console.log("\nloop.test OK: 3 tests unitarios del bucle + bus de eventos verificados");
+	await testPollInterventionAbsentNoRegression();
+	await testPollInterventionAppliesAdjustment();
+	await testPollInterventionHandlerThrowsIsolated();
+	console.log("\nloop.test OK: 6 tests unitarios del bucle + bus de eventos verificados");
 }
 
 main().catch((e) => {

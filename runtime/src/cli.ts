@@ -23,6 +23,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
+import pc from "picocolors";
 
 import { LocalStore } from "./cli-persistence.js";
 import { loadConfig, type Config } from "./config.js";
@@ -32,6 +33,7 @@ import type {
 	AiesEventHandlers,
 	DecideOutcome,
 	ExecuteOutcome,
+	InterventionAdjustment,
 	WorkerEventSink,
 } from "./core/events.js";
 import { runLoop } from "./core/loop.js";
@@ -46,7 +48,7 @@ import {
 import { limitsFromConfig } from "./limits.js";
 import { createDecide, type ResolvedModel } from "./orchestrator/decide.js";
 import { runWorker, type WorkerToolContext } from "./workers/tools.js";
-import { StreamRenderer, amber } from "./ui/stream-renderer.js";
+import { StreamRenderer, amber, violet } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
 import type { WorkerTelemetry } from "./telemetry/types.js";
 import { checkForUpdate, formatUpdateNotice, resolveInstallDir, runUpdate, type UpdateStatus } from "./update.js";
@@ -178,6 +180,10 @@ export interface RunCycleOptions {
 	executeOverride?: ExecuteFn | undefined;
 	/** Snapshot persistido a reanudar. El caller debe pasar `task = resumeFrom.task`. */
 	resumeFrom?: RuntimeState | undefined;
+	/** T2.1 — canal opcional de ajuste en caliente. Si está, el bucle lo consulta cada turno. */
+	pollIntervention?: (() => InterventionAdjustment | null) | undefined;
+	/** T2.2 — guía del desarrollador inyectada al reanudar (se añade a `knownInfo`). */
+	resumeGuide?: string | undefined;
 }
 
 export interface RunCycleResult {
@@ -187,7 +193,12 @@ export interface RunCycleResult {
 }
 
 export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCycleResult> {
-	const initial = opts.resumeFrom ?? initState(task, opts.limits);
+	let initial = opts.resumeFrom ?? initState(task, opts.limits);
+	if (opts.resumeGuide && opts.resumeFrom) {
+		// T2.2 — la guía se inyecta al estado reanudado como `knownInfo` antes de arrancar el bucle.
+		const note = `guía del desarrollador al reanudar: ${opts.resumeGuide}`;
+		initial = { ...initial, knownInfo: [...initial.knownInfo, note] };
+	}
 	const wctx: WorkerToolContext = {
 		cwd: opts.cwd,
 		model: opts.model,
@@ -210,6 +221,7 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		}
 	};
 	handlers.stopSignal = () => Boolean(opts.signal?.aborted);
+	if (opts.pollIntervention) handlers.pollIntervention = opts.pollIntervention;
 
 	const before = Date.now();
 	let finalState: RuntimeState;
@@ -271,16 +283,18 @@ function banner(out: NodeJS.WritableStream = output): void {
 
 const HELP_TEXT = [
 	"Comandos disponibles:",
-	"  /help              — muestra esta ayuda",
-	"  /resume            — reanuda la tarea En curso persistida",
-	"  /state             — vista humana del RuntimeState actual",
-	"  /state --json      — JSON resumido del RuntimeState actual",
-	"  /clear             — limpia la pantalla",
-	"  /exit | /quit      — cierra la sesión",
+	"  /help                       — muestra esta ayuda",
+	"  /resume                     — reanuda la tarea En curso persistida",
+	"  /resume \"<guía>\"            — reanuda inyectando la guía como knownInfo",
+	"  /state                      — vista humana del RuntimeState actual",
+	"  /state --json               — JSON resumido del RuntimeState actual",
+	"  /clear                      — limpia la pantalla",
+	"  /exit | /quit               — cierra la sesión",
 	"",
 	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
+	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
+	" Ctrl+C la aborta limpiamente (sin matar el proceso).",
 	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
-	" Ctrl+C durante una tarea la aborta limpiamente (sin matar el proceso).",
 ].join("\n");
 
 function helpText(): string {
@@ -576,6 +590,8 @@ async function runRepl(ctx: {
 	const rl = readline.createInterface({ input, output, terminal: true });
 	let runInProgress = false;
 	let activeAbort: AbortController | null = null;
+	// T2.1 — cola de intervención acumulada mientras corre un run.
+	const interventionQueue: string[] = [];
 
 	const onSigint = () => {
 		if (runInProgress && activeAbort) {
@@ -618,13 +634,14 @@ async function runRepl(ctx: {
 				output.write(formatStateOutput(input0, snapshot));
 				continue;
 			}
-			if (input0 === "/resume") {
+			if (input0 === "/resume" || input0.startsWith("/resume ")) {
+				const guide = parseResumeGuide(input0);
 				const resolved = resolveResume(currentState ?? store.loadState());
 				if (!resolved.ok) {
 					output.write(`${resolved.message}\n`);
 					continue;
 				}
-				const result = await runTrackedReplCycle(output, {
+				const result = await runTrackedReplCycle(output, rl, interventionQueue, {
 					mark: (running, abort) => {
 						runInProgress = running;
 						activeAbort = abort;
@@ -637,6 +654,8 @@ async function runRepl(ctx: {
 							limits: ctx.limits,
 							signal,
 							store,
+							pollIntervention: () => drainInterventionQueue(interventionQueue),
+							resumeGuide: guide,
 						}),
 				});
 				if (result) currentState = result.state;
@@ -646,7 +665,7 @@ async function runRepl(ctx: {
 			// Nueva tarea sobre el proyecto (manteniendo persistencia).
 			const task = taskFromArg(input0);
 			const before = currentState;
-			const result = await runTrackedReplCycle(output, {
+			const result = await runTrackedReplCycle(output, rl, interventionQueue, {
 				mark: (running, abort) => {
 					runInProgress = running;
 					activeAbort = abort;
@@ -659,6 +678,7 @@ async function runRepl(ctx: {
 						limits: ctx.limits,
 						signal,
 						store,
+						pollIntervention: () => drainInterventionQueue(interventionQueue),
 					}),
 			});
 			if (result) currentState = result.state;
@@ -669,9 +689,28 @@ async function runRepl(ctx: {
 	}
 }
 
+/** Parsea `/resume "<guía>"` o `/resume <guía sin comillas>`; vacío si es sólo `/resume`. */
+export function parseResumeGuide(input: string): string | undefined {
+	const rest = input.replace(/^\/resume\s*/, "").trim();
+	if (!rest) return undefined;
+	if (rest.startsWith('"') && rest.endsWith('"') && rest.length >= 2) {
+		return rest.slice(1, -1).trim() || undefined;
+	}
+	return rest;
+}
+
+/** Drena todas las entradas pendientes de la cola y las une en un único ajuste. */
+function drainInterventionQueue(queue: string[]): InterventionAdjustment | null {
+	if (queue.length === 0) return null;
+	const text = queue.splice(0, queue.length).join("\n");
+	return text ? { text } : null;
+}
+
 /** Abort/error handling compartido entre tarea nueva y `/resume` (sin acoplar a readline). */
 async function runTrackedReplCycle(
 	out: NodeJS.WritableStream,
+	rl: readline.Interface,
+	interventionQueue: string[],
 	opts: {
 		mark: (running: boolean, abort: AbortController | null) => void;
 		run: (signal: AbortSignal) => Promise<RunCycleResult>;
@@ -679,7 +718,21 @@ async function runTrackedReplCycle(
 ): Promise<RunCycleResult | undefined> {
 	const abort = new AbortController();
 	opts.mark(true, abort);
+	// T2.1 — el listener SOLO vive durante el run; se retira en `finally` para no filtrar
+	// entradas al próximo `rl.question()`.
+	const onInterventionLine = (raw: string) => {
+		const text = raw.trim();
+		if (!text) return;
+		if (text.startsWith("/")) {
+			out.write(`${amber("▲")} los comandos / no están disponibles durante la ejecución (Ctrl+C para detener)\n`);
+			return;
+		}
+		interventionQueue.push(text);
+		out.write(`${violet("⚑ tú (intervención):")} ${text} — se aplicará en la siguiente decisión.\n`);
+	};
+	rl.on("line", onInterventionLine);
 	try {
+		out.write(`${pc.dim("(escribe para intervenir · Ctrl+C detiene)")}\n`);
 		const result = await opts.run(abort.signal);
 		if (result.interrupted) {
 			out.write("\naies: tarea interrumpida por el usuario (Ctrl+C). Volviendo al prompt.\n");
@@ -690,6 +743,7 @@ async function runTrackedReplCycle(
 		out.write(`\naies: error — ${msg}\n`);
 		return undefined;
 	} finally {
+		rl.removeListener("line", onInterventionLine);
 		opts.mark(false, null);
 	}
 }

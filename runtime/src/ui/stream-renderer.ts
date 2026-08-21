@@ -49,6 +49,8 @@ export const cyan = (s: string) => truecolor("#38bdf8", s);
 export const green = (s: string) => truecolor("#3fb950", s);
 export const red = (s: string) => truecolor("#f85149", s);
 export const amber = (s: string) => truecolor("#d29922", s);
+/** Violeta del prototipo TUI (`#a371f7`): ajuste en caliente / intervención. */
+export const violet = (s: string) => truecolor("#a371f7", s);
 /** Alias exportado para reutilizar la paleta ámbar (preflight, avisos) sin duplicarla. */
 export const amberText = amber;
 const bright = pc.bold; // énfasis (picocolors)
@@ -86,6 +88,14 @@ export class StreamRenderer implements AiesEventHandlers {
 	private verificationCommand: string | null = null;
 	/** Último tool invocado (para conservar el target en el `✓` de cierre). */
 	private lastTool: { tool: string; target: string | null } | null = null;
+	/** T3.1 — acumulador de telemetría del renderer (independiente del del bucle). Se suma
+	 *  en cada `decision:resolved` / `execution:resolved` con `usage` fiable; `null` se conserva
+	 *  como "no conocido". RNF-07/17: nunca inventar números. */
+	private tokenTotal: number = 0;
+	private costTotal: number = 0;
+	private telemKnown: boolean = false;
+	/** T3.1 — último `contextUsage.percent` observado (int 0..100). `null` = nunca conocido. */
+	private lastContextPct: number | null = null;
 
 	constructor(stream: NodeJS.WritableStream = process.stdout) {
 		this.stream = stream;
@@ -193,6 +203,20 @@ export class StreamRenderer implements AiesEventHandlers {
 		// null = telemetría no disponible en ninguna vuelta → representar explícitamente, NO inventar $0.
 		if (cost === null) return "cost n/d";
 		return cost < 1 ? `$${cost.toFixed(3)}` : `$${cost.toFixed(2)}`;
+	}
+
+	/** T3.1 — formato compacto de tokens: <1000 → número, ≥1000 → `1.2k` (estilo prototipo). */
+	private formatTokens(n: number): string {
+		if (n < 1000) return String(n);
+		const k = n / 1000;
+		return `${k >= 10 ? k.toFixed(1) : k.toFixed(2)}k`;
+	}
+
+	/** T3.1 — porcentaje de contexto: el binding dice 0..100 entero, pero en la práctica emite
+	 *  float con precisión sobrante. Redondeamos a entero para no hacer ruido visual. */
+	private formatContextPct(pct: number | null): string {
+		if (pct === null) return "ctx n/d";
+		return `ctx ${Math.round(pct)}%`;
 	}
 
 	/** Deriva el target (path/cmd/pattern) de los args de un tool. */
@@ -344,6 +368,15 @@ export class StreamRenderer implements AiesEventHandlers {
 	onLoopObservation(obs: LoopObservation): void {
 		switch (obs.phase) {
 			case "decision:resolved": {
+				// T3.1 — acumular telemetría del orquestador (incluidos parse-fails).
+				if (obs.telemetry?.usage) {
+					this.tokenTotal += obs.telemetry.usage.tokens.total;
+					this.costTotal += obs.telemetry.usage.cost;
+					this.telemKnown = true;
+				}
+				if (obs.telemetry?.contextUsage?.percent !== null && obs.telemetry?.contextUsage?.percent !== undefined) {
+					this.lastContextPct = obs.telemetry.contextUsage.percent;
+				}
 				if (!obs.parseFail) return;
 				this.detachSpinner();
 				const n = obs.state.consecutiveParseFailures;
@@ -370,11 +403,33 @@ export class StreamRenderer implements AiesEventHandlers {
 				this.line(`${amber("▲")} Intervención del usuario: ejecución detenida.`);
 				return;
 			}
+			case "intervention:adjustment": {
+				this.detachSpinner();
+				this.line(`${violet("⚑")} Intervención del desarrollador incorporada — se tendrá en cuenta en la decisión.`);
+				return;
+			}
 			case "execution:resolved": {
+				// T3.1 — acumular telemetría del worker y emitir la línea de estado.
+				if (obs.telemetry?.usage) {
+					this.tokenTotal += obs.telemetry.usage.tokens.total;
+					this.costTotal += obs.telemetry.usage.cost;
+					this.telemKnown = true;
+				}
+				if (obs.telemetry?.contextUsage?.percent !== null && obs.telemetry?.contextUsage?.percent !== undefined) {
+					this.lastContextPct = obs.telemetry.contextUsage.percent;
+				}
+				const verifyP = obs.state.results.filter((r) => r.kind === "unidad" && r.passed === true).length;
+				const verifyQ = obs.state.results.filter((r) => r.kind === "unidad" && r.passed !== null).length;
+				const iterN = obs.state.iterations;
+				const iterMax = obs.state.limits.maxIterations;
+				const tok = this.telemKnown ? this.formatTokens(this.tokenTotal) : "n/d";
+				const cost = this.telemKnown ? this.formatCost(this.costTotal) : "cost n/d";
+				const ctx = this.formatContextPct(this.lastContextPct);
+				this.detachSpinner();
+				this.line(pc.dim(`· iter ${iterN}/${iterMax} · ${tok} tok · ${cost} · ${ctx} · verify ${verifyP}/${verifyQ}`));
 				if (obs.decision.operación !== "comunicar al desarrollador" || obs.result.kind !== "comunicación") {
 					return;
 				}
-				this.detachSpinner();
 				const texto = obs.result.text || obs.decision.comunicación || "";
 				this.line("");
 				this.line(`${cyan("💬")} ${bright("Orquestador:")} ${texto}`);

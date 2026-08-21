@@ -13,6 +13,7 @@ import {
 	oneshotExitCode,
 	oneshotOverwriteNotice,
 	pad,
+	parseResumeGuide,
 	preflight,
 	priorInProgressNotice,
 	replStartupMessages,
@@ -347,6 +348,86 @@ describe("T1 persistencia y /resume", () => {
 		assert.match(resolved.message, /no hay una tarea "En curso"/);
 		const done = resolveResume({ ...enCursoState(1), taskState: "Completada" });
 		assert.equal(done.ok, false);
+	});
+});
+
+describe("T2.2 parseResumeGuide", () => {
+	it("sin resto → undefined", () => {
+		assert.equal(parseResumeGuide("/resume"), undefined);
+		assert.equal(parseResumeGuide("/resume    "), undefined);
+	});
+	it('comillas dobles alrededor de la guía', () => {
+		assert.equal(parseResumeGuide('/resume "verifica el caso de borde primero"'), "verifica el caso de borde primero");
+	});
+	it("sin comillas: resto crudo", () => {
+		assert.equal(parseResumeGuide("/resume verifica el caso de borde"), "verifica el caso de borde");
+	});
+	it("comillas vacías → undefined", () => {
+		assert.equal(parseResumeGuide('/resume ""'), undefined);
+	});
+});
+
+describe("T2.2 /resume con guía inyecta knownInfo", () => {
+	it("runResumeCycle con resumeGuide añade la nota al estado reanudado", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-resume-guide-"));
+		const store = new LocalStore(cwd);
+		const fixture = enCursoState(3);
+		store.saveState(fixture);
+		const resolved = resolveResume(store.loadState());
+		assert.equal(resolved.ok, true);
+		if (!resolved.ok) throw new Error("unreachable");
+
+		let seenKnownInfo: string[] | undefined;
+		await runResumeCycle(resolved.state, {
+			cwd,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (state) => {
+				seenKnownInfo = state.knownInfo;
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: executeTerminar(null),
+			resumeGuide: "verifica el caso de borde primero",
+		});
+
+		assert.ok(seenKnownInfo);
+		assert.ok(
+			seenKnownInfo!.some((k) => /guía del desarrollador al reanudar:.*verifica el caso de borde primero/.test(k)),
+			"la guía debe inyectarse en knownInfo",
+		);
+	});
+
+	it("runResumeCycle sin guide no inyecta nada en knownInfo", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-resume-noguide-"));
+		const store = new LocalStore(cwd);
+		const fixture = enCursoState(2);
+		store.saveState(fixture);
+		const resolved = resolveResume(store.loadState());
+		assert.equal(resolved.ok, true);
+		if (!resolved.ok) throw new Error("unreachable");
+
+		let seenKnownInfo: string[] | undefined;
+		await runResumeCycle(resolved.state, {
+			cwd,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (state) => {
+				seenKnownInfo = state.knownInfo;
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: executeTerminar(null),
+		});
+
+		assert.ok(seenKnownInfo);
+		assert.ok(!seenKnownInfo!.some((k) => /guía del desarrollador/.test(k)), "sin guide: no se añade la nota");
 	});
 });
 

@@ -1,9 +1,13 @@
 # AIES — Prototipo visual de la TUI
 
 - **Fecha:** 2026-08-21
-- **Estado:** Exploración visual, sin decisión de implementación. No es código de producto — es
-  un boceto interactivo (HTML/JS autocontenido) para discutir dirección antes de tocar
-  `runtime/src/ui/stream-renderer.ts`.
+- **Estado:** Parcialmente implementado en `runtime/`: T2.1 (ajuste en caliente desde REPL),
+  T2.2 (`/resume "<guía>"`) y T3.1 (línea de estado por iteración) ya viven sobre el bucle
+  real (`core/events.ts`, `core/observation.ts`, `ui/stream-renderer.ts`, `cli.ts`). El
+  layout full-screen (header + sidebar) del prototipo se descartó (contradice ROADMAP-TUI
+  §1.4 ponytail y T5). El prototipo sigue siendo referencia visual para iteraciones
+  futuras; el renderer secuencial ANSI ya incorpora la paleta violeta del prototipo
+  (`#a371f7`) y la línea dim de estado por iteración.
 - **Prototipo publicado (interactivo):**
   https://claude.ai/code/artifact/58505265-7e2b-40ea-8f6d-2b99aa9b5148
 

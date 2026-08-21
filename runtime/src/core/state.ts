@@ -77,7 +77,15 @@ export interface Decision {
 
 // --- Resultado de una operación (Runtime-Model §5; tipos de Decision-Model §6) ---
 
-export type ResultKind = "info" | "unidad" | "comunicación" | "terminación" | "fallo" | "límite" | "parse_error";
+export type ResultKind =
+	| "info"
+	| "unidad"
+	| "comunicación"
+	| "terminación"
+	| "fallo"
+	| "límite"
+	| "parse_error"
+	| "intervención";
 
 export interface OperationResult {
 	kind: ResultKind;

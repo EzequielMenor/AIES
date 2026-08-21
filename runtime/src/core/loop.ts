@@ -146,6 +146,27 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 			break;
 		}
 
+		// Ajuste en caliente (T2.1) — se aplica al inicio del turno, antes de la decisión. No
+		// aborta el worker en curso; la guía se incorpora al estado (Runtime §7) y el
+		// orquestador la ve en la siguiente decisión. Un handler que falle no rompe el bucle.
+		if (handlers.pollIntervention) {
+			let adj: { text: string } | null | undefined;
+			try {
+				adj = await handlers.pollIntervention();
+			} catch {
+				/* un poll que lanza no rompe el bucle */
+				adj = null;
+			}
+			const text = adj?.text?.trim();
+			if (text) {
+				const result: OperationResult = { kind: "intervención", text, unidadId: null, passed: null };
+				state = appendResult(state, result);
+				state = addKnownInfo(state, `intervención del desarrollador: ${text}`);
+				emitLog(resultEntry(state.iterations, result, telemetryEmpty()));
+				safeObserve(observe, { phase: "intervention:adjustment", state, text });
+			}
+		}
+
 		// Límite de iteraciones (ADR-005) — el backstop duro; pedir intervención por defecto.
 		if (state.iterations >= state.limits.maxIterations) {
 			const action = (await handlers.onLimit?.(state)) ?? "intervenir";

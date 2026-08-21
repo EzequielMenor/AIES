@@ -114,6 +114,13 @@ export interface WorkerEventSink {
  *   se conservan del contrato anterior para no romper la instrumentación de log.jsonl ni
  *   el backstop de límites (ADR-005).
  */
+/** Ajuste en caliente (T2.1): el desarrollador incorpora una guía al estado en curso.
+ *  El bucle la aplica al inicio del siguiente turno como un resultado más
+ *  (Runtime-Model §7); el orquestador la ve en `knownInfo`/`results` en la siguiente decisión. */
+export interface InterventionAdjustment {
+	text: string;
+}
+
 export interface AiesEventHandlers {
 	// ── Inyección obligatoria ─────────────────────────────────────────────────
 	/** DecideFn: lee el estado, devuelve la decisión del orquestador. */
@@ -151,6 +158,10 @@ export interface AiesEventHandlers {
 	onLimit?: (state: RuntimeState) => "intervenir" | "terminar" | Promise<"intervenir" | "terminar">;
 	/** Intervención externa (Runtime §7). */
 	stopSignal?: () => boolean;
+	/** Ajuste en caliente (T2.1): el bucle lo consulta al inicio de cada turno. Si devuelve
+	 *  un ajuste no vacío, lo incorpora al estado como un resultado `intervención` + `knownInfo`
+	 *  antes de la siguiente decisión. Un handler que lance se aísla con safeCallback. */
+	pollIntervention?: () => InterventionAdjustment | null | Promise<InterventionAdjustment | null>;
 	/** Entrada de log.jsonl — el log es un observability concern aparte del bus de eventos. */
 	onLogEntry?: (entry: LogEntry) => void;
 	/** Snapshots detallados del ciclo (decision:start, execution:resolved, etc.) para TUI/debug. */

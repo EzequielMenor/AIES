@@ -112,4 +112,4 @@ Sin clave, el bucle degrada con gracia (3 auth-fails → intervención). Con cla
 ## open questions (no bloquean)
 
 - `thinkingLevel` orquestador `low` — calibrar con `research:baseline`.
-- Métricas en vivo en el footer de la TUI (status por iteración).
+- Métricas en vivo: T3.1 implementado (línea dim por iteración con tokens/coste/contexto/verify acumulado; telemetría nula → `n/d`). Ver `ROADMAP-TUI.md` §T3.1.

@@ -243,6 +243,97 @@ describe("StreamRenderer TTY", () => {
 		renderer.onLoopObservation({ phase: "intervention:stopped", state: sampleState() });
 		assert.match(stream.plain(), /Intervención del usuario: ejecución detenida/);
 	});
+
+	it("intervention:adjustment pinta línea violeta (T2.1)", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onLoopObservation({
+			phase: "intervention:adjustment",
+			state: sampleState(),
+			text: "verifica también el caso de borde",
+		});
+		const plain = stream.plain();
+		assert.match(plain, /Intervención del desarrollador incorporada/);
+		assert.match(plain, /se tendrá en cuenta en la decisión/);
+	});
+
+	it("execution:resolved pinta línea de estado T3.1 con telemetría acumulada y verify", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		const telem: WorkerTelemetry = {
+			usage: { tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, total: 150 }, cost: 0.0023 },
+			contextUsage: { tokens: 5000, contextWindow: 100000, percent: 5 },
+			telemetryUnavailable: false,
+		};
+		const state = sampleState({
+			iterations: 2,
+			results: [
+				{ kind: "unidad", text: "ok", unidadId: "u0", passed: true },
+				{ kind: "unidad", text: "fail", unidadId: "u1", passed: false },
+			],
+		});
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state,
+			decision: infoDecision(),
+			result: { kind: "info", text: "info", unidadId: null, passed: null },
+			telemetry: telem,
+			atribución: null,
+		});
+		const plain = stream.plain();
+		assert.match(plain, /iter 2\/12/);
+		assert.match(plain, /150 tok/);
+		assert.match(plain, /\$0\.002/);
+		assert.match(plain, /ctx 5%/);
+		assert.match(plain, /verify 1\/2/);
+	});
+
+	it("T3.1: usage null → n/d explícito (RNF-07/17)", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState({ iterations: 1 }),
+			decision: infoDecision(),
+			result: { kind: "info", text: "", unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		const plain = stream.plain();
+		assert.match(plain, /n\/d tok/);
+		assert.match(plain, /cost n\/d/);
+		assert.match(plain, /ctx n\/d/);
+	});
+
+	it("T3.1: acumulación persiste con parse-fail (telemetría del orquestador también cuenta)", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		const telem: WorkerTelemetry = {
+			usage: { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0.001 },
+			contextUsage: null,
+			telemetryUnavailable: false,
+		};
+		renderer.onLoopObservation({
+			phase: "decision:resolved",
+			state: sampleState({ consecutiveParseFailures: 1 }),
+			decision: null,
+			parseFail: true,
+			parseError: "x",
+			raw: "",
+			telemetry: telem,
+		});
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState({ iterations: 1 }),
+			decision: infoDecision(),
+			result: { kind: "info", text: "", unidadId: null, passed: null },
+			telemetry: telem,
+			atribución: null,
+		});
+		// El acumulado del parse-fail debe sobrevivir; ambos vueltas comparten el renderer.
+		const plain = stream.plain();
+		assert.match(plain, /\$0\.002/);
+	});
 });
 
 describe("StreamRenderer pipe (no-TTY)", () => {

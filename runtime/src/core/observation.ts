@@ -47,6 +47,7 @@ export type LoopObservation =
 			reason: string;
 	  }
 	| { phase: "intervention:stopped"; state: RuntimeState }
+	| { phase: "intervention:adjustment"; state: RuntimeState; text: string }
 	| { phase: "terminated"; state: RuntimeState; reason: string }
 	| { phase: "error:unidad-inexistente"; state: RuntimeState; decision: Decision };
 

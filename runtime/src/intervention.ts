@@ -1,7 +1,8 @@
 // src/intervention.ts — canal de intervención del desarrollador (Runtime-Model §7, P-20/RNF-04).
 // La intervención es una ENTRADA EXTERNA al ciclo: se incorpora al estado como un resultado más
 // (el bucle la procesa vía stopSignal). En v0 el canal es el proceso de AIES-core (SIGINT), no pi.
-// UX v0 = SIGINT (Ctrl-C). REPL/TUI = Tier 3 (fuera).
+// UX v0 = SIGINT (Ctrl-C) para oneshot; el REPL (T2.1) además acepta ajuste en caliente vía
+// readline (handler `pollIntervention` en `core/events.ts`).
 
 export interface StopController {
 	/** true cuando el desarrollador ha solicitado detener el ciclo. */
