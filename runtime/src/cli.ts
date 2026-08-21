@@ -25,6 +25,7 @@ import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
 
 import { LocalStore } from "./cli-persistence.js";
+import { loadConfig, type Config } from "./config.js";
 
 const nodeRequire = createRequire(import.meta.url);
 import type {
@@ -42,11 +43,10 @@ import {
 	type Task,
 	initState,
 } from "./core/state.js";
-import { loadConfig } from "./config.js";
 import { limitsFromConfig } from "./limits.js";
 import { createDecide, type ResolvedModel } from "./orchestrator/decide.js";
 import { runWorker, type WorkerToolContext } from "./workers/tools.js";
-import { StreamRenderer } from "./ui/stream-renderer.js";
+import { StreamRenderer, amber } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
 import type { WorkerTelemetry } from "./telemetry/types.js";
 import { checkForUpdate, formatUpdateNotice, resolveInstallDir, runUpdate, type UpdateStatus } from "./update.js";
@@ -174,8 +174,10 @@ export interface RunCycleOptions {
 	signal: AbortSignal | undefined;
 	store: LocalStore;
 	renderer?: StreamRenderer | undefined;
-	decideOverride?: (state: RuntimeState) => Promise<DecideOutcome>;
-	executeOverride?: ExecuteFn;
+	decideOverride?: ((state: RuntimeState) => Promise<DecideOutcome>) | undefined;
+	executeOverride?: ExecuteFn | undefined;
+	/** Snapshot persistido a reanudar. El caller debe pasar `task = resumeFrom.task`. */
+	resumeFrom?: RuntimeState | undefined;
 }
 
 export interface RunCycleResult {
@@ -185,7 +187,7 @@ export interface RunCycleResult {
 }
 
 export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCycleResult> {
-	const initial = initState(task, opts.limits);
+	const initial = opts.resumeFrom ?? initState(task, opts.limits);
 	const wctx: WorkerToolContext = {
 		cwd: opts.cwd,
 		model: opts.model,
@@ -198,7 +200,9 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal);
 
 	const handlers: AiesEventHandlers = StreamRenderer.merge(renderer, { decide, execute });
+	const rendererOnLogEntry = handlers.onLogEntry?.bind(renderer);
 	handlers.onLogEntry = (entry) => {
+		rendererOnLogEntry?.(entry);
 		try {
 			opts.store.appendLog(entry);
 		} catch {
@@ -248,25 +252,29 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 // Banner y comandos REPL
 // ──────────────────────────────────────────────────────────────────────────────
 
-function banner(): void {
-	const bar = "─".repeat(50);
+export const BANNER_BAR = "─".repeat(50);
+
+/** Rellena `s` hasta `width` (por defecto `bar.length + 2`) con espacios a la derecha. */
+export function pad(s: string, width: number = BANNER_BAR.length + 2): string {
+	const spaces = Math.max(0, width - s.length);
+	return s + " ".repeat(spaces);
+}
+
+function banner(out: NodeJS.WritableStream = output): void {
+	const bar = BANNER_BAR;
 	const top = `┌${bar}┐`;
 	const bot = `└${bar}┘`;
 	const l1 = "│  AIES — Autonomous Software Engineering Harness │";
 	const l2 = "│  Escribe tu tarea o /help para comandos       │";
-	const pad = (s: string) => {
-		const width = 52; // incluye los │ inicial y final
-		const inner = s.length;
-		const spaces = Math.max(0, width - inner);
-		return s + " ".repeat(spaces);
-	};
-	output.write(`${top}\n${pad(l1)}\n${pad(l2)}\n${bot}\n`);
+	out.write(`${top}\n${pad(l1)}\n${pad(l2)}\n${bot}\n`);
 }
 
 const HELP_TEXT = [
 	"Comandos disponibles:",
 	"  /help              — muestra esta ayuda",
-	"  /state             — imprime el JSON resumido del RuntimeState actual",
+	"  /resume            — reanuda la tarea En curso persistida",
+	"  /state             — vista humana del RuntimeState actual",
+	"  /state --json      — JSON resumido del RuntimeState actual",
 	"  /clear             — limpia la pantalla",
 	"  /exit | /quit      — cierra la sesión",
 	"",
@@ -277,6 +285,109 @@ const HELP_TEXT = [
 
 function helpText(): string {
 	return HELP_TEXT;
+}
+
+/** Env var de API key por provider (sin red). Providers desconocidos: aviso genérico. */
+export const PROVIDER_ENV_KEY: Record<string, string> = {
+	anthropic: "ANTHROPIC_API_KEY",
+	openai: "OPENAI_API_KEY",
+	google: "GEMINI_API_KEY",
+	gemini: "GEMINI_API_KEY",
+	minimax: "MINIMAX_API_KEY",
+	openrouter: "OPENROUTER_API_KEY",
+	groq: "GROQ_API_KEY",
+	xai: "XAI_API_KEY",
+	mistral: "MISTRAL_API_KEY",
+};
+
+export function preflight(cfg: Config, out: NodeJS.WritableStream, env: NodeJS.ProcessEnv = process.env): void {
+	const provider = cfg.provider;
+	const modelo = cfg.models.orchestrator ?? "(por defecto)";
+	out.write(`aies: provider=${provider} modelo=${modelo} — ok.\n`);
+	const envKey = PROVIDER_ENV_KEY[provider.toLowerCase()];
+	if (!envKey) return;
+	if (!env[envKey]) {
+		out.write(`${amber("▲")} aies: ${envKey} no está definida — el runtime degradará sin round-trip.\n`);
+	}
+}
+
+export function priorInProgressNotice(state: RuntimeState | null): string | null {
+	if (!state || state.taskState !== "En curso") return null;
+	return `aies: hay una tarea previa "En curso" (objetivo: "${state.task.objetivo}"). Usa /resume para continuarla. Cualquier otro texto arranca una tarea nueva.`;
+}
+
+export function oneshotOverwriteNotice(state: RuntimeState | null): string | null {
+	if (!state || state.taskState !== "En curso") return null;
+	return `aies: hay una tarea previa "En curso" (objetivo: "${state.task.objetivo}"). Esta oneshot la sobreescribirá.`;
+}
+
+export function schemaInvalidNotice(reason: "corrupt" | "schema"): string {
+	return reason === "schema"
+		? "aies: state.json con schema antiguo o incompleto; se ignora (no reanudable)."
+		: "aies: state.json corrupto; se ignora (sesión limpia).";
+}
+
+export function replStartupMessages(store: LocalStore): string[] {
+	const loaded = store.loadStateResult();
+	const msgs: string[] = [];
+	if (loaded.kind === "invalid") msgs.push(schemaInvalidNotice(loaded.reason));
+	const notice = priorInProgressNotice(loaded.kind === "ok" ? loaded.state : null);
+	if (notice) msgs.push(notice);
+	return msgs;
+}
+
+export function resolveResume(
+	state: RuntimeState | null,
+): { ok: true; state: RuntimeState } | { ok: false; message: string } {
+	if (!state || state.taskState !== "En curso") {
+		return { ok: false, message: 'aies: no hay una tarea "En curso" para reanudar.' };
+	}
+	return { ok: true, state };
+}
+
+/** Reanuda un snapshot `En curso` (el caller ya validó con `resolveResume`). */
+export async function runResumeCycle(state: RuntimeState, opts: RunCycleOptions): Promise<RunCycleResult> {
+	return runCycle(state.task, { ...opts, resumeFrom: state });
+}
+
+function unitMark(estado: RuntimeState["units"][number]["estado"]): string {
+	if (estado === "Terminada") return "✓";
+	if (estado === "Fallida") return "✗";
+	return "○";
+}
+
+export function formatStateHuman(s: RuntimeState): string {
+	const lines: string[] = [
+		`Objetivo     : ${s.task.objetivo}`,
+		`Estado       : ${s.taskState}`,
+		`Iteración    : ${s.iterations}/${s.limits.maxIterations}`,
+		`Siguiente    : ${s.nextStep}`,
+		"Unidades     :",
+	];
+	if (s.units.length === 0) {
+		lines.push("  (ninguna)");
+	} else {
+		for (const u of s.units) {
+			lines.push(`  ${unitMark(u.estado)} ${u.id} · ${u.capacidad} · ${u.estado} — ${u.objetivo}`);
+		}
+	}
+	lines.push(`Resultados   : ${s.results.length}`);
+	return lines.join("\n");
+}
+
+export function formatStateOutput(input: string, snapshot: RuntimeState | null): string {
+	if (!snapshot) {
+		return "aies: sin estado cargado todavía. Escribe una tarea para empezar.\n";
+	}
+	const json = /(?:^|\s)--json\b/.test(input);
+	if (json) return `${JSON.stringify(summarizeState(snapshot), null, 2)}\n`;
+	return `${formatStateHuman(snapshot)}\n`;
+}
+
+export function oneshotExitCode(result: RunCycleResult): number {
+	if (result.completed) return 0;
+	// Cualquier estado no Completada (incluido "En curso" tras límite) sale 1 en oneshot.
+	return 1;
 }
 
 const CLI_HELP_TEXT = [
@@ -382,6 +493,7 @@ async function main(): Promise<void> {
 	const model: ResolvedModel | undefined = resolveModel(process.env.AIES_MODEL);
 	const thinkingLevel = cfg.orchestratorThinkingLevel;
 	const updatePromise = checkForUpdate();
+	preflight(cfg, output);
 
 	if (repl) {
 		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise });
@@ -394,34 +506,56 @@ async function main(): Promise<void> {
 	}
 }
 
-async function runOneshot(
+export async function runOneshot(
 	taskArg: string,
-	ctx: { cwd: string; limits: Limits; model: ResolvedModel | undefined; thinkingLevel: "off" | "low" | "medium" | "high" | undefined; updatePromise: Promise<UpdateStatus> },
+	ctx: {
+		cwd: string;
+		limits: Limits;
+		model: ResolvedModel | undefined;
+		thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
+		updatePromise?: Promise<UpdateStatus> | undefined;
+		store?: LocalStore | undefined;
+		renderer?: StreamRenderer | undefined;
+		decideOverride?: ((state: RuntimeState) => Promise<DecideOutcome>) | undefined;
+		executeOverride?: ExecuteFn | undefined;
+		out?: NodeJS.WritableStream | undefined;
+		signal?: AbortSignal | undefined;
+	},
 ): Promise<number> {
+	const out = ctx.out ?? output;
 	const task = taskFromArg(taskArg);
-	const store = new LocalStore(ctx.cwd);
+	const store = ctx.store ?? new LocalStore(ctx.cwd);
+	const loaded = store.loadStateResult();
+	if (loaded.kind === "invalid") out.write(`${schemaInvalidNotice(loaded.reason)}\n`);
+	const prior = loaded.kind === "ok" ? loaded.state : null;
+	const overwrite = oneshotOverwriteNotice(prior);
+	if (overwrite) out.write(`${overwrite}\n`);
+
 	const controller = new AbortController();
 	const onSigint = () => controller.abort(new Error("Interrumpido por el usuario"));
-	process.once("SIGINT", onSigint);
+	if (!ctx.signal) process.once("SIGINT", onSigint);
 
 	const result = await runCycle(task, {
 		cwd: ctx.cwd,
 		model: ctx.model,
 		thinkingLevel: ctx.thinkingLevel,
 		limits: ctx.limits,
-		signal: controller.signal,
+		signal: ctx.signal ?? controller.signal,
 		store,
+		renderer: ctx.renderer,
+		decideOverride: ctx.decideOverride,
+		executeOverride: ctx.executeOverride,
 	});
 
-	process.off("SIGINT", onSigint);
+	if (!ctx.signal) process.off("SIGINT", onSigint);
 
 	if (result.completed) return 0;
 	if (result.interrupted) {
-		output.write("\naies: tarea interrumpida por el usuario.\n");
-		return 1;
+		out.write("\naies: tarea interrumpida por el usuario.\n");
+	} else {
+		out.write(`\naies: tarea terminó en estado ${result.state.taskState}.\n`);
 	}
-	output.write(`\naies: tarea terminó en estado ${result.state.taskState}.\n`);
-	return result.state.taskState === "Fallida" ? 1 : 1;
+	return oneshotExitCode(result);
 }
 
 async function runRepl(ctx: {
@@ -433,12 +567,13 @@ async function runRepl(ctx: {
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
 	banner();
+	for (const msg of replStartupMessages(store)) output.write(`${msg}\n`);
+	let currentState: RuntimeState | null = store.loadState();
 	const updateStatus = await waitForUpdateNotice(ctx.updatePromise);
 	const updateNotice = formatUpdateNotice(updateStatus ?? { kind: "skipped" });
 	if (updateNotice) output.write(`\n${updateNotice}\n`);
 
 	const rl = readline.createInterface({ input, output, terminal: true });
-	let currentState: RuntimeState | null = store.loadState();
 	let runInProgress = false;
 	let activeAbort: AbortController | null = null;
 
@@ -478,50 +613,88 @@ async function runRepl(ctx: {
 			if (input0 === "/exit" || input0 === "/quit") {
 				break;
 			}
-			if (input0 === "/state") {
+			if (input0 === "/state" || input0.startsWith("/state ")) {
 				const snapshot = currentState ?? store.loadState();
-				if (!snapshot) {
-					output.write("aies: sin estado cargado todavía. Escribe una tarea para empezar.\n");
-				} else {
-					output.write(`${JSON.stringify(summarizeState(snapshot), null, 2)}\n`);
+				output.write(formatStateOutput(input0, snapshot));
+				continue;
+			}
+			if (input0 === "/resume") {
+				const resolved = resolveResume(currentState ?? store.loadState());
+				if (!resolved.ok) {
+					output.write(`${resolved.message}\n`);
+					continue;
 				}
+				const result = await runTrackedReplCycle(output, {
+					mark: (running, abort) => {
+						runInProgress = running;
+						activeAbort = abort;
+					},
+					run: (signal) =>
+						runResumeCycle(resolved.state, {
+							cwd: ctx.cwd,
+							model: ctx.model,
+							thinkingLevel: ctx.thinkingLevel,
+							limits: ctx.limits,
+							signal,
+							store,
+						}),
+				});
+				if (result) currentState = result.state;
 				continue;
 			}
 
 			// Nueva tarea sobre el proyecto (manteniendo persistencia).
 			const task = taskFromArg(input0);
-			runInProgress = true;
-			activeAbort = new AbortController();
 			const before = currentState;
-			try {
-				const result = await runCycle(task, {
-					cwd: ctx.cwd,
-					model: ctx.model,
-					thinkingLevel: ctx.thinkingLevel,
-					limits: ctx.limits,
-					signal: activeAbort.signal,
-					store,
-				});
-				currentState = result.state;
-				if (result.interrupted) {
-					output.write("\naies: tarea interrumpida por el usuario (Ctrl+C). Volviendo al prompt.\n");
-				}
-			} catch (e) {
-				const msg = e instanceof Error ? e.message : String(e);
-				output.write(`\naies: error — ${msg}\n`);
-			} finally {
-				runInProgress = false;
-				activeAbort = null;
-				// Si abortamos por SIGINT, currentState queda en el último snapshot persistido.
-				if (before && !currentState) currentState = before;
-			}
+			const result = await runTrackedReplCycle(output, {
+				mark: (running, abort) => {
+					runInProgress = running;
+					activeAbort = abort;
+				},
+				run: (signal) =>
+					runCycle(task, {
+						cwd: ctx.cwd,
+						model: ctx.model,
+						thinkingLevel: ctx.thinkingLevel,
+						limits: ctx.limits,
+						signal,
+						store,
+					}),
+			});
+			if (result) currentState = result.state;
+			else if (before && !currentState) currentState = before;
 		}
 	} finally {
 		close();
 	}
 }
 
-function summarizeState(s: RuntimeState): Record<string, unknown> {
+/** Abort/error handling compartido entre tarea nueva y `/resume` (sin acoplar a readline). */
+async function runTrackedReplCycle(
+	out: NodeJS.WritableStream,
+	opts: {
+		mark: (running: boolean, abort: AbortController | null) => void;
+		run: (signal: AbortSignal) => Promise<RunCycleResult>;
+	},
+): Promise<RunCycleResult | undefined> {
+	const abort = new AbortController();
+	opts.mark(true, abort);
+	try {
+		const result = await opts.run(abort.signal);
+		if (result.interrupted) {
+			out.write("\naies: tarea interrumpida por el usuario (Ctrl+C). Volviendo al prompt.\n");
+		}
+		return result;
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		out.write(`\naies: error — ${msg}\n`);
+		return undefined;
+	} finally {
+		opts.mark(false, null);
+	}
+}
+
+export function summarizeState(s: RuntimeState): Record<string, unknown> {
 	return {
 		taskState: s.taskState,
 		objetivo: s.task.objetivo,

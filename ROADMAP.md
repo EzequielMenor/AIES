@@ -24,7 +24,7 @@ El runtime v0.2.0 cumple su contrato como harness. Lo concreto:
   (lectura + edición mínima) y `verifier` (lectura + comprobación, **sin**
   `edit`/`write`). Cada `AgentSession` es efímera y con allowlist estricta
   (`ADR-009`, `RNF-05`).
-- **Persistencia** en `<agentDir>/aies/<hash(cwd)>/{state.json, log.jsonl}`
+- **Persistencia** en `<cwd>/.aies/{state.json, log.jsonl}` (CLI activa)
   con recuperación ante corrupción (`ADR-008`). Reanudación por `state.json`
   + `AGENTS.md` (`RNF-10`, `RNF-16`).
 - **Límites con irrecuperabilidad visible** (`ADR-005`): `maxIterations=12`
@@ -37,8 +37,9 @@ El runtime v0.2.0 cumple su contrato como harness. Lo concreto:
   en `TaskTelemetry` (`RNF-07`/`RNF-17`).
 - **5 self-checks** (`parse`, `unitid`, `loop`, `cost`, `compaction`,
   `workers`) + vitest e2e sin LLM. ~4.400 líneas de TS estricto.
-- **CLI standalone** oneshot (`aies run "<tarea>"`) y REPL (`/run`, `/status`,
-  `/resume`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
+- **CLI standalone** oneshot (`aies "<tarea>"`) y REPL (`/help`, `/state`,
+  `/state --json`, `/resume`, `/clear`, `/exit`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
+  Reanudación T1: `/resume` continúa un `state.json` `En curso`. `/status` enriquecido llega en T3.
 
 ### 0.2 Lo que la data dice (esto es lo importante)
 

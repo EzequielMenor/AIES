@@ -39,6 +39,23 @@ function writeAtomic(file: string, content: string): void {
 	}
 }
 
+/** Campos mínimos para reanudar un snapshot de disco (schema antiguo → no reanudable). */
+export function hasResumableShape(value: unknown): value is RuntimeState {
+	if (value === null || typeof value !== "object") return false;
+	const s = value as Record<string, unknown>;
+	if (typeof s.taskState !== "string") return false;
+	if (s.task === null || typeof s.task !== "object") return false;
+	if (!Array.isArray(s.units) || !Array.isArray(s.results)) return false;
+	if (typeof s.iterations !== "number") return false;
+	if (s.limits === null || typeof s.limits !== "object") return false;
+	return true;
+}
+
+export type LoadStateResult =
+	| { kind: "ok"; state: RuntimeState }
+	| { kind: "absent" }
+	| { kind: "invalid"; reason: "corrupt" | "schema" };
+
 export class LocalStore {
 	private readonly paths: PersistPaths;
 	constructor(cwd: string) {
@@ -51,14 +68,20 @@ export class LocalStore {
 		mkdirSync(this.paths.dir, { recursive: true });
 		writeAtomic(this.paths.stateFile, JSON.stringify(state, null, 2));
 	}
-	loadState(): RuntimeState | null {
-		if (!existsSync(this.paths.stateFile)) return null;
+	loadStateResult(): LoadStateResult {
+		if (!existsSync(this.paths.stateFile)) return { kind: "absent" };
 		try {
 			const text = readFileSync(this.paths.stateFile, "utf8");
-			return JSON.parse(text) as RuntimeState;
+			const parsed: unknown = JSON.parse(text);
+			if (!hasResumableShape(parsed)) return { kind: "invalid", reason: "schema" };
+			return { kind: "ok", state: parsed };
 		} catch {
-			return null;
+			return { kind: "invalid", reason: "corrupt" };
 		}
+	}
+	loadState(): RuntimeState | null {
+		const loaded = this.loadStateResult();
+		return loaded.kind === "ok" ? loaded.state : null;
 	}
 	appendLog(entry: LogEntry): void {
 		mkdirSync(this.paths.dir, { recursive: true });
