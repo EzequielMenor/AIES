@@ -347,7 +347,7 @@ export function resolveResume(
 
 /** Reanuda un snapshot `En curso` (el caller ya validó con `resolveResume`). */
 export async function runResumeCycle(state: RuntimeState, opts: RunCycleOptions): Promise<RunCycleResult> {
-	return runCycle(state.task, { ...opts, resumeFrom: state });
+	return runCycle(state.task, { ...opts, resumeFrom: { ...state, limits: opts.limits } });
 }
 
 function unitMark(estado: RuntimeState["units"][number]["estado"]): string {

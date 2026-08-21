@@ -277,6 +277,37 @@ describe("T1 persistencia y /resume", () => {
 		assert.notEqual(result.state.iterations, 0);
 	});
 
+	it("runResumeCycle tras pausa por límite avanza si opts.limits.maxIterations es mayor", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-resume-limit-"));
+		const store = new LocalStore(cwd);
+		const paused = { ...enCursoState(1), limits: { maxIterations: 1 } };
+		store.saveState(paused);
+		const resolved = resolveResume(store.loadState());
+		assert.equal(resolved.ok, true);
+		if (!resolved.ok) throw new Error("unreachable");
+
+		let decideCalled = false;
+		const result = await runResumeCycle(resolved.state, {
+			cwd,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (state) => {
+				decideCalled = true;
+				assert.equal(state.iterations, 1);
+				assert.equal(state.limits.maxIterations, 12, "opts.limits debe refrescar el snapshot");
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: executeTerminar(null),
+		});
+
+		assert.ok(decideCalled, "decide debe invocarse para que haya avance");
+		assert.ok(result.state.iterations >= 2, `iterations=${result.state.iterations} debe crecer tras avanzar`);
+	});
+
 	it("runCycle sin resumeFrom sí arranca en 0 (control negativo)", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "aies-fresh-"));
 		const store = new LocalStore(cwd);
