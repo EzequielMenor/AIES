@@ -315,6 +315,7 @@ T3 ⟂ T4 ⟂ T2   (ortogonales; pueden correr en paralelo)
 | Reanudación esperada | `MVP-v0-Scope §9`, `RNF-16` |
 | Deferred Tier 3 (observabilidad viva) | `MVP-v0-Scope §Deferred` |
 | Open questions del runtime | `runtime/README §open questions` |
+| Prototipo visual de la TUI (exploración, sin decisión) | `06-research/tui-design/README.md` |
 
 ---
 
