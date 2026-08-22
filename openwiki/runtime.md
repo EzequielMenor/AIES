@@ -9,7 +9,7 @@ The runtime lives entirely under `runtime/`:
 ```text
 runtime/
 ├── package.json              # @aies/core, bin "aies" → dist/cli.js, scripts (build/test*/research:metrics)
-├── tsconfig.json             # ESM, strict, Node ≥20
+├── tsconfig.json             # ESM, strict, Node ≥22.19.0
 ├── aies.config.json          # provider + models per role (no secrets); orchestratorThinkingLevel; limits
 ├── README.md                 # state of implementation, gate findings, scripts, smoke
 ├── .gitignore

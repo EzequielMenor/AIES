@@ -31,6 +31,28 @@ aies CLI (cli.ts, bin aies)
 
 ---
 
+## Integraciones externas (ADR-011)
+
+AIES integra dos herramientas locales como `customTools` de pi, registradas en `src/integrations/`:
+
+- **codegraph** — grafo estructural del código (símbolos + call paths). Expone `code_explore <query>` para los workers; alivia el problema nº 1 de `Problem.md` (sobrecarga de exploración). Si la CLI está y falta `.codegraph/`, se ejecuta `codegraph init` una vez por `cwd` (idempotente).
+- **projectmem** — memoria operativa entre sesiones (decisiones, gotchas, lecciones). Expone `mem_read` (lectura) para los tres workers, y `mem_log` (escritura) **sólo para el implementer**. Lee directo `.projectmem/summary.md`; no se auto-inicializa (instalaría hooks en repo ajeno — `Non-Goals §6`).
+
+Ambas se instalan con `install.sh` (codegraph vía `npm i -g`, projectmem vía `uv → pipx → pip`). Si una falla, AIES sigue funcionando y las tools responden con mensaje de indisponibilidad. El orquestador recibe un briefing al estado en cada tarea con la disponibilidad detectada y el resumen destilado de memoria (truncado a 4k chars).
+
+Tabla rápida:
+
+| Tool         | explorer | implementer | verifier | Notas |
+|--------------|----------|-------------|----------|-------|
+| `code_explore` | ✓       | ✓          | ✓        | shell-out `codegraph explore <query>` |
+| `mem_read`    | ✓       | ✓          | ✓        | lectura directa de `.projectmem/summary.md` |
+| `mem_log`     | ✗       | ✓          | ✗        | shell-out `pjm log\|attempt\|fix\|decision\|note`; P-10/REQ-F-18 |
+
+Ver `05-Decisions/ADR-011-integracion-codegraph-projectmem.md` para el detalle.
+
+
+---
+
 ## Instalación
 
 ### Modo dev (rápido)
@@ -57,6 +79,7 @@ aies
 > /help
 > /state
 > /state --json
+> /status
 > /resume
 > /exit
 
@@ -79,7 +102,7 @@ AIES_NO_UPDATE_CHECK=1 aies
 
 ## Estado de la implementación
 
-- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
+- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/status`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
 - [x] **Deprecated — Extensión de Pi** (`src/extension/`): se conserva como código legacy, marcado `@deprecated`, se eliminará en v2. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
 
 Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e y update — todos sin LLM).
@@ -93,7 +116,7 @@ Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, l
 
 ## scripts
 
-- `pnpm run build` / `pnpm run typecheck` — `tsc` strict (ESM, Node ≥20).
+- `pnpm run build` / `pnpm run typecheck` — `tsc` strict (ESM, Node ≥22.19.0).
 - `pnpm test` — corre los tests de parse, unitid, loop, cost, e2e, update, cli y stream-renderer.
 - `pnpm run test:loop` / `test:persist` / `test:orch` / `test:compaction` / `test:workers` — self-check individual.
 - `pnpm run research:metrics -- <log.jsonl>` — métricas NFR §3 sobre el log AIES.
@@ -112,4 +135,4 @@ Sin clave, el bucle degrada con gracia (3 auth-fails → intervención). Con cla
 ## open questions (no bloquean)
 
 - `thinkingLevel` orquestador `low` — calibrar con `research:baseline`.
-- Métricas en vivo: T3.1 implementado (línea dim por iteración con tokens/coste/contexto/verify acumulado; telemetría nula → `n/d`). Ver `ROADMAP-TUI.md` §T3.1.
+- Métricas en vivo: T3.1 implementado (línea dim por iteración con tokens/coste/contexto/verify acumulado; telemetría nula → `n/d`) y T3.2 (`/status` con telemetría agregada del historial y huella por vuelta con ref `log#X–Y`). Ver `ROADMAP-TUI.md` §T3.1/§3.2.

@@ -11,10 +11,13 @@ warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 fail()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 check_node() {
-  command -v node >/dev/null 2>&1 || fail "Node.js no encontrado. Instalá Node.js >= 20: https://nodejs.org"
-  local version
-  version=$(node -v | sed 's/^v//' | cut -d. -f1)
-  [ "$version" -ge 20 ] || fail "Node.js >= 20 requerido (tenés $(node -v))"
+  command -v node >/dev/null 2>&1 || fail "Node.js no encontrado. Instalá Node.js >= 22.19.0: https://nodejs.org"
+  local major minor
+  major=$(node -v | sed 's/^v//' | cut -d. -f1)
+  minor=$(node -v | sed 's/^v//' | cut -d. -f2)
+  if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 19 ]; }; then
+    fail "Node.js >= 22.19.0 requerido (tenés $(node -v))"
+  fi
   info "Node.js $(node -v)"
 }
 
@@ -99,6 +102,64 @@ link_bin() {
   esac
 }
 
+install_codegraph() {
+  if command -v codegraph >/dev/null 2>&1; then
+    info "codegraph ya instalado: $(command -v codegraph)"
+    return 0
+  fi
+  info "Instalando codegraph (npm global)…"
+  if command -v npm >/dev/null 2>&1; then
+    if npm i -g @colbymchenry/codegraph 2>/dev/null; then
+      info "codegraph instalado vía npm."
+      return 0
+    fi
+    warn "npm install -g @colbymchenry/codegraph falló (puede requerir permisos o red)."
+  else
+    warn "npm no encontrado — saltando instalación de codegraph."
+  fi
+  return 1
+}
+
+install_projectmem() {
+  if command -v pjm >/dev/null 2>&1; then
+    info "projectmem ya instalado: $(command -v pjm)"
+    return 0
+  fi
+  info "Instalando projectmem (requiere Python)…"
+  if command -v uv >/dev/null 2>&1; then
+    if uv tool install projectmem 2>/dev/null; then
+      info "projectmem instalado vía uv."
+      return 0
+    fi
+    warn "uv tool install projectmem falló."
+  fi
+  if command -v pipx >/dev/null 2>&1; then
+    if pipx install projectmem 2>/dev/null; then
+      info "projectmem instalado vía pipx."
+      return 0
+    fi
+    warn "pipx install projectmem falló."
+  fi
+  if command -v pip >/dev/null 2>&1 || command -v pip3 >/dev/null 2>&1; then
+    local pip_cmd
+    pip_cmd="$(command -v pip3 || command -v pip)"
+    if $pip_cmd install --user projectmem 2>/dev/null; then
+      warn "projectmem instalado vía pip --user. Si no aparece en PATH, añadí ~/.local/bin al PATH."
+      return 0
+    fi
+    warn "pip install --user projectmem falló."
+  fi
+  warn "Ninguna cadena de instalación funcionó (uv/pipx/pip no disponibles o sin red)."
+  warn "projectmem es opcional. AIES funciona sin él (las tools informarán indisponibilidad)."
+  return 1
+}
+
+install_extras() {
+  install_codegraph || true
+  install_projectmem || true
+  info "Herramientas externas: codegraph=$(command -v codegraph >/dev/null 2>&1 && echo OK || echo MISSING), projectmem=$(command -v pjm >/dev/null 2>&1 && echo OK || echo MISSING)"
+}
+
 main() {
   info "AIES Installer"
   check_node
@@ -108,6 +169,7 @@ main() {
   install_deps
   build
   link_bin
+  install_extras
   info "AIES instalado. Ejecutá: aies"
 }
 

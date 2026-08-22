@@ -20,10 +20,10 @@ import {
 	ModelRuntime,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { CAPABILITY_PROMPT } from "./prompts.js";
+import { composeExplorerPrompt, composeImplementerPrompt, composeVerifierPrompt, type IntegrationPromptBits } from "./prompts.js";
 import type { WorkerEventSink } from "../core/events.js";
 import type { Capability } from "../core/state.js";
-import { CAPABILITY_TOOLS } from "./capabilities.js";
+import { buildCapabilityTools, type IntegrationTools } from "./capabilities.js";
 import type { WorkerTelemetry } from "../telemetry/types.js";
 
 export type ResolvedModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
@@ -33,6 +33,10 @@ export interface WorkerSessionDeps {
 	model: ResolvedModel | undefined;
 	capability: Capability;
 	thinkingLevel?: "off" | "low" | "medium" | "high" | undefined;
+	/** Tools AIES-side registradas según disponibilidad del `cwd` (ADR-011). Default: ninguna. */
+	customTools?: import("@earendil-works/pi-coding-agent").ToolDefinition[] | undefined;
+	/** Bits por capability que controlan allowlist + prompt addenda (ADR-011). */
+	integrationBits?: IntegrationPromptBits | undefined;
 }
 
 export interface WorkerSession {
@@ -90,16 +94,36 @@ function normalizeArgs(args: unknown): Record<string, unknown> {
 	return out;
 }
 
+function capabilityPrompt(cap: Capability, bits: IntegrationPromptBits): string {
+	switch (cap) {
+		case "explorer":
+			return composeExplorerPrompt(bits);
+		case "implementer":
+			return composeImplementerPrompt(bits);
+		case "verifier":
+			return composeVerifierPrompt(bits);
+	}
+}
+
+/** Bits efectivos por capability: el prompt sólo añade hint de `mem_log` al implementer
+ *  (es el único que la tiene en su allowlist — P-10/REQ-F-18). */
+function bitsForCapability(cap: Capability, bits: IntegrationPromptBits): IntegrationPromptBits {
+	if (cap === "implementer") return bits;
+	return { code_explore: bits.code_explore, mem_read: bits.mem_read, mem_log: false };
+}
+
 /** Crea una AgentSession efímera con las tools de la capability y, si se le pasa un sink, conecta
  *  un listener que emite `onWorkerToolCall` / `onWorkerToolResult` al bus de AIES.
  *
  *  El listener se desuscribe automáticamente en `disposeWorkerSession` (vía el `unsubscribe`
  *  que la fábrica devuelve en `WorkerSession`). */
 export async function createWorkerSession(deps: WorkerSessionDeps, sink?: WorkerEventSink): Promise<WorkerSession> {
+	const bits = bitsForCapability(deps.capability, deps.integrationBits ?? { code_explore: false, mem_read: false, mem_log: false });
+	const allowed = buildCapabilityTools({ integrations: deps.integrationBits ?? { code_explore: false, mem_read: false, mem_log: false } });
 	const loader = new DefaultResourceLoader({
 		cwd: deps.cwd,
 		agentDir: getAgentDir(),
-		systemPromptOverride: () => CAPABILITY_PROMPT[deps.capability],
+		systemPromptOverride: () => capabilityPrompt(deps.capability, bits),
 		appendSystemPromptOverride: () => [],
 		noExtensions: true,
 	});
@@ -108,8 +132,9 @@ export async function createWorkerSession(deps: WorkerSessionDeps, sink?: Worker
 		cwd: deps.cwd,
 		sessionManager: SessionManager.inMemory(deps.cwd),
 		resourceLoader: loader,
-		tools: CAPABILITY_TOOLS[deps.capability],
+		tools: allowed[deps.capability],
 	};
+	if (deps.customTools && deps.customTools.length > 0) opts.customTools = deps.customTools;
 	if (deps.model) opts.model = deps.model;
 	if (deps.thinkingLevel) opts.thinkingLevel = deps.thinkingLevel;
 	const { session } = await createAgentSession(opts);

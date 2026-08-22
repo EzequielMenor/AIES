@@ -8,7 +8,7 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-21 (T0+T1+T2.1+T2.2+T3.1 implementados; T2.3 aplazado).
+> Última revisión: 2026-08-22 (T0+T1+T2.1+T2.2+T3.1+3.2 implementados; T2.3 aplazado).
 
 ---
 
@@ -241,8 +241,17 @@
       inventada. Formato `k` ≥ 1000 (como el prototipo). Pipe-safe: cada
       pintado es una línea completa en no-TTY.
 
-3.2 **`/status` enriquecido.** Pendiente. Árbol de unidades + telemetría
-    agregada leída de `log.jsonl` **sin reejecutar** (RNF-11).
+3.2 ✅ **`/status` enriquecido** (2026-08-22). `runtime/src/cli-status.ts` +
+    `cli-status.test.ts` (10 casos). Árbol de unidades + telemetría agregada
+    leída de `log.jsonl` **sin reejecutar** (RNF-11). Estructura: (1) árbol
+    (reutiliza `formatStateHuman`), (2) tokens·coste·contexto·verify·incidencias
+    agregados del historial completo (decisión T3.2/1: incluye todas las
+    entradas, etiquetado como "historial"), (3) huella mínima por vuelta
+    `· iter N <op>[(unidad, capacidad)] → <kind> · <tok> · <$> · log#X–Y`.
+    Telemetría ausente → `n/d` explícito (RNF-07/17), nunca `$0`/`0 tok`.
+    Offsets físicos preservados aunque haya líneas corruptas (`LocalStore.
+    readLogIndexed`). Reutiliza `computeMetrics` con guard de entrypoint
+    añadido en `metrics.ts` para no matar el proceso al importar.
 
 3.3 **`aies log` (o `/log`).** Pendiente. Tail de `.aies/log.jsonl`
     formateado para humanos (decision/resultado/compaction).
@@ -251,8 +260,10 @@
 
 - ✅ La línea de estado muestra telemetría por iteración (test unitario sobre
   observación sintética + smoke manual en sesión real).
-- `/status` responde desde `log.jsonl` sin reejecución (self-check sobre log
-  sintético; criterio de ROADMAP Fase 3).
+- ✅ `/status` responde desde `log.jsonl` sin reejecución (10 casos en
+  `cli-status.test.ts`: log sintético completo, sin log, sin telemetría,
+  línea corrupta, sin estado, import no termina el proceso + cobertura
+  auxiliar; criterio de ROADMAP Fase 3).
 
 **Trazabilidad:** `RNF-11`, `REQ-F-14`, `MVP-v0-Scope §Deferred Tier 3`,
 `ROADMAP.md 3.1`, `runtime/README §open questions`.

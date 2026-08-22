@@ -14,7 +14,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc",
@@ -27,7 +27,7 @@
     "test:parse": "tsc -p tsconfig.test.json && node dist-test/tests/parse.test.js",
     "test:e2e": "vitest run tests/smoke-e2e.test.ts",
     "test:update": "vitest run tests/update.test.ts",
-    "test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts",
+    "test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts src/cli-status.test.ts src/integrations/integrations.test.ts",
     "test:persist": "node dist/self-check/persistence.js",
     "test:orch": "node dist/self-check/orchestrator.js",
     "test:compaction": "node dist/self-check/compaction.js",

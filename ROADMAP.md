@@ -38,8 +38,8 @@ El runtime v0.2.0 cumple su contrato como harness. Lo concreto:
 - **5 self-checks** (`parse`, `unitid`, `loop`, `cost`, `compaction`,
   `workers`) + vitest e2e sin LLM. ~4.400 líneas de TS estricto.
 - **CLI standalone** oneshot (`aies "<tarea>"`) y REPL (`/help`, `/state`,
-  `/state --json`, `/resume`, `/clear`, `/exit`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
-  Reanudación T1: `/resume` continúa un `state.json` `En curso`. `/status` enriquecido llega en T3.
+  `/state --json`, `/status`, `/resume`, `/clear`, `/exit`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
+  Reanudación T1: `/resume` continúa un `state.json` `En curso`. `/status` enriquecido (T3.2) lee telemetría agregada del historial sin reejecutar el bucle.
 
 ### 0.2 Lo que la data dice (esto es lo importante)
 
@@ -424,7 +424,7 @@ no metas autoimpuestas — se recalibran si la data lo pide.
 | 2    | `thinkingLevel`, `maxIterations`, `maxCost` documentados con datos                               | Métricas extraídas de `log.jsonl` (`research/metrics`)     |
 | 2    | H-03 y H-06 reportados (apoya / no apoya / indeterminado)                                       | `06-research/experiments/E-0X-*.md`                        |
 | 3    | 1 sesión ≥ 30 min completada sin intervención manual                                            | Smoke de aceptación                                        |
-| 3    | `/status` lee telemetría agregada de `log.jsonl` sin reejecutar                                  | Self-check sobre log sintético                             |
+| 3    | `/status` lee telemetría agregada de `log.jsonl` sin reejecutar                                  | ✅ `runtime/src/cli-status.ts` + `cli-status.test.ts` (10 casos, log sintético) |
 
 ---
 

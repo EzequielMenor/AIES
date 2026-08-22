@@ -10,10 +10,11 @@ import { parseArgs } from "node:util";
 import { promisify } from "node:util";
 
 import { loadConfig } from "../config.js";
-import { CAPABILITY_TOOLS } from "../workers/capabilities.js";
+import { buildCapabilityTools } from "../workers/capabilities.js";
 import { createWorkerSession, disposeWorkerSession } from "../workers/session-factory.js";
 
-const ALL_TOOLS = [...new Set(Object.values(CAPABILITY_TOOLS).flat())].sort();
+const NO_INTEGRATIONS = { code_explore: false, mem_read: false, mem_log: false };
+const ALL_TOOLS = [...new Set(Object.values(buildCapabilityTools({ integrations: NO_INTEGRATIONS })).flat())].sort();
 const execAsync = promisify(exec);
 
 interface VerifyOutcome {

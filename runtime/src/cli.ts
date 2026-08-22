@@ -26,7 +26,10 @@ import * as readline from "node:readline/promises";
 import pc from "picocolors";
 
 import { LocalStore } from "./cli-persistence.js";
+import { formatStatus } from "./cli-status.js";
 import { loadConfig, type Config } from "./config.js";
+import { runStartup, type StartupReport } from "./integrations/index.js";
+import { addKnownInfo } from "./core/state.js";
 
 const nodeRequire = createRequire(import.meta.url);
 import type {
@@ -184,16 +187,24 @@ export interface RunCycleOptions {
 	pollIntervention?: (() => InterventionAdjustment | null) | undefined;
 	/** T2.2 — guía del desarrollador inyectada al reanudar (se añade a `knownInfo`). */
 	resumeGuide?: string | undefined;
+	/** ADR-011 — startup cacheado. Si se omite, se calcula aquí (runStartup). */
+	startup?: StartupReport | undefined;
 }
 
 export interface RunCycleResult {
 	state: RuntimeState;
 	interrupted: boolean;
 	completed: boolean;
+	/** Reporte de integraciones del arranque (disponibilidad, briefing, tools). */
+	startup: StartupReport;
 }
 
 export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCycleResult> {
+	const startup = opts.startup ?? runStartup(opts.cwd);
 	let initial = opts.resumeFrom ?? initState(task, opts.limits);
+	// ADR-011 §4 — briefing al estado ANTES del bucle: el orquestador (P-09) ve `knownInfo`
+	// serializado en cada turno. Se añade tras la guía de /resume si la hay.
+	for (const line of startup.briefing) initial = addKnownInfo(initial, line);
 	if (opts.resumeGuide && opts.resumeFrom) {
 		// T2.2 — la guía se inyecta al estado reanudado como `knownInfo` antes de arrancar el bucle.
 		const note = `guía del desarrollador al reanudar: ${opts.resumeGuide}`;
@@ -203,6 +214,8 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		cwd: opts.cwd,
 		model: opts.model,
 		thinkingLevel: opts.thinkingLevel,
+		customTools: startup.customTools,
+		integrationBits: startup.toolNames,
 	};
 	const decideCtx = { cwd: opts.cwd, model: opts.model, thinkingLevel: opts.thinkingLevel, signal: opts.signal };
 	const renderer = opts.renderer ?? new StreamRenderer(output);
@@ -257,7 +270,7 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 			/* best-effort */
 		}
 	}
-	return { state: finalState, interrupted, completed };
+	return { state: finalState, interrupted, completed, startup };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -288,6 +301,7 @@ const HELP_TEXT = [
 	"  /resume \"<guía>\"            — reanuda inyectando la guía como knownInfo",
 	"  /state                      — vista humana del RuntimeState actual",
 	"  /state --json               — JSON resumido del RuntimeState actual",
+	"  /status                     — estado + telemetría agregada del historial (log.jsonl)",
 	"  /clear                      — limpia la pantalla",
 	"  /exit | /quit               — cierra la sesión",
 	"",
@@ -398,7 +412,7 @@ export function formatStateOutput(input: string, snapshot: RuntimeState | null):
 	return `${formatStateHuman(snapshot)}\n`;
 }
 
-export function oneshotExitCode(result: RunCycleResult): number {
+export function oneshotExitCode(result: Pick<RunCycleResult, "completed">): number {
 	if (result.completed) return 0;
 	// Cualquier estado no Completada (incluido "En curso" tras límite) sale 1 en oneshot.
 	return 1;
@@ -632,6 +646,11 @@ async function runRepl(ctx: {
 			if (input0 === "/state" || input0.startsWith("/state ")) {
 				const snapshot = currentState ?? store.loadState();
 				output.write(formatStateOutput(input0, snapshot));
+				continue;
+			}
+			if (input0 === "/status") {
+				const snapshot = currentState ?? store.loadState();
+				output.write(`${formatStatus(snapshot, store.readLogIndexed())}\n`);
 				continue;
 			}
 			if (input0 === "/resume" || input0.startsWith("/resume ")) {

@@ -55,6 +55,19 @@ export const violet = (s: string) => truecolor("#a371f7", s);
 export const amberText = amber;
 const bright = pc.bold; // énfasis (picocolors)
 
+/** Formato compartido `cost` (T3.1 + `/status`): null → `n/d`; <1 → `$0.000`; ≥1 → `$0.00`. */
+export function formatCost(cost: number | null): string {
+	if (cost === null) return "n/d";
+	return cost < 1 ? `$${cost.toFixed(3)}` : `$${cost.toFixed(2)}`;
+}
+
+/** Formato compartido de tokens (T3.1 + `/status`): <1000 → número; ≥1000 → `1.2k`. */
+export function formatTokens(n: number): string {
+	if (n < 1000) return String(n);
+	const k = n / 1000;
+	return `${k >= 10 ? k.toFixed(1) : k.toFixed(2)}k`;
+}
+
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 const CAP_LABELS: Record<string, string> = {
@@ -200,16 +213,12 @@ export class StreamRenderer implements AiesEventHandlers {
 	}
 
 	private formatCost(cost: number | null): string {
-		// null = telemetría no disponible en ninguna vuelta → representar explícitamente, NO inventar $0.
-		if (cost === null) return "cost n/d";
-		return cost < 1 ? `$${cost.toFixed(3)}` : `$${cost.toFixed(2)}`;
+		return formatCost(cost);
 	}
 
 	/** T3.1 — formato compacto de tokens: <1000 → número, ≥1000 → `1.2k` (estilo prototipo). */
 	private formatTokens(n: number): string {
-		if (n < 1000) return String(n);
-		const k = n / 1000;
-		return `${k >= 10 ? k.toFixed(1) : k.toFixed(2)}k`;
+		return formatTokens(n);
 	}
 
 	/** T3.1 — porcentaje de contexto: el binding dice 0..100 entero, pero en la práctica emite
@@ -346,7 +355,8 @@ export class StreamRenderer implements AiesEventHandlers {
 
 	onTaskCompleted(summary: string, telemetry: TaskTelemetry): void {
 		this.detachSpinner();
-		const meta = `${this.formatElapsed(telemetry.startTs, telemetry.endTs)} · ${telemetry.iterations} · ${this.formatCost(telemetry.totalCost)}`;
+		const costStr = telemetry.totalCost === null ? "cost n/d" : formatCost(telemetry.totalCost);
+		const meta = `${this.formatElapsed(telemetry.startTs, telemetry.endTs)} · ${telemetry.iterations} · ${costStr}`;
 		this.line("");
 		this.line(this.renderBar(`${green("✓ TASK COMPLETED")} ${bright(`(${meta})`)}`));
 		this.line("Resumen: " + (summary || "tarea completada"));
@@ -423,7 +433,7 @@ export class StreamRenderer implements AiesEventHandlers {
 				const iterN = obs.state.iterations;
 				const iterMax = obs.state.limits.maxIterations;
 				const tok = this.telemKnown ? this.formatTokens(this.tokenTotal) : "n/d";
-				const cost = this.telemKnown ? this.formatCost(this.costTotal) : "cost n/d";
+				const cost = this.telemKnown ? formatCost(this.costTotal) : "cost n/d";
 				const ctx = this.formatContextPct(this.lastContextPct);
 				this.detachSpinner();
 				this.line(pc.dim(`· iter ${iterN}/${iterMax} · ${tok} tok · ${cost} · ${ctx} · verify ${verifyP}/${verifyQ}`));

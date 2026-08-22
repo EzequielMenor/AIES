@@ -74,7 +74,7 @@ pnpm run research:metrics -- .aies/log.jsonl
 
 ## Operational notes
 
-- Node ≥ 20. ESM, strict TypeScript.
+- Node ≥ 22.19.0. ESM, strict TypeScript.
 - Provider keys are read from the environment by `ModelRuntime.create()`; never stored in the repo.
 - With no key, the runtime degrades gracefully: the harness is verified, no round-trip is executed.
 - The repo is shipped with a `.gitignore` that excludes `node_modules/`, `dist/`, `.env`, and `*.log`.
