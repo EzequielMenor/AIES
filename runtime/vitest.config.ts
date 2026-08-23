@@ -15,6 +15,8 @@ export default defineConfig({
 			"src/ui/stream-renderer.test.ts",
 			"src/cli-status.test.ts",
 			"src/integrations/integrations.test.ts",
+			"src/auth.test.ts",
+			"src/models-list.test.ts",
 		],
 		// El smoke test puede tardar (escribe archivo + spawna node); 30s es seguro.
 		testTimeout: 30_000,

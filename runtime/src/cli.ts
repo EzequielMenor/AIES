@@ -32,11 +32,21 @@ import * as readline from "node:readline/promises";
 import { emitKeypressEvents, type Key } from "node:readline";
 import pc from "picocolors";
 
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+
+import {
+	formatAuthStatusLines,
+	getModelRuntime,
+	loginProvider,
+	logoutProvider,
+	PROVIDER_ENV_KEY,
+} from "./auth.js";
 import { LocalStore } from "./cli-persistence.js";
 import { formatStatus } from "./cli-status.js";
 import { loadConfig, type Config } from "./config.js";
 import { runStartup, type StartupReport } from "./integrations/index.js";
 import { addKnownInfo } from "./core/state.js";
+import { formatModelsTable, parseModelsQuery, resolveModelsForListing, searchModels } from "./models-list.js";
 
 const nodeRequire = createRequire(import.meta.url);
 import type {
@@ -319,29 +329,27 @@ const HELP_TEXT = [
 	"  /clear                      — limpia la pantalla",
 	"  /exit | /quit               — cierra la sesión",
 	"",
+	"  /auth              — estado de autenticación por provider",
+	"  /login [provider]  — guarda una API key (persiste en ~/.pi/agent/auth.json)",
+	"  /logout [provider] — borra la credencial guardada de ese provider",
+	"  /models [@prov] [q] — lista modelos; @prov cambia de provider, el resto filtra por texto",
+	"  /model <id>        — usa ese modelo para el resto de esta sesión (no persiste)",
+	"",
 	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
 	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
 	" ESC la pausa (sigue en /resume); Ctrl+C la pausa y cierra la sesión",
 	" (un 2º Ctrl+C fuerza salida inmediata).",
 	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
+	" provider/modelo por defecto: aies.config.json (editar a mano para hacer /model permanente).",
 ].join("\n");
 
 function helpText(): string {
 	return HELP_TEXT;
 }
 
-/** Env var de API key por provider (sin red). Providers desconocidos: aviso genérico. */
-export const PROVIDER_ENV_KEY: Record<string, string> = {
-	anthropic: "ANTHROPIC_API_KEY",
-	openai: "OPENAI_API_KEY",
-	google: "GEMINI_API_KEY",
-	gemini: "GEMINI_API_KEY",
-	minimax: "MINIMAX_API_KEY",
-	openrouter: "OPENROUTER_API_KEY",
-	groq: "GROQ_API_KEY",
-	xai: "XAI_API_KEY",
-	mistral: "MISTRAL_API_KEY",
-};
+// PROVIDER_ENV_KEY vive en ./auth.js (compartida con /login, /auth); re-exportada aquí por
+// compatibilidad — nada más en el paquete la importaba desde cli.ts antes de este cambio.
+export { PROVIDER_ENV_KEY };
 
 export function preflight(cfg: Config, out: NodeJS.WritableStream, env: NodeJS.ProcessEnv = process.env): void {
 	const provider = cfg.provider;
@@ -351,6 +359,19 @@ export function preflight(cfg: Config, out: NodeJS.WritableStream, env: NodeJS.P
 	if (!envKey) return;
 	if (!env[envKey]) {
 		out.write(`${amber("▲")} aies: ${envKey} no está definida — el runtime degradará sin round-trip.\n`);
+	}
+}
+
+/**
+ * Confirmación extra cuando la autenticación viene de /login (credencial guardada), no de
+ * env — preflight() de arriba sólo mira la env var y seguiría avisando en ámbar aunque el
+ * provider SÍ esté configurado vía credencial persistida. No toca preflight() para no
+ * romper sus tests (comportamiento env-only intacto).
+ */
+export function authReadinessNotice(runtime: ModelRuntime, cfg: Config, out: NodeJS.WritableStream): void {
+	const status = runtime.getProviderAuthStatus(cfg.provider);
+	if (status.configured && status.source && status.source !== "environment") {
+		out.write(`aies: ${cfg.provider} autenticado vía ${status.source} (/login).\n`);
 	}
 }
 
@@ -444,7 +465,13 @@ const CLI_HELP_TEXT = [
 	"  aies -V, --version muestra la versión y el commit actual",
 	"  aies -h, --help    muestra esta ayuda",
 	"",
+	"  aies auth              estado de autenticación por provider",
+	"  aies login <provider>  guarda una API key (persiste en ~/.pi/agent/auth.json)",
+	"  aies logout <provider> borra la credencial guardada de ese provider",
+	"  aies models [@prov] [q] lista modelos; @prov cambia de provider, el resto filtra por texto",
+	"",
 	"  AIES_NO_UPDATE_CHECK=1 desactiva el chequeo automático de actualizaciones.",
+	"  AIES_MODEL=<id>         fuerza un modelo puntual, sin tocar aies.config.json.",
 ].join("\n");
 
 function clearScreen(): void {
@@ -462,11 +489,36 @@ export interface CliOptions {
 	repl: boolean;
 }
 
-function resolveModel(modelStr: string | undefined): ResolvedModel | undefined {
-	// CLI real: la resolución del modelo (provider + id → instancia) ocurre vía ModelRuntime.create
-	// en `decide.ts`/worker. Aquí sólo devolvemos undefined → el host usará su modelo por defecto.
-	// Si en el futuro se quiere aceptar --model en argv, se puede resolver aquí contra pi.
-	return undefined;
+/**
+ * Resuelve provider+id de aies.config.json (o AIES_MODEL como override puntual) contra el
+ * catálogo real de `runtime`.
+ *
+ * Antes esta función era un stub que siempre devolvía undefined — aies.config.json's
+ * `provider`/`models` no tenían ningún efecto; el host resolvía silenciosamente su propio
+ * modelo por defecto sin importar lo que dijera el config. Ese comportamiento se descubrió
+ * al construir /login y /models: sin esta función real ninguna de las dos podía demostrarse
+ * (¿de qué sirve iniciar sesión en un provider si el config nunca lo llegaba a usar?).
+ *
+ * getModel() sólo busca el id en el catálogo — NO valida credenciales; la autenticación se
+ * resuelve más tarde, en la primera llamada real al modelo (mismo diseño no-bloqueante que
+ * preflight()).
+ */
+async function resolveModel(
+	runtime: ModelRuntime,
+	cfg: Config,
+	overrideId: string | undefined,
+	out: NodeJS.WritableStream,
+): Promise<ResolvedModel | undefined> {
+	const modelId = overrideId ?? cfg.models.orchestrator;
+	if (!modelId) return undefined;
+	const found = runtime.getModel(cfg.provider, modelId);
+	if (!found) {
+		out.write(
+			`${amber("▲")} aies: modelo "${modelId}" no encontrado para provider "${cfg.provider}" — el runtime usará su modelo por defecto. Usa /models para ver los disponibles.\n`,
+		);
+		return undefined;
+	}
+	return found;
 }
 
 const UPDATE_NOTICE_TIMEOUT_MS = 3500;
@@ -506,6 +558,68 @@ async function printVersion(): Promise<void> {
 	output.write(`aies ${packageVersion()} (${await currentHead()})\n`);
 }
 
+/**
+ * Subcomandos de auth/modelos, resueltos antes de tocar aies.config.json: /login, /logout y
+ * /auth son operaciones sobre el credential store de pi, no sobre el proyecto — no deberían
+ * fallar sólo porque aies.config.json esté roto o ausente. `models` es la única excepción,
+ * ya que sin `@provider` explícito necesita un provider por defecto de algún sitio.
+ *
+ * Devuelve true si `argv` era uno de estos subcomandos (y ya se ha hecho process.exit()).
+ */
+async function tryRunAuthSubcommand(argv: string[]): Promise<boolean> {
+	const [command, ...rest] = argv;
+
+	if (command === "auth" && rest.length === 0) {
+		const runtime = await getModelRuntime();
+		for (const line of formatAuthStatusLines(runtime)) output.write(`${line}\n`);
+		process.exit(0);
+	}
+
+	if (command === "login") {
+		const providerId = rest[0];
+		if (!providerId) {
+			output.write("Uso: aies login <provider>   (ver providers con: aies auth)\n");
+			process.exit(2);
+		}
+		const runtime = await getModelRuntime();
+		const result = await loginProvider(runtime, providerId, output);
+		output.write(result.ok ? `✓ ${result.providerId}: autenticado (persiste en ~/.pi/agent/auth.json).\n` : `✗ ${result.providerId}: ${result.error}\n`);
+		process.exit(result.ok ? 0 : 1);
+	}
+
+	if (command === "logout") {
+		const providerId = rest[0];
+		if (!providerId) {
+			output.write("Uso: aies logout <provider>\n");
+			process.exit(2);
+		}
+		const runtime = await getModelRuntime();
+		const result = await logoutProvider(runtime, providerId);
+		output.write(result.ok ? `✓ ${result.providerId}: sesión cerrada.\n` : `✗ ${result.providerId}: ${result.error}\n`);
+		process.exit(result.ok ? 0 : 1);
+	}
+
+	if (command === "models") {
+		// aies.config.json es opcional aquí — sólo aporta el provider por defecto cuando no
+		// se pasa @provider; sin config válido, cae a "anthropic" (el default del propio schema).
+		let defaultProvider = "anthropic";
+		try {
+			defaultProvider = loadConfig().provider;
+		} catch {
+			/* sin config válido: usar el default */
+		}
+		const { providerId, query } = parseModelsQuery(rest.join(" "), defaultProvider);
+		const runtime = await getModelRuntime();
+		const all = resolveModelsForListing(runtime, providerId);
+		const filtered = searchModels(all, query);
+		output.write(`Modelos — ${providerId}${query ? ` · "${query}"` : ""} (${filtered.length}/${all.length})\n`);
+		output.write(`${formatModelsTable(filtered)}\n`);
+		process.exit(0);
+	}
+
+	return false;
+}
+
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 	if (argv.length === 1) {
@@ -522,6 +636,9 @@ async function main(): Promise<void> {
 			process.exit(0);
 		}
 	}
+	if (argv.length >= 1 && ["auth", "login", "logout", "models"].includes(argv[0]!)) {
+		await tryRunAuthSubcommand(argv);
+	}
 	const taskArg = argv.length > 0 ? argv.join(" ").trim() : null;
 	const repl = taskArg === null || taskArg.length === 0;
 	const cwd = process.cwd();
@@ -535,13 +652,15 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	const limits: Limits = limitsFromConfig(cfg);
-	const model: ResolvedModel | undefined = resolveModel(process.env.AIES_MODEL);
+	const runtime = await getModelRuntime();
+	const model = await resolveModel(runtime, cfg, process.env.AIES_MODEL, output);
 	const thinkingLevel = cfg.orchestratorThinkingLevel;
 	const updatePromise = checkForUpdate();
 	preflight(cfg, output);
+	authReadinessNotice(runtime, cfg, output);
 
 	if (repl) {
-		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise });
+		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise, runtime, cfg });
 	} else {
 		const exitCode = await runOneshot(taskArg!, { cwd, limits, model, thinkingLevel, updatePromise });
 		const status = await waitForUpdateNotice(updatePromise);
@@ -618,11 +737,16 @@ async function runRepl(ctx: {
 	model: ResolvedModel | undefined;
 	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
 	updatePromise: Promise<UpdateStatus>;
+	runtime: ModelRuntime;
+	cfg: Config;
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
 	banner();
 	for (const msg of replStartupMessages(store)) output.write(`${msg}\n`);
 	let currentState: RuntimeState | null = store.loadState();
+	// /model la cambia para el resto de esta sesión — no toca aies.config.json, así que no hay
+	// que preocuparse por dejar el repo con cambios sin querer.
+	let activeModel = ctx.model;
 	const updateStatus = await waitForUpdateNotice(ctx.updatePromise);
 	const updateNotice = formatUpdateNotice(updateStatus ?? { kind: "skipped" });
 	if (updateNotice) output.write(`\n${updateNotice}\n`);
@@ -699,6 +823,52 @@ async function runRepl(ctx: {
 				output.write(`${formatStatus(snapshot, store.readLogIndexed())}\n`);
 				continue;
 			}
+			if (input0 === "/auth") {
+				for (const line of formatAuthStatusLines(ctx.runtime)) output.write(`${line}\n`);
+				continue;
+			}
+			if (input0 === "/login" || input0.startsWith("/login ")) {
+				const providerId = input0.slice("/login".length).trim() || ctx.cfg.provider;
+				const result = await loginProvider(ctx.runtime, providerId, output);
+				output.write(
+					result.ok
+						? `✓ ${result.providerId}: autenticado (persiste en ~/.pi/agent/auth.json).\n`
+						: `✗ ${result.providerId}: ${result.error}\n`,
+				);
+				continue;
+			}
+			if (input0 === "/logout" || input0.startsWith("/logout ")) {
+				const providerId = input0.slice("/logout".length).trim() || ctx.cfg.provider;
+				const result = await logoutProvider(ctx.runtime, providerId);
+				output.write(result.ok ? `✓ ${result.providerId}: sesión cerrada.\n` : `✗ ${result.providerId}: ${result.error}\n`);
+				continue;
+			}
+			if (input0 === "/models" || input0.startsWith("/models ")) {
+				const arg = input0.slice("/models".length).trim();
+				const { providerId, query } = parseModelsQuery(arg, ctx.cfg.provider);
+				const all = resolveModelsForListing(ctx.runtime, providerId);
+				const filtered = searchModels(all, query);
+				output.write(`Modelos — ${providerId}${query ? ` · "${query}"` : ""} (${filtered.length}/${all.length})\n`);
+				output.write(`${formatModelsTable(filtered)}\n`);
+				continue;
+			}
+			if (input0 === "/model" || input0.startsWith("/model ")) {
+				const modelId = input0.slice("/model".length).trim();
+				if (!modelId) {
+					output.write(`aies: modelo activo = ${activeModel?.id ?? "(por defecto del host)"}. Uso: /model <id>\n`);
+					continue;
+				}
+				const found = ctx.runtime.getModel(ctx.cfg.provider, modelId);
+				if (!found) {
+					output.write(
+						`aies: modelo "${modelId}" no encontrado para provider "${ctx.cfg.provider}". Usa /models para ver los disponibles.\n`,
+					);
+					continue;
+				}
+				activeModel = found;
+				output.write(`✓ modelo activo para esta sesión: ${found.id} (no se guarda — edita aies.config.json para hacerlo permanente).\n`);
+				continue;
+			}
 			if (input0 === "/resume" || input0.startsWith("/resume ")) {
 				const guide = parseResumeGuide(input0);
 				const resolved = resolveResume(currentState ?? store.loadState());
@@ -714,7 +884,7 @@ async function runRepl(ctx: {
 					run: (signal) =>
 						runResumeCycle(resolved.state, {
 							cwd: ctx.cwd,
-							model: ctx.model,
+							model: activeModel,
 							thinkingLevel: ctx.thinkingLevel,
 							limits: ctx.limits,
 							signal,
@@ -739,7 +909,7 @@ async function runRepl(ctx: {
 				run: (signal) =>
 					runCycle(task, {
 						cwd: ctx.cwd,
-						model: ctx.model,
+						model: activeModel,
 						thinkingLevel: ctx.thinkingLevel,
 						limits: ctx.limits,
 						signal,
