@@ -9,7 +9,7 @@ The runtime lives entirely under `runtime/`:
 ```text
 runtime/
 ├── package.json              # @aies/core, bin "aies" → dist/cli.js, scripts (build/test*/research:metrics)
-├── tsconfig.json             # ESM, strict, Node ≥20
+├── tsconfig.json             # ESM, strict, Node ≥22.19.0
 ├── aies.config.json          # provider + models per role (no secrets); orchestratorThinkingLevel; limits
 ├── README.md                 # state of implementation, gate findings, scripts, smoke
 ├── .gitignore
@@ -17,7 +17,7 @@ runtime/
 │   ├── cli.ts                # aies "<tarea>" / aies (REPL) entrypoint (CLI standalone)
 │   ├── cli-persistence.ts    # REPL session persistence
 │   ├── config.ts             # Zod-validated aies.config.json loader (AIES_CONFIG env override)
-│   ├── intervention.ts       # SIGINT → StopController (1st → request stop, 2nd → exit 130)
+│   ├── intervention.ts       # legacy StopController (mantenido para extension/ @deprecated); el wireado activo vive en cli.ts (ADR-012: ESC parar / Ctrl+C cerrar → pausa reanudable)
 │   ├── limits.ts             # LIMIT_POLICY + limitsFromConfig
 │   ├── observability.ts      # shapes of decision/result/compaction log entries + serializers
 │   ├── core/                 # domain (no pi): state.ts, loop.ts, events.ts, types.ts, observation.ts
@@ -42,7 +42,7 @@ The runtime is **the only module** of this repo that imports `@earendil-works/pi
 The CLI entrypoint is `runtime/src/cli.ts`. From argv it dispatches into two modes:
 
 - **Oneshot** — `aies "<tarea>"` (or any non-empty positional argument): runs one task to a terminal state and exits 0/1.
-- **REPL** — `aies` (no args): interactive prompt `❯ `; each line is a new task over the same project. The REPL recognizes `/help`, `/state`, `/clear`, `/exit | /quit`. See `cli.ts::HELP_TEXT`.
+- **REPL** — `aies` (no args): interactive prompt `❯ `; each line is a new task over the same project. Commands: `/help`, `/state`, `/state --json`, `/resume`, `/clear`, `/exit | /quit`. See `cli.ts::HELP_TEXT`.
 
 ```text
 cli.ts
@@ -52,7 +52,7 @@ cli.ts
   ├── decide = createDecide({ cwd, model, thinkingLevel, signal })
   │                                            # orchestrator/decide.ts — AgentSession efímera por turno
   ├── execute = buildExecute(wctx, signal)      # workers/tools.ts::runWorker (WorkerToolContext)
-  ├── controller = new AbortController()        # SIGINT → abort (no exit, no kill)
+  ├── controller = new AbortController()        # SIGINT → abort (no exit, no kill en la primera señal; segunda SIGINT → exit 130)
   ├── renderer = new StreamRenderer(...)        # ui/stream-renderer.ts (merged into handlers below)
   └── runCycle(task, { ... })                   # runLoop(state, { decide, execute, handlers, ... })
         └─ store.saveState(finalState)
@@ -60,7 +60,7 @@ cli.ts
 
 What this means:
 
-- **Modes** — argv with positional text runs `runOneshot(taskArg)`; argv with no positional text drops into `runRepl()` and stays until `/exit`. The REPL loads any prior state from `<cwd>/.aies/state.json` and reuses it as the baseline for the next task; SIGINT during a run aborts that run without killing the process.
+- Los modos: argv con texto posicional corre `runOneshot(taskArg)`; sin texto entra en `runRepl()` hasta `/exit`. El REPL carga `.aies/state.json`; si está `En curso` (o `Recibida`), avisa y `/resume` continúa el snapshot (`resumeFrom`). **Señales durante un run (ADR-012):** ESC → pausa (vuelve al prompt). Ctrl+C → pausa, persiste estado, cierra el REPL. 2º Ctrl+C → `process.exit(130)`. `Fallida` se reserva para inviabilidad y terminación por límite.
 - **Persistence path** — the CLI uses `LocalStore` (`cli-persistence.ts`) at `<cwd>/.aies/{state.json,log.jsonl}`. The legacy `persistence/file_store.ts` (used by the deprecated extension) lives at `<agentDir>/aies/<sha1(cwd).slice(0,16)>/{state.json,log.jsonl}` and is still exercised by `self-check/persistence.ts`. Both write JSONL append-only and `state.json` atomically (`.tmp` + rename).
 - **`runLoop`** runs while `taskState ∈ {Recibida, En curso}`. Each iteration is `decide(state) → execute(state, decision) → applyOperationResult`. Limits, parse failures, and SIGINT are checked before each turn; see [architecture.md §3](architecture.md#3-the-decision-loop).
 - **Worker call** — `execute` invokes `workers/tools.ts::runWorker(cap, …)`, which builds an ephemeral `AgentSession` via `workers/session-factory.ts::createWorkerSession` with the capability's tool allowlist (`workers/capabilities.ts`), the persona prompt (`workers/prompts.ts::CAPABILITY_PROMPT`), and an `AbortSignal` wired to `controller.signal`.
@@ -176,8 +176,10 @@ There is no `pnpm run smoke` script anymore — the legacy one was removed. The 
 }
 ```
 
-- Provider and model names are versioned in the repo. Keys come **only** from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`.
+- Provider and model names are versioned in the repo. Keys come from the pi-coding-agent credential store (`~/.pi/agent/auth.json`, managed via `/login` or `aies login <provider>`, supporting api_key) or as fallback from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`.
 - `AIES_CONFIG` env var overrides the config path (used in `06-research/experiments/` for alternate lanes).
+- `AIES_MODEL` env var forces a specific model id for a single run without touching `aies.config.json`.
+- `/pick` (or `aies pick <rol> <provider>/<model-id>`) writes `aies.config.json` atomically (`.bak`+tmp+rename) and re-validates with `loadConfig`. `/models` (or `aies models`) lists the catalog with auth status and current role assignments.
 - `orchestratorThinkingLevel` is `low` by default (provisional, ADR-007). Calibration in `06-research`.
 - `maxIterations = 12` is the backstop. Cost is `off`; context is `observed-autoCompaction-backstop-iter` (i.e., observed via pi's native compaction and backed by the iteration cap).
 

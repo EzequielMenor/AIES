@@ -1,0 +1,528 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap">
+  <style>
+    :root{
+      --bg:#0a0e14; --panel:#0f1420; --side:#0b0f18; --line:#1c2433;
+      --text:#c9d1d9; --dim:#6e7889; --dim2:#3d4451; --bright:#f0f3f8;
+      --cyan:#38bdf8; --green:#3fb950; --red:#f85149; --amber:#d29922; --violet:#a371f7;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);font-family:'JetBrains Mono',monospace;color:var(--text)}
+    a{color:var(--cyan)} a:hover{color:#7dd3fc}
+    #stream{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+    #stream::-webkit-scrollbar{width:8px}
+    #stream::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+    .cmdInput{background:transparent;border:none;outline:none;color:var(--bright);font-family:'JetBrains Mono',monospace;font-size:13px;flex:1;caret-color:var(--cyan)}
+    .cmdInput::placeholder{color:var(--dim2)}
+    .unitRow{display:flex;align-items:center;gap:6px}
+    .pill{font-size:10px;padding:1px 6px;border-radius:8px;background:#161b22;color:var(--dim)}
+    @keyframes blink{50%{opacity:0}}
+    .caret{animation:blink 1s step-start infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .spinner{display:inline-block;animation:spin 0.8s linear infinite}
+    .reasoning{color:var(--dim);font-style:italic;font-size:12px;padding-left:2px}
+    .unit-block{margin:1px 0}
+    .unit-header{cursor:pointer;display:flex;align-items:center;gap:7px;user-select:none;padding:1px 0}
+    .unit-header:hover .unit-title{color:var(--bright)}
+    .unit-header .chev{color:var(--dim2);width:9px;display:inline-block;font-size:10px;flex-shrink:0}
+    .unit-header .unit-title{color:var(--bright)}
+    .unit-body{padding-left:21px;border-left:1px solid var(--line);margin-left:3px;display:flex;flex-direction:column;gap:2px;padding-top:3px;padding-bottom:6px}
+    .unit-body.collapsed{display:none}
+    .diff-box{margin:4px 0 4px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden;font-size:12px;max-width:640px}
+    .diff-file{background:#141a24;color:var(--dim);padding:4px 10px;border-bottom:1px solid var(--line)}
+    .diff-line{padding:1px 10px;white-space:pre}
+    .diff-add{background:rgba(63,185,80,0.12);color:#7ee2a8}
+    .diff-del{background:rgba(248,81,73,0.12);color:#ff9a94}
+    .diff-ctx{color:var(--dim2)}
+    .test-toggle{cursor:pointer;user-select:none}
+    .test-toggle:hover{color:var(--bright)}
+    .test-list{padding-left:16px;display:none;flex-direction:column;gap:1px}
+    .test-list.open{display:flex}
+    .intervene-row{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line);background:#161029;flex-shrink:0}
+  </style>
+</helmet>
+
+<div id="app" style="width:980px;height:620px;background:var(--bg);display:flex;flex-direction:column;overflow:hidden;border-radius:10px;border:1px solid var(--line)">
+
+  <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0">
+    <div style="display:flex;gap:6px">
+      <div style="width:10px;height:10px;border-radius:50%;background:#f85149"></div>
+      <div style="width:10px;height:10px;border-radius:50%;background:#d29922"></div>
+      <div style="width:10px;height:10px;border-radius:50%;background:#3fb950"></div>
+    </div>
+    <div style="margin-left:8px;color:var(--dim);font-size:13px">aies — ~/proyectos/smash</div>
+    <div id="hdrStatus" style="margin-left:14px;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim2)">
+      <span style="width:6px;height:6px;border-radius:50%;background:var(--dim2);display:inline-block"></span>
+      inactivo
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--dim)">
+      <span>tok <span id="tokVal" class="mono" style="color:var(--bright)">0</span></span>
+      <span>coste <span id="costVal" style="color:var(--green)">$0.00</span></span>
+      <span style="color:var(--dim2)">v0.4.0</span>
+    </div>
+  </div>
+
+  <div style="flex:1;display:flex;overflow:hidden">
+
+    <div style="width:190px;border-right:1px solid var(--line);background:var(--side);padding:12px;display:flex;flex-direction:column;gap:10px;flex-shrink:0;overflow-y:auto">
+      <div style="color:var(--dim2);text-transform:uppercase;letter-spacing:1px;font-size:10px">unidades</div>
+      <div id="unitList" style="display:flex;flex-direction:column;gap:7px;font-size:12px">
+        <div style="color:var(--dim2)">sin tarea activa</div>
+      </div>
+      <div style="height:1px;background:var(--line);margin:2px 0"></div>
+      <div style="color:var(--dim2);text-transform:uppercase;letter-spacing:1px;font-size:10px">sesión</div>
+      <div style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+        <div>iter <span id="iterVal" style="color:var(--bright)">0</span>/<span id="iterMax">40</span></div>
+        <div>ctx <span id="ctxVal" style="color:var(--bright)">0%</span></div>
+        <div>verify <span id="verifyVal" style="color:var(--green)">0/0</span></div>
+      </div>
+    </div>
+
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <div id="stream" style="flex:1;overflow-y:auto;padding:14px 18px;font-size:13px;line-height:1.75;display:flex;flex-direction:column;gap:1px">
+        <div style="color:var(--dim2)">bienvenido a aies. escribe una tarea, o /help para ver comandos.</div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line);background:var(--panel);flex-shrink:0">
+        <span style="color:var(--cyan)">❯</span>
+        <input id="cmdInput" class="cmdInput" type="text" placeholder="escribe una tarea o /help" autocomplete="off" spellcheck="false">
+        <span id="hintKey" style="color:var(--dim2);font-size:11px">↵ enviar</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+
+  componentDidMount() {
+    const $ = (id) => document.getElementById(id);
+    const stream = $('stream');
+    const input = $('cmdInput');
+    const unitList = $('unitList');
+    const hdrStatus = $('hdrStatus');
+    const tokVal = $('tokVal');
+    const costVal = $('costVal');
+    const iterVal = $('iterVal');
+    const iterMax = $('iterMax');
+    const ctxVal = $('ctxVal');
+    const verifyVal = $('verifyVal');
+
+    let running = false;
+    let timers = [];
+    let tokens = 0;
+    let cost = 0;
+
+    const COLORS = {
+      dim: 'var(--dim)', dim2: 'var(--dim2)', bright: 'var(--bright)',
+      cyan: 'var(--cyan)', green: 'var(--green)', red: 'var(--red)', amber: 'var(--amber)',
+      violet: 'var(--violet)'
+    };
+
+    function line(text, color, indent) {
+      const div = document.createElement('div');
+      div.style.color = COLORS[color] || color || COLORS.text;
+      if (indent) div.style.paddingLeft = indent + 'px';
+      div.textContent = text;
+      stream.appendChild(div);
+      stream.scrollTop = stream.scrollHeight;
+      return div;
+    }
+
+    function html(node) {
+      stream.appendChild(node);
+      stream.scrollTop = stream.scrollHeight;
+      return node;
+    }
+
+    function spacer() { line('', null); }
+
+    function reason(text) {
+      const d = document.createElement('div');
+      d.className = 'reasoning';
+      d.textContent = '· ' + text;
+      stream.appendChild(d);
+      stream.scrollTop = stream.scrollHeight;
+      return d;
+    }
+
+    function createUnitBlock(tag, title) {
+      const wrap = document.createElement('div');
+      wrap.className = 'unit-block';
+      const header = document.createElement('div');
+      header.className = 'unit-header';
+      header.innerHTML = '<span class="chev">▾</span><span class="unit-title">ejecutar unidad <span style="color:var(--cyan)">' + tag + '</span> — ' + title + '</span>';
+      const body = document.createElement('div');
+      body.className = 'unit-body';
+      header.addEventListener('click', () => {
+        body.classList.toggle('collapsed');
+        header.querySelector('.chev').textContent = body.classList.contains('collapsed') ? '▸' : '▾';
+      });
+      wrap.appendChild(header);
+      wrap.appendChild(body);
+      stream.appendChild(wrap);
+      stream.scrollTop = stream.scrollHeight;
+      return {
+        addLine(text, color) {
+          const d = document.createElement('div');
+          d.style.color = COLORS[color] || color || COLORS.text;
+          d.textContent = text;
+          body.appendChild(d);
+          stream.scrollTop = stream.scrollHeight;
+          return d;
+        },
+        addReason(text) {
+          const d = document.createElement('div');
+          d.className = 'reasoning';
+          d.textContent = '· ' + text;
+          body.appendChild(d);
+          stream.scrollTop = stream.scrollHeight;
+        },
+        addDiff(filename, lines) {
+          const box = document.createElement('div');
+          box.className = 'diff-box';
+          const fname = document.createElement('div');
+          fname.className = 'diff-file';
+          fname.textContent = filename;
+          box.appendChild(fname);
+          lines.forEach((l) => {
+            const ln = document.createElement('div');
+            ln.className = 'diff-line ' + (l[0] === '+' ? 'diff-add' : l[0] === '-' ? 'diff-del' : 'diff-ctx');
+            ln.textContent = l;
+            box.appendChild(ln);
+          });
+          body.appendChild(box);
+          stream.scrollTop = stream.scrollHeight;
+        },
+        addTests(passed, total, tests) {
+          const ok = passed === total;
+          const row = document.createElement('div');
+          row.className = 'test-toggle';
+          row.style.color = ok ? 'var(--green)' : 'var(--amber)';
+          const chev = document.createElement('span');
+          chev.textContent = '▸ ';
+          row.appendChild(chev);
+          const label = document.createElement('span');
+          label.textContent = (ok ? '✓ ' : '⚠ ') + passed + '/' + total + ' tests — clic para ver detalle';
+          row.appendChild(label);
+          const list = document.createElement('div');
+          list.className = 'test-list';
+          tests.forEach((t) => {
+            const d = document.createElement('div');
+            d.style.color = t.ok ? 'var(--dim)' : 'var(--red)';
+            d.textContent = (t.ok ? '✓ ' : '✗ ') + t.name;
+            list.appendChild(d);
+          });
+          row.addEventListener('click', () => {
+            list.classList.toggle('open');
+            chev.textContent = list.classList.contains('open') ? '▾ ' : '▸ ';
+          });
+          body.appendChild(row);
+          body.appendChild(list);
+          stream.scrollTop = stream.scrollHeight;
+        }
+      };
+    }
+
+    function setStatus(text, color) {
+      hdrStatus.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:' + (COLORS[color] || color) + ';display:inline-block"></span>' + text;
+      hdrStatus.style.color = COLORS[color] || color;
+    }
+
+    function bumpTokensAndCost(dTok, dCost) {
+      tokens += dTok; cost += dCost;
+      tokVal.textContent = tokens >= 1000 ? (tokens / 1000).toFixed(1) + 'k' : String(tokens);
+      costVal.textContent = '$' + cost.toFixed(2);
+    }
+
+    function setUnits(units) {
+      unitList.innerHTML = '';
+      units.forEach((u) => {
+        const row = document.createElement('div');
+        row.className = 'unitRow';
+        const mark = u.state === 'done' ? '<span style="color:var(--green)">✓</span>'
+          : u.state === 'active' ? '<span style="color:var(--cyan)">◆</span>'
+          : u.state === 'fail' ? '<span style="color:var(--red)">✗</span>'
+          : '<span style="color:var(--dim2)">○</span>';
+        row.innerHTML = mark + ' <span style="color:' + (u.state === 'pending' ? 'var(--dim2)' : 'var(--text)') + '">' + u.label + '</span>';
+        unitList.appendChild(row);
+      });
+    }
+
+    function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+    function after(ms, fn) { const t = setTimeout(fn, ms); timers.push(t); }
+
+    function showHelp() {
+      line('comandos disponibles:', 'bright');
+      line('/help    — muestra esta ayuda', 'dim', 16);
+      line('/state   — estado de la tarea actual', 'dim', 16);
+      line('/resume  — reanuda una tarea en curso', 'dim', 16);
+      line('/clear   — limpia la pantalla', 'dim', 16);
+      line('/exit    — sale de aies', 'dim', 16);
+      spacer();
+    }
+
+    function showState() {
+      line('estado: ' + (running ? 'En curso' : 'Sin tarea activa'), 'bright');
+      if (running) {
+        line('iteración ' + iterVal.textContent + '/' + iterMax.textContent, 'dim', 16);
+        line('tokens ' + tokVal.textContent + ' · coste ' + costVal.textContent, 'dim', 16);
+      }
+      spacer();
+    }
+
+    function clearScreen() { stream.innerHTML = ''; }
+
+    function intervene(text) {
+      line('⚑ tú (intervención): ' + text, 'violet');
+      after(700, () => {
+        line('💬 orquestador: entendido — lo tengo en cuenta para el siguiente paso.', 'cyan');
+        bumpTokensAndCost(150, 0.00);
+      });
+    }
+
+    function runTask(taskText) {
+      if (running) { intervene(taskText); return; }
+      running = true;
+      clearTimers();
+      line('❯ ' + taskText, 'dim');
+      spacer();
+      setStatus('ejecutando', 'green');
+      input.placeholder = 'escribe para intervenir mientras corre…';
+
+      const units = [
+        { label: 'leer módulo afectado', state: 'pending' },
+        { label: 'aplicar corrección', state: 'pending' },
+        { label: 'ejecutar tests', state: 'pending' },
+        { label: 'verificar resultado', state: 'pending' }
+      ];
+      setUnits(units);
+
+      const maxIter = 12;
+      iterMax.textContent = String(maxIter);
+      let warned = false;
+
+      function tickIter(n, ctxPct) {
+        iterVal.textContent = String(n);
+        ctxVal.textContent = ctxPct + '%';
+        if (!warned && n / maxIter >= 0.6) {
+          warned = true;
+          line('⚠ límite de iteraciones cerca (' + n + '/' + maxIter + ') — intervención sugerida', 'amber');
+        }
+      }
+
+      after(400, () => {
+        const d = line('◆ decidiendo…', 'cyan');
+        after(700, () => reason('la tarea menciona paginación; reviso primero cómo se calcula el rango de página antes de tocar nada.'));
+        after(900, () => {
+          d.remove();
+          tickIter(1, 4);
+          units[0].state = 'active'; setUnits(units);
+        });
+
+        // Unidad u1 — explorar
+        let u1;
+        after(1000, () => {
+          u1 = createUnitBlock('u1', 'explorar — leer módulo afectado');
+          bumpTokensAndCost(400, 0.00);
+        });
+        after(1500, () => u1.addReason('busco dónde se define page_size y el cálculo del último índice.'));
+        after(1900, () => { u1.addLine('▸ read src/pagination.ts', 'dim'); bumpTokensAndCost(900, 0.01); });
+        after(2400, () => { u1.addLine('▸ grep "page_size" -r src/', 'dim'); bumpTokensAndCost(500, 0.01); });
+        after(2900, () => u1.addReason('page_size = 20 fijo; el índice final se calcula como (page * size), debería ser (page - 1) * size + items.'));
+        after(3200, () => {
+          units[0].state = 'done'; units[1].state = 'active'; setUnits(units);
+          tickIter(2, 9);
+        });
+
+        // parse-fail — la decisión no encaja en el formato esperado, se reintenta
+        after(3400, () => {
+          line('⚠ parse-fail 1/3 — la respuesta del orquestador no tenía el formato esperado, reintentando', 'amber');
+          bumpTokensAndCost(300, 0.00);
+        });
+        after(3800, () => tickIter(3, 13));
+
+        // Unidad u2 — ejecutar (con diff)
+        let u2;
+        after(4000, () => { u2 = createUnitBlock('u2', 'ejecutar — corregir off-by-one'); bumpTokensAndCost(500, 0.01); });
+        after(4500, () => u2.addReason('el índice final está desplazado en un elemento; corrijo el cálculo del offset.'));
+        after(4900, () => {
+          u2.addLine('▸ edit src/pagination.ts:42', 'dim');
+          u2.addDiff('src/pagination.ts', [
+            '  const size = 20;',
+            '- const end = page * size;',
+            '+ const end = (page - 1) * size + size;',
+            '  return items.slice(start, end);'
+          ]);
+          bumpTokensAndCost(1400, 0.02);
+        });
+        after(5500, () => {
+          units[1].state = 'done'; units[2].state = 'active'; setUnits(units);
+          tickIter(4, 18);
+        });
+
+        // Unidad u3 — test (falla)
+        let u3;
+        after(5700, () => { u3 = createUnitBlock('u3', 'test — ejecutar suite'); bumpTokensAndCost(300, 0.00); });
+        after(6200, () => { u3.addLine('▸ run vitest src/pagination.test.ts src/footer.test.tsx', 'dim'); bumpTokensAndCost(1200, 0.02); });
+        after(6800, () => {
+          u3.addTests(3, 4, [
+            { ok: true, name: 'pagination.test.ts › calcula el rango de página' },
+            { ok: true, name: 'pagination.test.ts › primera página' },
+            { ok: true, name: 'pagination.test.ts › última página parcial' },
+            { ok: false, name: 'footer.test.tsx › muestra el contador correcto' }
+          ]);
+          verifyVal.textContent = '3/4';
+          verifyVal.style.color = 'var(--amber)';
+        });
+        after(7400, () => {
+          spacer();
+          reason('el fallo no es de lógica — el mock del test sigue usando el tamaño de página antiguo.');
+          line('💬 orquestador: corrijo el mock de footer.test.tsx y reintento la suite.', 'cyan');
+          bumpTokensAndCost(700, 0.01);
+        });
+
+        // compactación de contexto — la sesión lleva varias vueltas y el historial pesa
+        after(8000, () => {
+          spacer();
+          line('⇲ contexto compactado (54% → 22%) — se resume el historial de tool calls antiguos', 'violet');
+          ctxVal.textContent = '22%';
+        });
+
+        // Unidad u4 — verificar
+        after(8300, () => {
+          units[2].state = 'done'; units[3].state = 'active'; setUnits(units);
+          tickIter(8, 26);
+        });
+        let u4;
+        after(8500, () => { u4 = createUnitBlock('u4', 'verificar — reintento con mock actualizado'); bumpTokensAndCost(500, 0.01); });
+        after(9000, () => {
+          u4.addLine('▸ edit src/footer.test.tsx:9', 'dim');
+          u4.addDiff('src/footer.test.tsx', [
+            '  const mockItems = makeItems(20);',
+            '- const mockSize = 20;',
+            '+ const mockSize = pagination.page_size;',
+          ]);
+          bumpTokensAndCost(900, 0.01);
+        });
+        after(9600, () => {
+          u4.addLine('▸ run vitest src/pagination.test.ts src/footer.test.tsx', 'dim');
+          bumpTokensAndCost(1100, 0.02);
+        });
+        after(10200, () => {
+          u4.addTests(4, 4, [
+            { ok: true, name: 'pagination.test.ts › calcula el rango de página' },
+            { ok: true, name: 'pagination.test.ts › primera página' },
+            { ok: true, name: 'pagination.test.ts › última página parcial' },
+            { ok: true, name: 'footer.test.tsx › muestra el contador correcto' }
+          ]);
+          verifyVal.textContent = '4/4';
+          verifyVal.style.color = 'var(--green)';
+        });
+        after(10700, () => {
+          units[3].state = 'done'; setUnits(units);
+          tickIter(9, 28);
+          spacer();
+          line('✓ tarea completada', 'green');
+          line('Completada · 0m 45s · ' + iterVal.textContent + ' iter  ·  ' + tokVal.textContent + ' tok  ·  ' + costVal.textContent, 'dim');
+          spacer();
+          setStatus('inactivo', 'dim2');
+          input.placeholder = 'escribe una tarea o /help';
+          running = false;
+        });
+      });
+    }
+
+    function resumeTask() {
+      line('❯ /resume', 'dim');
+      if (running) { line('ya hay una tarea en curso.', 'amber'); spacer(); return; }
+      line('tarea pendiente encontrada: "arreglar bug de paginación" — En curso, pausada en unidad 3/4', 'bright');
+      line('reanudando con el estado guardado (.aies/state.json)…', 'dim');
+      spacer();
+
+      running = true;
+      clearTimers();
+      setStatus('reanudando', 'cyan');
+      input.placeholder = 'escribe para intervenir mientras corre…';
+
+      const units = [
+        { label: 'leer módulo afectado', state: 'done' },
+        { label: 'aplicar corrección', state: 'done' },
+        { label: 'ejecutar tests', state: 'active' },
+        { label: 'verificar resultado', state: 'pending' }
+      ];
+      setUnits(units);
+      const maxIter = 12;
+      iterMax.textContent = String(maxIter);
+      iterVal.textContent = '7';
+      ctxVal.textContent = '31%';
+      bumpTokensAndCost(9800, 0.14);
+
+      after(300, () => line('⚠ límite de iteraciones cerca (7/12) — intervención sugerida', 'amber'));
+
+      let u3;
+      after(700, () => { u3 = createUnitBlock('u3', 'test — reintentar suite tras la pausa'); bumpTokensAndCost(300, 0.00); });
+      after(1200, () => u3.addReason('retomo justo donde se dejó: el mock de footer.test.tsx seguía desactualizado.'));
+      after(1700, () => { u3.addLine('▸ run vitest src/pagination.test.ts src/footer.test.tsx', 'dim'); bumpTokensAndCost(1100, 0.02); });
+      after(2300, () => {
+        u3.addTests(4, 4, [
+          { ok: true, name: 'pagination.test.ts › calcula el rango de página' },
+          { ok: true, name: 'pagination.test.ts › primera página' },
+          { ok: true, name: 'pagination.test.ts › última página parcial' },
+          { ok: true, name: 'footer.test.tsx › muestra el contador correcto' }
+        ]);
+        verifyVal.textContent = '4/4';
+        verifyVal.style.color = 'var(--green)';
+        units[2].state = 'done'; units[3].state = 'active'; setUnits(units);
+        iterVal.textContent = '8';
+      });
+
+      let u4;
+      after(2700, () => { u4 = createUnitBlock('u4', 'verificar — cierre de la tarea'); bumpTokensAndCost(400, 0.01); });
+      after(3200, () => u4.addLine('▸ run full suite — 13 passed', 'green'));
+      after(3700, () => {
+        units[3].state = 'done'; setUnits(units);
+        iterVal.textContent = '9';
+        spacer();
+        line('✓ tarea completada', 'green');
+        line('Completada · 1m 58s (incluye la pausa) · ' + iterVal.textContent + ' iter  ·  ' + tokVal.textContent + ' tok  ·  ' + costVal.textContent, 'dim');
+        spacer();
+        setStatus('inactivo', 'dim2');
+        input.placeholder = 'escribe una tarea o /help';
+        running = false;
+      });
+    }
+
+    function handleSubmit() {
+      const val = input.value.trim();
+      if (!val) return;
+      input.value = '';
+      if (val === '/help') { line('❯ ' + val, 'dim'); showHelp(); return; }
+      if (val === '/state') { line('❯ ' + val, 'dim'); showState(); return; }
+      if (val === '/clear') { clearScreen(); return; }
+      if (val === '/resume') { resumeTask(); return; }
+      if (val === '/exit' || val === '/quit') { line('❯ ' + val, 'dim'); line('(demo) cerraría la sesión aquí.', 'dim2'); spacer(); return; }
+      runTask(val);
+    }
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); handleSubmit(); }
+    });
+
+    document.addEventListener('click', () => input.focus());
+    input.focus();
+  }
+}
+</script>
+</body>
+</html>

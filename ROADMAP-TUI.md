@@ -8,7 +8,7 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-21.
+> Última revisión: 2026-08-23 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2 implementados; T2.3 aplazado).
 
 ---
 
@@ -110,15 +110,12 @@
 
 **Items:**
 
-0.1 **Renderizar `comunicar al desarrollador`.**
-    - Añadir un evento opcional al contrato (`core/events.ts`, p. ej.
-      `onCommunication(text, motivo)`) y emitirlo desde `core/loop.ts` tras
-      ejecutar la operación de comunicación.
-    - Renderizado diferenciado en `StreamRenderer` (bloque "El orquestador
-      comunica:", color ámbar/blanco brillante) — es el orquestador hablándole
-      al desarrollador, no un worker.
+0.1 **Renderizar `comunicar al desarrollador`.** ✅ (T0, 2026-08-21)
+    - **No** se añadió `onCommunication`. Se consume `onLoopObservation`
+      (`execution:resolved` + operación comunicar + result.kind comunicación).
+    - Bloque `💬 Orquestador: {texto}` en cyan/bright (no ámbar).
 
-0.2 **Consumir `onLoopObservation` en `cli.ts`.**
+0.2 **Consumir `onLoopObservation` en `StreamRenderer`.** ✅
     - Línea ámbar por parse-fail (con contador 1/3, 2/3, 3/3 → intervención
       requerida).
     - Línea ámbar por `limit:reached` mostrando el `nextStep` ("intervención
@@ -126,22 +123,18 @@
     - Línea ámbar por `error:unidad-inexistente`.
     - Línea por compaction (evento de contexto; RNF-18/19).
 
-0.3 **Feedback entre turnos.** Spinner "Orquestador decidiendo…" en
-    `onDecideStart`, fijado (`settle`) al llegar `onDecideSuccess`.
+0.3 **Feedback entre turnos.** ✅ Spinner "Orquestador decidiendo…" en
+    `onDecideStart`; `detachSpinner()` al llegar `onDecideSuccess`.
 
-0.4 **Preflight de arranque.** Al iniciar (REPL y oneshot): imprimir
-    provider/modelos resueltos de `aies.config.json` y avisar si falta la clave
-    del provider activo (sin bloquear — la degradación graciosa se mantiene).
+0.4 **Preflight de arranque.** ✅ (REPL y oneshot; no bloquea si falta la clave).
 
-0.5 **Cerrar el doc drift.** Alinear `runtime/README.md` y `ROADMAP.md §0.1`
-    con los comandos reales; las referencias a `/resume` y `/status` quedan
-    anotadas como "llega en T1/T3".
+0.5 **Cerrar el doc drift.** ✅ `runtime/README.md` y `ROADMAP.md §0.1`
+    alineados con comandos reales. `/status` queda anotado como T3.
 
-0.6 **Limpieza menor.** Eliminar el ternario muerto de `runOneshot` (código de
-    salida: `Completada` → 0, resto → 1) y alinear el padding del banner.
+0.6 **Limpieza menor.** ✅ `runOneshot` sale 1 en cualquier no-Completada;
+    padding del banner derivado de `bar.length + 2`.
 
-0.7 **Tests del renderer.** Vitest con stream capturado (TTY simulado y pipe):
-    cubrir comunicación, parse-fail, límite, compaction, no-TTY.
+0.7 **Tests del renderer.** ✅ `src/ui/stream-renderer.test.ts` + `src/cli.test.ts`.
 
 **Criterios de salida:**
 
@@ -163,17 +156,13 @@
 
 **Items:**
 
-1.1 **`/resume`.** Si `.aies/state.json` contiene una tarea `En curso`,
-    reanudarla en lugar de `initState` fresco: pasar el estado cargado a
-    `runCycle` como estado inicial (con su `nextStep` intacto).
+1.1 **`/resume`.** ✅ Si `.aies/state.json` contiene una tarea `En curso`,
+    `runCycle(..., { resumeFrom })` en lugar de `initState` fresco.
 
-1.2 **Arranque del REPL con estado previo `En curso`.** Mostrar resumen
-    (objetivo, iteraciones, nextStep) y avisar que `/resume` la continúa;
-    cualquier otro texto arranca tarea nueva.
+1.2 **Arranque del REPL con estado previo `En curso`.** ✅ Aviso + `/resume`.
+    Oneshot: aviso pasivo antes de sobreescribir (sin flag `--resume` en T1).
 
-1.3 **`/state` legible.** Vista humana: árbol de unidades con estado
-    (`Pendiente/Terminada/Fallida`), `nextStep`, iteraciones vs límite.
-    El JSON actual queda detrás de un flag (`/state --json`).
+1.3 **`/state` legible.** ✅ Vista humana; `/state --json` conserva el JSON.
 
 **Criterios de salida:**
 
@@ -194,19 +183,55 @@
 
 **Items:**
 
-2.1 **Ajuste en caliente.** Extender el canal de intervención (hoy
-    `stopSignal: () => boolean`) a una entrada tipada que el bucle lee entre
-    turnos: "sigue, pero considera X". La entrada se incorpora al estado como
-    un resultado más y se procesa en la siguiente decisión (Runtime-Model §7).
-    En el REPL: el usuario escribe mientras corre la tarea (o tras Ctrl+C
-    suave); en oneshot: canal por flag/stdin a definir en la implementación.
+2.1 **Ajuste en caliente.** ✅ (T2.1, 2026-08-21)
+    - Nuevo handler `pollIntervention?: () => InterventionAdjustment | null` en
+      `AiesEventHandlers`; el bucle lo consulta al inicio de cada turno (tras
+      `stopSignal`, antes de los límites) y, si devuelve ajuste, lo incorpora
+      al estado como resultado `kind: "intervención"` + `knownInfo` con prefijo
+      `intervención del desarrollador:`. No aborta el worker en curso: se
+      procesa en la siguiente decisión (Runtime-Model §7). Handler que lanza
+      se aísla con try/catch.
+    - REPL: mientras corre un run, un listener `rl.on("line", …)` encola el
+      texto (drena TODAS las entradas en el próximo poll, unidas con `\n`); un
+      eco violeta `⚑ tú (intervención): …` se imprime de inmediato; una línea
+      que empieza por `/` muestra aviso ámbar y NO se encola. Al arrancar el
+      run se imprime `(escribe para intervenir · Ctrl+C detiene)` en dim.
+    - Renderer: línea violeta
+      `⚑ Intervención del desarrollador incorporada — se tendrá en cuenta en la decisión.`
+      (paleta `#a371f7` del prototipo).
 
-2.2 **Reanudación con guía.** `/resume "<guía>"` inyecta la guía en el estado
-    (`knownInfo`/`nextStep`) antes de reanudar ("resume, y esta vez verifica Y
-    primero").
+2.2 **Reanudación con guía.** ✅ (T2.2, 2026-08-21)
+    - `/resume "<guía>"` parsea comillas dobles o texto crudo (`parseResumeGuide`).
+    - `runResumeCycle` acepta `resumeGuide?: string` y lo inyecta en
+      `knownInfo` con prefijo `guía del desarrollador al reanudar:` antes de
+      arrancar el bucle.
 
-2.3 **Restricciones de tarea.** Permitir fijar `alcance`/`restricciones` desde
-    la TUI (hoy `taskFromArg` los deja siempre `null`).
+2.3 **Restricciones de tarea.** Aplazado. P-13/ponytail: `taskFromArg` deja
+    `alcance`/`restricciones` siempre `null`; abrir esto en TUI es ortogonal a
+    T2.1/T2.2 y no está pedido por un usuario real todavía.
+
+2.4 **ESC parar / Ctrl+C cerrar (ADR-012).** ✅ (2026-08-23)
+    - Rama `stopSignal` del bucle (`core/loop.ts`) deja `taskState` intacto, fija
+      `nextStep: "pausada por el desarrollador — reanudable con /resume"` y emite
+      `phase: "intervention:paused"` en `onLoopObservation`. Sin `setTerminal`,
+      sin `onTaskFailed`. Estado persistido por `runCycle::saveState` antes de
+      retornar; `/resume` retoma.
+    - REPL: listener `keypress` sobre `inputStream` durante el run; `key.name === "escape"`
+      aborta el worker (pausa, vuelve al prompt). `emitKeypressEvents(input)` explícito.
+      SIGINT durante un run aborta + marca `exitAfterCycle`; al cerrar el ciclo el REPL sale.
+      2º SIGINT en cualquier momento → `process.exit(130)` inmediato. SIGINT en el prompt
+      (sin run) cierra el REPL directamente.
+    - Oneshot: 1ª SIGINT aborta y deja estado reanudable; exit 1 con mensaje
+      "tarea pausada; reanúdala en la siguiente invocación con `/resume`." 2ª SIGINT →
+      `process.exit(130)`.
+    - `resolveResume` acepta `"Recibida" | "En curso"` (pausa antes del primer
+      `ajustePlan`); mensajes actualizados.
+    - Briefing en `knownInfo` se inyecta como **una sola entrada** con prefijo estable
+      `briefing de arranque:`; en cada ciclo se filtra la previa y se añade la nueva
+      (no acumulación entre `/resume`).
+    - Renderer: línea ámbar `Tarea pausada por el desarrollador — usa /resume para
+      continuarla.` (sustituye a `Intervención del usuario: ejecución detenida.`).
+    - Pista dim durante el run: `(escribe para intervenir · ESC para parar · Ctrl+C para salir)`.
 
 **Criterios de salida:**
 
@@ -229,23 +254,39 @@
 
 **Items:**
 
-3.1 **Línea de estado por iteración.** Tras cada vuelta:
-    `iter N/max · tokens · coste · %contexto · verify_pass acumulado`.
-    Fuente: telemetría de `LoopObservation` (nunca inventar números:
-    `null` → "n/d", RNF-07/17).
+3.1 **Línea de estado por iteración.** ✅ (T3.1, 2026-08-21)
+    - Tras cada `execution:resolved`, el renderer acumula `usage` y `contextUsage`
+      en sus propios campos (independientes del acumulador del bucle; preserva
+      los valores en parse-fails también, cuya vuelta de orquestador se factura).
+    - Línea dim: `· iter N/max · <tok> tok · $<cost> · ctx <pct>% · verify P/Q`
+      donde P/Q cuenta `results` con `kind === "unidad" && passed !== null` /
+      `=== true`. RNF-07/17: telemetría nula → "n/d" explícito, nunca
+      inventada. Formato `k` ≥ 1000 (como el prototipo). Pipe-safe: cada
+      pintado es una línea completa en no-TTY.
 
-3.2 **`/status` enriquecido.** Árbol de unidades + telemetría agregada leída
-    de `log.jsonl` **sin reejecutar** (RNF-11).
+3.2 ✅ **`/status` enriquecido** (2026-08-22). `runtime/src/cli-status.ts` +
+    `cli-status.test.ts` (10 casos). Árbol de unidades + telemetría agregada
+    leída de `log.jsonl` **sin reejecutar** (RNF-11). Estructura: (1) árbol
+    (reutiliza `formatStateHuman`), (2) tokens·coste·contexto·verify·incidencias
+    agregados del historial completo (decisión T3.2/1: incluye todas las
+    entradas, etiquetado como "historial"), (3) huella mínima por vuelta
+    `· iter N <op>[(unidad, capacidad)] → <kind> · <tok> · <$> · log#X–Y`.
+    Telemetría ausente → `n/d` explícito (RNF-07/17), nunca `$0`/`0 tok`.
+    Offsets físicos preservados aunque haya líneas corruptas (`LocalStore.
+    readLogIndexed`). Reutiliza `computeMetrics` con guard de entrypoint
+    añadido en `metrics.ts` para no matar el proceso al importar.
 
-3.3 **`aies log` (o `/log`).** Tail de `.aies/log.jsonl` formateado para
-    humanos (decision/resultado/compaction).
+3.3 **`aies log` (o `/log`).** Pendiente. Tail de `.aies/log.jsonl`
+    formateado para humanos (decision/resultado/compaction).
 
 **Criterios de salida:**
 
-- La línea de estado muestra telemetría por iteración en una sesión de
-  ≥ 10 iteraciones.
-- `/status` responde desde `log.jsonl` sin reejecución (self-check sobre log
-  sintético; criterio de ROADMAP Fase 3).
+- ✅ La línea de estado muestra telemetría por iteración (test unitario sobre
+  observación sintética + smoke manual en sesión real).
+- ✅ `/status` responde desde `log.jsonl` sin reejecución (10 casos en
+  `cli-status.test.ts`: log sintético completo, sin log, sin telemetría,
+  línea corrupta, sin estado, import no termina el proceso + cobertura
+  auxiliar; criterio de ROADMAP Fase 3).
 
 **Trazabilidad:** `RNF-11`, `REQ-F-14`, `MVP-v0-Scope §Deferred Tier 3`,
 `ROADMAP.md 3.1`, `runtime/README §open questions`.
@@ -292,6 +333,67 @@
 
 ---
 
+### T6 — Onboarding (credenciales + modelos por rol) ✅ (2026-08-23)
+
+> **Motivación.** Sin onboarding, un usuario nuevo no puede configurar
+> credenciales, ver qué modelos están disponibles ni asignar un modelo por rol.
+> La promesa del config (`runtime/aies.config.json`) no se cumple: los modelos
+> configurados nunca llegaban a las sesiones (gap verificado en `ROADMAP.md
+> 0.1 — wire gap`). Esta oleada cierra el ciclo.
+>
+> **Decisión final de merge (2026-08-23).** La rama del PR de
+> `@lopezsellesarnau-cmd` (`df83d9e`) ya tenía el camino crítico resuelto: el
+> store de auth de pi-coding-agent (`~/.pi/agent/auth.json`), `resolveModel()`
+> real (antes era un stub), `/auth`, `/login`, `/logout`, `/models` y `/model`
+> (session-only). Esta rama añadía `/pick` (writes `aies.config.json`,
+> session-persistente) sobre esa base. El merge final usa el store de pi (mismo
+> path que ya usa el propio `pi` CLI — más simple, sin divergencia de path);
+> `/pick` queda como la única forma de hacer el modelo **permanente**.
+
+**Items:**
+
+6.1 **Auth vía store de pi-coding-agent** (`~/.pi/agent/auth.json`). Es el
+    mismo store que usa `pi` CLI — sin duplicación de credenciales, sin path
+    propio AIES que mantener.
+6.2 **`/auth` + `aies auth`**: tabla `provider → tipo de auth · source` por
+    provider del catálogo (incluye env, login, oauth según corresponda).
+6.3 **`/login` + `aies login`** (REPL + oneshot): api_key persistida vía
+    `runtime.setRuntimeApiKey`. Selección de proveedor por número o id; prompt
+    de secret sin eco cuando es posible (`promptSecret` con `setRawMode`).
+6.4 **`/logout` + `aies logout`** (REPL + oneshot): borra credencial del
+    proveedor seleccionado.
+6.5 **`/models` + `aies models`**: catálogo del provider (alfabético), filtra
+    por `@provider` y/o query libre. Pipe-safe (sin ANSI de progreso).
+6.6 **`/model` + `aies model` (NO `aies model` — sólo REPL)**: cambia el
+    modelo activo para el resto de la sesión (no persiste). Complementa
+    `/pick`: edición rápida sin tocar `aies.config.json`.
+6.7 **`/pick` + `aies pick <rol> <provider>/<model-id>`**: valida la ref
+    contra el catálogo, escribe `aies.config.json` atómicamente (`.bak` +
+    tmp + rename), re-valida con `loadConfig`. Modelos no resueltos → error
+    sin escribir. Equivale a "editar `aies.config.json` a mano" pero con
+    validación contra el catálogo real.
+6.8 **Wiring config → sesiones (fix del wire gap)**: `resolveModel()`
+    resuelve provider+id del config contra el `ModelRuntime`; el resultado se
+    inyecta a las sesiones del orquestador y los workers. `decide.ts`,
+    `session-factory.ts`, `tools.ts` aceptan `modelRuntime?` opcional para
+    futuras inyecciones (no se usa en la versión actual).
+
+**Criterios de salida:**
+
+- `pnpm run typecheck` + `pnpm test` verdes (114/114).
+- `aies models` lista catálogo con marcas.
+- `aies pick verifier <provider>/<model-id>` actualiza `aies.config.json` y
+  pasa `loadConfig` (verificado en smoke).
+- `aies login <proveedor>` guarda credencial (verificación manual con clave
+  de test).
+- Round-trip con modelo del orchestrator configurado aparece en `log.jsonl`.
+
+**Trazabilidad:** `ROADMAP.md §0.1` (wire gap) + plan en
+`.kilo/plans/1787483362545-onboarding-login-models-pick.md` + PR mergeado
+`df83d9e`.
+
+---
+
 ## 3. Camino crítico
 
 ```text
@@ -326,6 +428,7 @@ T3 ⟂ T4 ⟂ T2   (ortogonales; pueden correr en paralelo)
 | Reanudación esperada | `MVP-v0-Scope §9`, `RNF-16` |
 | Deferred Tier 3 (observabilidad viva) | `MVP-v0-Scope §Deferred` |
 | Open questions del runtime | `runtime/README §open questions` |
+| Prototipo visual de la TUI (exploración, sin decisión) | `06-research/tui-design/README.md` |
 
 ---
 

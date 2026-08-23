@@ -19,7 +19,7 @@ aies CLI (cli.ts, bin aies)
     │   ├── State management (persistence/file_store.ts)
     │   ├── Decide: sesión efímera con ORCHESTRATOR_SYSTEM_PROMPT → parseo Zod
     │   ├── Execute: llama a runWorker("explorer"|"implementer"|"verifier")
-    │   └── Limits + intervention (SIGINT → StopController)
+    │   └── Limits + intervention (ADR-012: ESC parar / Ctrl+C cerrar → pausar, no Fallida)
     │
     ├── Custom Tools (workers/tools.ts)
     │   ├── explore: AgentSession efímera con [read, grep, find, ls]
@@ -28,6 +28,40 @@ aies CLI (cli.ts, bin aies)
     │
     └── Telemetry (telemetry/pi-events.ts) — mapeo de eventos pi → dominio AIES
 ```
+
+### Señales durante la ejecución (ADR-012)
+
+| Señal | REPL | Oneshot |
+|---|---|---|
+| **ESC** durante un run | Pausa la tarea (queda `En curso`), vuelve al prompt. Sin cerrar sesión. | No aplica (sin readline). |
+| **Ctrl+C** (1ª) durante un run | Pausa la tarea, persiste estado, cierra el REPL. La siguiente invocación ofrece `/resume`. | Pausa la tarea, persiste estado, sale con código 1. |
+| **Ctrl+C** (2ª) en cualquier momento | `process.exit(130)` inmediato (escape si el drenado del turno se cuelga). | `process.exit(130)` inmediato. |
+| **Ctrl+C** en el prompt del REPL (sin run) | Cierra el REPL. | No aplica. |
+
+`Fallida` queda reservada para inviabilidad declarada por el orquestador y terminación
+controlada por límite (`ADR-005`). La intervención del desarrollador nunca produce `Fallida`.
+
+---
+
+## Integraciones externas (ADR-011)
+
+AIES integra dos herramientas locales como `customTools` de pi, registradas en `src/integrations/`:
+
+- **codegraph** — grafo estructural del código (símbolos + call paths). Expone `code_explore <query>` para los workers; alivia el problema nº 1 de `Problem.md` (sobrecarga de exploración). Si la CLI está y falta `.codegraph/`, se ejecuta `codegraph init` una vez por `cwd` (idempotente).
+- **projectmem** — memoria operativa entre sesiones (decisiones, gotchas, lecciones). Expone `mem_read` (lectura) para los tres workers, y `mem_log` (escritura) **sólo para el implementer**. Lee directo `.projectmem/summary.md`; no se auto-inicializa (instalaría hooks en repo ajeno — `Non-Goals §6`).
+
+Ambas se instalan con `install.sh` (codegraph vía `npm i -g`, projectmem vía `uv → pipx → pip`). Si una falla, AIES sigue funcionando y las tools responden con mensaje de indisponibilidad. El orquestador recibe un briefing al estado en cada tarea con la disponibilidad detectada y el resumen destilado de memoria (truncado a 4k chars).
+
+Tabla rápida:
+
+| Tool         | explorer | implementer | verifier | Notas |
+|--------------|----------|-------------|----------|-------|
+| `code_explore` | ✓       | ✓          | ✓        | shell-out `codegraph explore <query>` |
+| `mem_read`    | ✓       | ✓          | ✓        | lectura directa de `.projectmem/summary.md` |
+| `mem_log`     | ✗       | ✓          | ✗        | shell-out `pjm log\|attempt\|fix\|decision\|note`; P-10/REQ-F-18 |
+
+Ver `05-Decisions/ADR-011-integracion-codegraph-projectmem.md` para el detalle.
+
 
 ---
 
@@ -49,6 +83,11 @@ node dist/cli.js --help
 aies "lista los archivos del proyecto"
 aies "añade una función greet() a src/math.ts"
 
+# onboarding (credenciales + modelos)
+aies login anthropic          # api_key u oauth, guarda en ~/.config/aies/auth.json
+aies models                    # lista catálogo (pipe-safe)
+aies pick verifier claude-opus-4-5   # asigna modelo por rol
+
 # actualizar: re-ejecuta el instalador oficial
 aies update
 
@@ -56,6 +95,12 @@ aies update
 aies
 > /help
 > /state
+> /state --json
+> /status
+> /login anthropic
+> /models
+> /pick verifier claude-opus-4-5
+> /resume
 > /exit
 
 # opciones
@@ -77,7 +122,8 @@ AIES_NO_UPDATE_CHECK=1 aies
 
 ## Estado de la implementación
 
-- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL, persistencia en `<agentDir>/aies/<hash(cwd)>/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
+- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/status`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, ESC parar / Ctrl+C cerrar con pausa reanudable (ADR-012).
+- [x] **Oleada 0 — Onboarding** (2026-08-23, fusionado con PR de `@lopezsellesarnau-cmd` que aportó `/auth`/`/model` y el fix de `resolveModel`): `/auth`, `/login`, `/logout`, `/models`, `/model`, `/pick` (REPL) y `aies auth|login|logout|models|pick` (oneshot). Credenciales via store de pi-coding-agent (`~/.pi/agent/auth.json`); modelo por defecto desde `aies.config.json` (con override `AIES_MODEL`).
 - [x] **Deprecated — Extensión de Pi** (`src/extension/`): se conserva como código legacy, marcado `@deprecated`, se eliminará en v2. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
 
 Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e y update — todos sin LLM).
@@ -86,13 +132,15 @@ Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, l
 
 ## auth y config
 
-- `runtime/aies.config.json` — `provider` + `models.{orchestrator,explorer,implementer,verifier}` (versionado, sin claves), `orchestratorThinkingLevel: "low"`, `limits.maxIterations: 12`. Modelos provisionales.
-- Claves **sólo por env**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. (leídas por el `ModelRuntime` de pi).
+- `runtime/aies.config.json` — `provider` + `models.{orchestrator,explorer,implementer,verifier}` (versionado, sin claves), `orchestratorThinkingLevel: "low"`, `limits.maxIterations: 12`. Cada `models.<rol>` acepta `model-id` (usa el `provider` global) o `provider/model-id` explícito. Se edita a mano o con `aies pick <rol> <ref>` (escritura atómica).
+- **Credenciales** se guardan en el store de pi-coding-agent (`~/.pi/agent/auth.json` por defecto) — se gestionan con `/login` (api_key) o `aies login <proveedor>`. Las variables de entorno (`ANTHROPIC_API_KEY`, etc.) siguen funcionando como fuente ambient y son la fuente por defecto si no hay auth persistida.
+- `AIES_MODEL=<id>` fuerza un modelo puntual (sobreescribe el del config, no persiste).
+- `AIES_CONFIG=<path>` / `AIES_AUTH=<path>` (este último si se desea un store alternativo en tests) overridean los paths por defecto.
 
 ## scripts
 
-- `pnpm run build` / `pnpm run typecheck` — `tsc` strict (ESM, Node ≥20).
-- `pnpm test` — corre los tests de parse, unitid, loop, cost, e2e y update.
+- `pnpm run build` / `pnpm run typecheck` — `tsc` strict (ESM, Node ≥22.19.0).
+- `pnpm test` — corre los tests de parse, unitid, loop, cost, e2e, update, cli y stream-renderer.
 - `pnpm run test:loop` / `test:persist` / `test:orch` / `test:compaction` / `test:workers` — self-check individual.
 - `pnpm run research:metrics -- <log.jsonl>` — métricas NFR §3 sobre el log AIES.
 - `pnpm run research:baseline -- "<tarea>"` — corrida baseline agente-único (sin bucle) para comparar.
@@ -110,4 +158,4 @@ Sin clave, el bucle degrada con gracia (3 auth-fails → intervención). Con cla
 ## open questions (no bloquean)
 
 - `thinkingLevel` orquestador `low` — calibrar con `research:baseline`.
-- Métricas en vivo en el footer de la TUI (status por iteración).
+- Métricas en vivo: T3.1 implementado (línea dim por iteración con tokens/coste/contexto/verify acumulado; telemetría nula → `n/d`) y T3.2 (`/status` con telemetría agregada del historial y huella por vuelta con ref `log#X–Y`). Ver `ROADMAP-TUI.md` §T3.1/§3.2.

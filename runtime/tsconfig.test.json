@@ -7,5 +7,5 @@
     "composite": false
   },
   "include": ["tests/**/*.ts", "src/core/**/*.ts", "src/observability.ts", "src/telemetry/**/*.ts", "src/orchestrator/parse.ts"],
-  "exclude": ["node_modules", "dist", "dist-test", "src/ui", "src/extension", "src/self-check", "src/persistence", "src/research", "src/workers", "src/config.ts", "src/intervention.ts", "src/limits.ts", "src/math.ts"]
+  "exclude": ["node_modules", "dist", "dist-test", "src/cli.ts", "src/cli-persistence.ts", "src/ui", "src/extension", "src/self-check", "src/persistence", "src/research", "src/workers", "src/config.ts", "src/intervention.ts", "src/limits.ts", "src/math.ts"]
 }

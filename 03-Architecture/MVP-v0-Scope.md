@@ -98,7 +98,7 @@ orquest.  = createAgentSession({ noTools: "all", model, thinkingLevel: "low",
 
 ## 7. Intervención (`P-20`/`RNF-04`)
 
-La intervención es una **entrada externa al ciclo** (`Runtime-Model.md §7`): se incorpora al `state.json` como un resultado más y se procesa en la siguiente decisión. Si ajusta → la tarea sigue `En curso`; si detiene → `Fallida` (`Lifecycle.md §3`).
+La intervención es una **entrada externa al ciclo** (`Runtime-Model.md §7`): se incorpora al `state.json` como un resultado más y se procesa en la siguiente decisión. Si ajusta → la tarea sigue `En curso`; si la detiene (ESC/Ctrl+C) → queda pausada `En curso`, reanudable con `/resume` (`ADR-012`). `Fallida` se reserva para inviabilidad y terminación controlada por límite.
 
 En v0 el canal es el **canal de proceso de AIES-core** (stdin / flag), no pi. La UX concreta del canal (REPL, flag, TUI) es de implementación y queda fuera de este Scope salvo esta declaración.
 

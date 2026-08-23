@@ -11,8 +11,14 @@ dist-test/
 .codegraph/
 .cursor/
 .kilo/
+.projectmem/
 
 # Notas privadas / outputs generados
 .tui-*.md
 repomix-output.xml
 scratch_test_dir/
+
+.projectmem/events.jsonl
+.projectmem/watch.pid
+.projectmem/watch.log
+.projectmem/structure.json

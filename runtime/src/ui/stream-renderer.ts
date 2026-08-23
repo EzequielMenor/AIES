@@ -33,7 +33,9 @@ import type {
 	WorkerEventSink,
 	WorkerInfo,
 } from "../core/events.js";
+import type { LoopObservation } from "../core/observation.js";
 import type { Decision, RuntimeState, WorkUnit } from "../core/state.js";
+import type { LogEntry } from "../observability.js";
 
 // ── Paleta ANSI truecolor (hex exactos de las reglas de UX) ─────────────────
 function truecolor(hex: string, s: string): string {
@@ -43,11 +45,28 @@ function truecolor(hex: string, s: string): string {
 	const b = parseInt(h.slice(4, 6), 16);
 	return `\x1b[38;2;${r};${g};${b}m${s}\x1b[0m`;
 }
-const cyan = (s: string) => truecolor("#38bdf8", s);
-const green = (s: string) => truecolor("#3fb950", s);
-const red = (s: string) => truecolor("#f85149", s);
-const amber = (s: string) => truecolor("#d29922", s);
+export const cyan = (s: string) => truecolor("#38bdf8", s);
+export const green = (s: string) => truecolor("#3fb950", s);
+export const red = (s: string) => truecolor("#f85149", s);
+export const amber = (s: string) => truecolor("#d29922", s);
+/** Violeta del prototipo TUI (`#a371f7`): ajuste en caliente / intervención. */
+export const violet = (s: string) => truecolor("#a371f7", s);
+/** Alias exportado para reutilizar la paleta ámbar (preflight, avisos) sin duplicarla. */
+export const amberText = amber;
 const bright = pc.bold; // énfasis (picocolors)
+
+/** Formato compartido `cost` (T3.1 + `/status`): null → `n/d`; <1 → `$0.000`; ≥1 → `$0.00`. */
+export function formatCost(cost: number | null): string {
+	if (cost === null) return "n/d";
+	return cost < 1 ? `$${cost.toFixed(3)}` : `$${cost.toFixed(2)}`;
+}
+
+/** Formato compartido de tokens (T3.1 + `/status`): <1000 → número; ≥1000 → `1.2k`. */
+export function formatTokens(n: number): string {
+	if (n < 1000) return String(n);
+	const k = n / 1000;
+	return `${k >= 10 ? k.toFixed(1) : k.toFixed(2)}k`;
+}
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
@@ -72,6 +91,7 @@ interface OpenWorker {
 }
 
 export class StreamRenderer implements AiesEventHandlers {
+	private readonly stream: NodeJS.WritableStream;
 	private readonly tty: boolean;
 	private spinner: ActiveSpinner | null = null;
 	private worker: OpenWorker | null = null;
@@ -81,19 +101,29 @@ export class StreamRenderer implements AiesEventHandlers {
 	private verificationCommand: string | null = null;
 	/** Último tool invocado (para conservar el target en el `✓` de cierre). */
 	private lastTool: { tool: string; target: string | null } | null = null;
+	/** T3.1 — acumulador de telemetría del renderer (independiente del del bucle). Se suma
+	 *  en cada `decision:resolved` / `execution:resolved` con `usage` fiable; `null` se conserva
+	 *  como "no conocido". RNF-07/17: nunca inventar números. */
+	private tokenTotal: number = 0;
+	private costTotal: number = 0;
+	private telemKnown: boolean = false;
+	/** T3.1 — último `contextUsage.percent` observado (int 0..100). `null` = nunca conocido. */
+	private lastContextPct: number | null = null;
 
-	constructor(stream: NodeJS.WriteStream = process.stdout) {
-		this.tty = Boolean(stream.isTTY);
+	constructor(stream: NodeJS.WritableStream = process.stdout) {
+		this.stream = stream;
+		this.tty = Boolean("isTTY" in stream && stream.isTTY);
 	}
 
 	// ------------------------------------------------------------------ utilidades
 
 	private termWidth(): number {
-		return this.tty && process.stdout.columns ? Math.max(20, process.stdout.columns) : 80;
+		const cols = "columns" in this.stream && typeof this.stream.columns === "number" ? this.stream.columns : 0;
+		return this.tty && cols ? Math.max(20, cols) : 80;
 	}
 
 	private raw(s: string): void {
-		process.stdout.write(s);
+		this.stream.write(s);
 	}
 
 	/** Escribe una línea terminada en \n (traduciendo \r y saltos CR). */
@@ -183,9 +213,19 @@ export class StreamRenderer implements AiesEventHandlers {
 	}
 
 	private formatCost(cost: number | null): string {
-		// null = telemetría no disponible en ninguna vuelta → representar explícitamente, NO inventar $0.
-		if (cost === null) return "cost n/d";
-		return cost < 1 ? `$${cost.toFixed(3)}` : `$${cost.toFixed(2)}`;
+		return formatCost(cost);
+	}
+
+	/** T3.1 — formato compacto de tokens: <1000 → número, ≥1000 → `1.2k` (estilo prototipo). */
+	private formatTokens(n: number): string {
+		return formatTokens(n);
+	}
+
+	/** T3.1 — porcentaje de contexto: el binding dice 0..100 entero, pero en la práctica emite
+	 *  float con precisión sobrante. Redondeamos a entero para no hacer ruido visual. */
+	private formatContextPct(pct: number | null): string {
+		if (pct === null) return "ctx n/d";
+		return `ctx ${Math.round(pct)}%`;
 	}
 
 	/** Deriva el target (path/cmd/pattern) de los args de un tool. */
@@ -237,7 +277,12 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.line(`${bright("▶")} Objetivo : ${cyan(state.task.objetivo)}`);
 	}
 
+	onDecideStart(_iteration: number): void {
+		this.spin("", `${cyan("◆")} Orquestador decidiendo…`);
+	}
+
 	onDecideSuccess(decision: Decision): void {
+		this.detachSpinner();
 		const esRedescomposicion =
 			decision.ajustePlan?.tipo === "re-descomponer" || decision.ajustePlan?.tipo === "cambiar de estrategia";
 		if (esRedescomposicion) {
@@ -310,7 +355,8 @@ export class StreamRenderer implements AiesEventHandlers {
 
 	onTaskCompleted(summary: string, telemetry: TaskTelemetry): void {
 		this.detachSpinner();
-		const meta = `${this.formatElapsed(telemetry.startTs, telemetry.endTs)} · ${telemetry.iterations} · ${this.formatCost(telemetry.totalCost)}`;
+		const costStr = telemetry.totalCost === null ? "cost n/d" : formatCost(telemetry.totalCost);
+		const meta = `${this.formatElapsed(telemetry.startTs, telemetry.endTs)} · ${telemetry.iterations} · ${costStr}`;
 		this.line("");
 		this.line(this.renderBar(`${green("✓ TASK COMPLETED")} ${bright(`(${meta})`)}`));
 		this.line("Resumen: " + (summary || "tarea completada"));
@@ -320,6 +366,99 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.detachSpinner();
 		this.line("");
 		this.line(this.renderBar(`${red("✗ TASK FAILED")} ${bright(`(${reason})`)}`));
+	}
+
+	/**
+	 * Observaciones del bucle (T0): parse-fail, límites, unidad inexistente, intervención
+	 * y comunicación del orquestador. El resto de fases es no-op (P-02: presentación pura).
+	 *
+	 * Parse-fail: `loop.ts` incrementa `consecutiveParseFailures` *antes* de `safeObserve`,
+	 * así que el contador humano es 1/3…3/3 (nunca 0/3 en el primer fallo).
+	 */
+	onLoopObservation(obs: LoopObservation): void {
+		switch (obs.phase) {
+			case "decision:resolved": {
+				// T3.1 — acumular telemetría del orquestador (incluidos parse-fails).
+				if (obs.telemetry?.usage) {
+					this.tokenTotal += obs.telemetry.usage.tokens.total;
+					this.costTotal += obs.telemetry.usage.cost;
+					this.telemKnown = true;
+				}
+				if (obs.telemetry?.contextUsage?.percent !== null && obs.telemetry?.contextUsage?.percent !== undefined) {
+					this.lastContextPct = obs.telemetry.contextUsage.percent;
+				}
+				if (!obs.parseFail) return;
+				this.detachSpinner();
+				const n = obs.state.consecutiveParseFailures;
+				const err = obs.parseError ? `: ${obs.parseError}` : "";
+				this.line(`${amber("▲")} Fallo de parseo del orquestador (${n}/3)${err}`);
+				return;
+			}
+			case "limit:reached": {
+				this.detachSpinner();
+				const mode = obs.action === "terminar" ? "terminando" : "requiere intervención";
+				this.line(`${amber("▲")} límite alcanzado — ${mode}: ${obs.reason}`);
+				return;
+			}
+			case "error:unidad-inexistente": {
+				this.detachSpinner();
+				const id = obs.decision.unidad ?? "";
+				this.line(
+					`${amber("▲")} Unidad inexistente: el orquestador referenció "${id}". No se ejecuta ninguna unidad distinta.`,
+				);
+				return;
+			}
+			case "intervention:paused": {
+				this.detachSpinner();
+				this.line(`${amber("▲")} Tarea pausada por el desarrollador — usa /resume para continuarla.`);
+				return;
+			}
+			case "intervention:adjustment": {
+				this.detachSpinner();
+				this.line(`${violet("⚑")} Intervención del desarrollador incorporada — se tendrá en cuenta en la decisión.`);
+				return;
+			}
+			case "execution:resolved": {
+				// T3.1 — acumular telemetría del worker y emitir la línea de estado.
+				if (obs.telemetry?.usage) {
+					this.tokenTotal += obs.telemetry.usage.tokens.total;
+					this.costTotal += obs.telemetry.usage.cost;
+					this.telemKnown = true;
+				}
+				if (obs.telemetry?.contextUsage?.percent !== null && obs.telemetry?.contextUsage?.percent !== undefined) {
+					this.lastContextPct = obs.telemetry.contextUsage.percent;
+				}
+				const verifyP = obs.state.results.filter((r) => r.kind === "unidad" && r.passed === true).length;
+				const verifyQ = obs.state.results.filter((r) => r.kind === "unidad" && r.passed !== null).length;
+				const iterN = obs.state.iterations;
+				const iterMax = obs.state.limits.maxIterations;
+				const tok = this.telemKnown ? this.formatTokens(this.tokenTotal) : "n/d";
+				const cost = this.telemKnown ? formatCost(this.costTotal) : "cost n/d";
+				const ctx = this.formatContextPct(this.lastContextPct);
+				this.detachSpinner();
+				this.line(pc.dim(`· iter ${iterN}/${iterMax} · ${tok} tok · ${cost} · ${ctx} · verify ${verifyP}/${verifyQ}`));
+				if (obs.decision.operación !== "comunicar al desarrollador" || obs.result.kind !== "comunicación") {
+					return;
+				}
+				const texto = obs.result.text || obs.decision.comunicación || "";
+				this.line("");
+				this.line(`${cyan("💬")} ${bright("Orquestador:")} ${texto}`);
+				this.line("");
+				return;
+			}
+			default:
+				return;
+		}
+	}
+
+	onLogEntry(entry: LogEntry): void {
+		if (entry.type !== "compaction") return;
+		this.detachSpinner();
+		if (entry.fase === "start") {
+			this.line(`${amber("▲")} compactando contexto`);
+		} else {
+			this.line(`${amber("▲")} contexto compactado`);
+		}
 	}
 
 	// ------------------------------------------------------------------ utilidad pública

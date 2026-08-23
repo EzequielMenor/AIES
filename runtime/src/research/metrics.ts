@@ -5,6 +5,9 @@
 // Uso: node dist/research/metrics.js <path/a/log.jsonl>
 
 import * as fs from "node:fs";
+import { realpathSync } from "node:fs";
+import * as path from "node:path";
+import { createRequire } from "node:module";
 import type { LogEntry, DecisionLogEntry, ResultLogEntry } from "../observability.js";
 
 function isDecision(e: LogEntry): e is DecisionLogEntry {
@@ -188,4 +191,23 @@ function main(): void {
 	console.log(JSON.stringify(report, null, 2));
 }
 
-main();
+// Ejecuta main() sólo cuando se invoca como entrypoint real (no al importar computeMetrics desde
+// el CLI/TUI). Detección portable: comparamos la URL real (realpath resuelve symlinks tipo
+// /tmp → /private/tmp en macOS) de process.argv[1] contra import.meta.url.
+const nodeRequire = createRequire(import.meta.url);
+const isEntrypoint = ((): boolean => {
+	try {
+		const entry = process.argv[1];
+		if (!entry) return false;
+		const entryReal = realpathSync(path.resolve(entry));
+		const { fileURLToPath } = nodeRequire("node:url") as typeof import("node:url");
+		const metaReal = realpathSync(fileURLToPath(import.meta.url));
+		return entryReal === metaReal;
+	} catch {
+		return false;
+	}
+})();
+
+if (isEntrypoint) {
+	main();
+}

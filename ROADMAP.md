@@ -24,7 +24,7 @@ El runtime v0.2.0 cumple su contrato como harness. Lo concreto:
   (lectura + edición mínima) y `verifier` (lectura + comprobación, **sin**
   `edit`/`write`). Cada `AgentSession` es efímera y con allowlist estricta
   (`ADR-009`, `RNF-05`).
-- **Persistencia** en `<agentDir>/aies/<hash(cwd)>/{state.json, log.jsonl}`
+- **Persistencia** en `<cwd>/.aies/{state.json, log.jsonl}` (CLI activa)
   con recuperación ante corrupción (`ADR-008`). Reanudación por `state.json`
   + `AGENTS.md` (`RNF-10`, `RNF-16`).
 - **Límites con irrecuperabilidad visible** (`ADR-005`): `maxIterations=12`
@@ -37,8 +37,10 @@ El runtime v0.2.0 cumple su contrato como harness. Lo concreto:
   en `TaskTelemetry` (`RNF-07`/`RNF-17`).
 - **5 self-checks** (`parse`, `unitid`, `loop`, `cost`, `compaction`,
   `workers`) + vitest e2e sin LLM. ~4.400 líneas de TS estricto.
-- **CLI standalone** oneshot (`aies run "<tarea>"`) y REPL (`/run`, `/status`,
-  `/resume`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
+- **CLI standalone** oneshot (`aies "<tarea>"`) y REPL (`/help`, `/state`,
+  `/state --json`, `/status`, `/resume`, `/clear`, `/exit`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
+  Reanudación T1: `/resume` continúa un `state.json` `En curso`. `/status` enriquecido (T3.2) lee telemetría agregada del historial sin reejecutar el bucle.
+- **Oleada 0 — Onboarding** ✅ (2026-08-23): `/login` `/logout` `/auth` `/models` `/model` `/pick` (REPL) y `aies auth|login|logout|models|pick` (oneshot). Credenciales vía store de pi-coding-agent (`~/.pi/agent/auth.json`). `resolveModel()` ahora resuelve provider+id desde `aies.config.json` (fix del wire gap). Modelos por rol efectivos en decide y workers (wiring del config).
 
 ### 0.2 Lo que la data dice (esto es lo importante)
 
@@ -423,7 +425,7 @@ no metas autoimpuestas — se recalibran si la data lo pide.
 | 2    | `thinkingLevel`, `maxIterations`, `maxCost` documentados con datos                               | Métricas extraídas de `log.jsonl` (`research/metrics`)     |
 | 2    | H-03 y H-06 reportados (apoya / no apoya / indeterminado)                                       | `06-research/experiments/E-0X-*.md`                        |
 | 3    | 1 sesión ≥ 30 min completada sin intervención manual                                            | Smoke de aceptación                                        |
-| 3    | `/status` lee telemetría agregada de `log.jsonl` sin reejecutar                                  | Self-check sobre log sintético                             |
+| 3    | `/status` lee telemetría agregada de `log.jsonl` sin reejecutar                                  | ✅ `runtime/src/cli-status.ts` + `cli-status.test.ts` (10 casos, log sintético) |
 
 ---
 

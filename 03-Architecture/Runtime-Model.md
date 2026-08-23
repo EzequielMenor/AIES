@@ -143,7 +143,7 @@ Desarrollador
 ```
 
 - Si la intervención ajusta la tarea, esta continúa **En curso** con la nueva información (`Lifecycle.md §3`).
-- Si la detiene, la tarea pasa a **Fallida** con ese motivo (`Lifecycle.md §3`).
+- Si la detiene (ESC/Ctrl+C), la tarea queda pausada **En curso** con `nextStep` marcador, reanudable con `/resume` (`ADR-012`). `Fallida` se reserva para inviabilidad y terminación controlada por límite (`Lifecycle.md §3`).
 
 La intervención no es una operación del ciclo (no la decide el orquestador); es un acontecimiento externo que el runtime debe poder recibir en cualquier iteración.
 
