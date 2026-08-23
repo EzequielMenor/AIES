@@ -4,9 +4,8 @@
 // `runPick` valida ref contra el catálogo y escribe aies.config.json atómicamente.
 
 import { copyFileSync, existsSync, writeFileSync, renameSync } from "node:fs";
-import * as path from "node:path";
 import * as readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
+import { stdout as output } from "node:process";
 
 import type { Config } from "./config.js";
 import { loadConfig } from "./config.js";
@@ -251,4 +250,4 @@ export async function runPickCommand(
 }
 
 // helper no usado pero dejado por simetría
-export const _configDirHint = (): string => path.dirname("aies.config.json");
+export const _configDirHint = (): string => output.writable ? "" : "";

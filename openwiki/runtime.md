@@ -176,9 +176,9 @@ There is no `pnpm run smoke` script anymore — the legacy one was removed. The 
 }
 ```
 
-- Provider and model names are versioned in the repo. Keys come from `~/.config/aies/auth.json` (via `/login` or `aies login <provider>`) or as fallback from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`. Auth store is AIES-owned and separate from `~/.pi/agent/auth.json`.
+- Provider and model names are versioned in the repo. Keys come from the pi-coding-agent credential store (`~/.pi/agent/auth.json`, managed via `/login` or `aies login <provider>`, supporting api_key) or as fallback from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`.
 - `AIES_CONFIG` env var overrides the config path (used in `06-research/experiments/` for alternate lanes).
-- `AIES_AUTH` env var overrides the auth.json path (used in tests).
+- `AIES_MODEL` env var forces a specific model id for a single run without touching `aies.config.json`.
 - `/pick` (or `aies pick <rol> <provider>/<model-id>`) writes `aies.config.json` atomically (`.bak`+tmp+rename) and re-validates with `loadConfig`. `/models` (or `aies models`) lists the catalog with auth status and current role assignments.
 - `orchestratorThinkingLevel` is `low` by default (provisional, ADR-007). Calibration in `06-research`.
 - `maxIterations = 12` is the backstop. Cost is `off`; context is `observed-autoCompaction-backstop-iter` (i.e., observed via pi's native compaction and backed by the iteration cap).
