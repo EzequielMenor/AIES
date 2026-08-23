@@ -53,10 +53,10 @@ clone_or_update() {
     else
       info "Actualizado $prev_short → $new_short"
       if git -C "$INSTALL_DIR" rev-parse -q --verify "$prev_full^{commit}" >/dev/null 2>&1; then
-        git -C "$INSTALL_DIR" log --oneline "$prev_full..HEAD"
+        git --no-pager -C "$INSTALL_DIR" log --oneline "$prev_full..HEAD"
       else
         warn "No se puede listar el historial completo (clone shallow). Mostrando los últimos 10 commits:"
-        git -C "$INSTALL_DIR" log --oneline -10 HEAD
+        git --no-pager -C "$INSTALL_DIR" log --oneline -10 HEAD
       fi
     fi
   else
@@ -73,7 +73,7 @@ clone_or_update() {
 install_deps() {
   info "Instalando dependencias ($PM install)"
   if [ "$PM" = "pnpm" ]; then
-    pnpm --silent --dir "$INSTALL_DIR/runtime" install
+    pnpm --loglevel=silent --dir "$INSTALL_DIR/runtime" install
   else
     npm --silent install --prefix "$INSTALL_DIR/runtime"
   fi
@@ -82,7 +82,7 @@ install_deps() {
 build() {
   info "Compilando (tsc — puede tardar ~30s)…"
   if [ "$PM" = "pnpm" ]; then
-    pnpm --silent --dir "$INSTALL_DIR/runtime" run build
+    pnpm --loglevel=silent --dir "$INSTALL_DIR/runtime" --config.verify-deps-before-run=false run build
   else
     npm --silent run build --prefix "$INSTALL_DIR/runtime"
   fi
