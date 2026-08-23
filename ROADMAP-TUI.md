@@ -276,8 +276,16 @@
     readLogIndexed`). Reutiliza `computeMetrics` con guard de entrypoint
     añadido en `metrics.ts` para no matar el proceso al importar.
 
-3.3 **`aies log` (o `/log`).** Pendiente. Tail de `.aies/log.jsonl`
-    formateado para humanos (decision/resultado/compaction).
+3.3 **`/log`.** ✅ (2026-08-23). `runtime/src/cli-log.ts` + `cli-log.test.ts`
+    (14 casos). REPL-only (mismo criterio que `/status`, no bare `aies log`).
+    Reutiliza `pairTurns()`/`describeOperación()`/`describeResultKind()` de
+    `cli-status.ts` (exportadas) — misma lectura de una vuelta en ambos
+    comandos. Diferencias con `/status`: es un TAIL (últimas 20 por defecto,
+    `/log all` para el historial completo, `/log <n>` para otro tamaño), y
+    muestra las entradas de `compaction` una a una intercaladas por línea
+    física — `/status` sólo las cuenta de forma agregada. `comunicación`
+    muestra el texto del mensaje en vez de tokens/coste (es el único
+    contenido legible de esa entrada).
 
 **Criterios de salida:**
 
