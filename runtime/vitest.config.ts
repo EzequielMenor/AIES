@@ -14,6 +14,7 @@ export default defineConfig({
 			"src/cli.test.ts",
 			"src/ui/stream-renderer.test.ts",
 			"src/cli-status.test.ts",
+			"src/cli-log.test.ts",
 			"src/integrations/integrations.test.ts",
 			"src/auth.test.ts",
 			"src/models-list.test.ts",

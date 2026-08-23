@@ -14,7 +14,7 @@ import type { RuntimeState } from "./core/state.js";
 import { formatStateHuman } from "./cli.js";
 import { formatCost, formatTokens } from "./ui/stream-renderer.js";
 
-interface IndexedLogEntry {
+export interface IndexedLogEntry {
 	line: number;
 	entry: LogEntry;
 }
@@ -42,7 +42,7 @@ function isResult(e: LogEntry): e is ResultLogEntry {
  *  operaciones normales escriben resultado en iter+1; resultados sintéticos (límite,
  *  intervención, parse-error) comparten iter con su decisión. Devuelve un array estable en
  *  orden de iter con offsets físicos de inicio y fin. */
-function pairTurns(log: IndexedLogEntry[]): Array<{
+export function pairTurns(log: IndexedLogEntry[]): Array<{
 	iter: number;
 	decision: DecisionLogEntry;
 	decisionLine: number;
@@ -122,7 +122,7 @@ function formatTelemetrySection(report: ReturnType<typeof computeMetrics>, entri
 	return lines;
 }
 
-function describeOperación(op: DecisionLogEntry["operación"]): string {
+export function describeOperación(op: DecisionLogEntry["operación"]): string {
 	switch (op) {
 		case "ejecutar una unidad":
 			return "ejecutar unidad";
@@ -135,7 +135,7 @@ function describeOperación(op: DecisionLogEntry["operación"]): string {
 	}
 }
 
-function describeResultKind(kind: ResultLogEntry["kind"]): string {
+export function describeResultKind(kind: ResultLogEntry["kind"]): string {
 	switch (kind) {
 		case "info":
 			return "info";

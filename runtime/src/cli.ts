@@ -42,6 +42,7 @@ import {
 	PROVIDER_ENV_KEY,
 } from "./auth.js";
 import { LocalStore } from "./cli-persistence.js";
+import { formatLogTail, parseLogArg } from "./cli-log.js";
 import { formatStatus } from "./cli-status.js";
 import { loadConfig, type Config } from "./config.js";
 import { runStartup, type StartupReport } from "./integrations/index.js";
@@ -326,6 +327,7 @@ const HELP_TEXT = [
 	"  /state                      — vista humana del RuntimeState actual",
 	"  /state --json               — JSON resumido del RuntimeState actual",
 	"  /status                     — estado + telemetría agregada del historial (log.jsonl)",
+	"  /log [n|all]                — tail de log.jsonl (últimas n vueltas; por defecto 20)",
 	"  /clear                      — limpia la pantalla",
 	"  /exit | /quit               — cierra la sesión",
 	"",
@@ -821,6 +823,11 @@ async function runRepl(ctx: {
 			if (input0 === "/status") {
 				const snapshot = currentState ?? store.loadState();
 				output.write(`${formatStatus(snapshot, store.readLogIndexed())}\n`);
+				continue;
+			}
+			if (input0 === "/log" || input0.startsWith("/log ")) {
+				const arg = input0.slice("/log".length).trim();
+				output.write(`${formatLogTail(store.readLogIndexed(), parseLogArg(arg))}\n`);
 				continue;
 			}
 			if (input0 === "/auth") {
