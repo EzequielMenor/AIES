@@ -312,9 +312,21 @@
     de comandos `/`.
 4.2 **Entrada multi-línea** para tareas (las descripciones largas no caben en
     una línea de readline).
-4.3 **Flags**: `--verbose` (salida completa de workers), `--quiet` (mínimo),
-    `--json` en oneshot (salida machine-readable para scripts), `--version`,
-    verificación de `NO_COLOR` (picocolors ya lo respeta; validar truecolor).
+4.3 **Flags**:
+    - `--json` en oneshot ✅ (2026-08-23). `summarizeOneshotResult()` en
+      `cli.ts` — stdout es exactamente una línea de JSON
+      (`ok, exitCode, interrupted, completed, state`; `state` reutiliza
+      `summarizeState()`, mismo lenguaje que `/state --json`). Todo lo demás
+      que este camino imprimía (preflight, auth readiness, avisos de
+      state.json corrupto/tarea previa, el StreamRenderer completo, el
+      aviso de actualización) se redirige a stderr — split unix estándar,
+      verificado contra el binario real con una tarea sin API key que
+      agotó los 3 parse-fails del orquestador: stdout se mantuvo como una
+      única línea JSON válida durante todo el fallo. 5 tests nuevos en
+      `cli.test.ts`.
+    - `--verbose` (salida completa de workers), `--quiet` (mínimo),
+      `--version`, verificación de `NO_COLOR` (picocolors ya lo respeta;
+      validar truecolor): pendiente.
 4.4 **Truncado de salidas largas** con marca expandible vía `--verbose`
     (outputs de bash no inundan el scroll).
 4.5 **Fallback de color** para terminales sin truecolor.
