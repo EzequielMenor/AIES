@@ -31,6 +31,13 @@ export interface CheckForUpdateOptions {
 	runGit?: RunGit;
 }
 
+export interface RecordSuccessfulUpdateOptions {
+	now?: number;
+	cachePath?: string;
+	installDir?: string | null;
+	runGit?: RunGit;
+}
+
 interface UpdateCache {
 	lastCheckMs: number;
 	lastRemoteHead: string;
@@ -96,10 +103,39 @@ function statusForHeads(localHead: string, remoteHead: string): UpdateStatus {
 	return { kind: "update-available", localHead, remoteHead };
 }
 
+function cacheSaysUpToDate(cached: UpdateCache, localHead: string, now: number): boolean {
+	if (now - cached.lastCheckMs >= CHECK_INTERVAL_MS) return false;
+	if (cached.lastLocalHead !== localHead) return false;
+	if (cached.lastRemoteHead !== cached.lastLocalHead) return false;
+	return true;
+}
+
 export function resolveInstallDir(): string | null {
 	const here = path.dirname(fileURLToPath(import.meta.url));
 	const installDir = path.resolve(here, "..", "..");
 	return existsSync(path.join(installDir, ".git")) ? installDir : null;
+}
+
+export async function recordSuccessfulUpdate(opts: RecordSuccessfulUpdateOptions = {}): Promise<void> {
+	const installDir = opts.installDir === undefined ? resolveInstallDir() : opts.installDir;
+	if (!installDir) return;
+	const now = opts.now ?? Date.now();
+	const cachePath = opts.cachePath ?? UPDATE_CHECK_PATH;
+	const runGit = opts.runGit ?? execGit;
+	let head: string;
+	try {
+		head = await readLocalHead(installDir, runGit);
+	} catch {
+		return;
+	}
+	try {
+		await writeUpdateCache(cachePath, {
+			lastCheckMs: now,
+			lastRemoteHead: head,
+			lastLocalHead: head,
+		});
+	} catch {
+	}
 }
 
 export async function checkForUpdate(opts: CheckForUpdateOptions = {}): Promise<UpdateStatus> {
@@ -120,8 +156,8 @@ export async function checkForUpdate(opts: CheckForUpdateOptions = {}): Promise<
 	}
 
 	const cached = await readUpdateCache(cachePath);
-	if (cached && now - cached.lastCheckMs < CHECK_INTERVAL_MS) {
-		return statusForHeads(localHead, cached.lastRemoteHead);
+	if (cached && cacheSaysUpToDate(cached, localHead, now)) {
+		return { kind: "up-to-date" };
 	}
 
 	let remoteHead: string;
@@ -158,6 +194,8 @@ export async function runUpdate(): Promise<number> {
 	});
 
 	if (exitCode !== 0) return exitCode;
+
+	await recordSuccessfulUpdate();
 
 	const installDir = path.join(homedir(), ".aies");
 	try {
