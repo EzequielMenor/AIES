@@ -34,9 +34,11 @@ import pc from "picocolors";
 
 import { LocalStore } from "./cli-persistence.js";
 import { formatStatus } from "./cli-status.js";
-import { loadConfig, type Config } from "./config.js";
+import { defaultConfigPath, loadConfig, type Config } from "./config.js";
 import { runStartup, type StartupReport } from "./integrations/index.js";
 import { addKnownInfo } from "./core/state.js";
+import { runAuthCommand } from "./cli-auth.js";
+import { runModelsCommand, runPickCommand } from "./cli-models.js";
 
 const nodeRequire = createRequire(import.meta.url);
 import type {
@@ -56,7 +58,14 @@ import {
 	initState,
 } from "./core/state.js";
 import { limitsFromConfig } from "./limits.js";
-import { createDecide, type ResolvedModel } from "./orchestrator/decide.js";
+import {
+	getAiesAuthPath,
+	getAiesModelRuntime,
+	resolveRoleModels,
+	type ResolvedModel,
+	type ResolvedRoleModels,
+} from "./model-runtime.js";
+import { createDecide } from "./orchestrator/decide.js";
 import { runWorker, type WorkerToolContext } from "./workers/tools.js";
 import { StreamRenderer, amber, violet } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
@@ -94,7 +103,7 @@ type ExecuteFn = (
 	events: WorkerEventSink,
 ) => Promise<ExecuteOutcome>;
 
-function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined): ExecuteFn {
+function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined, roleModels?: ResolvedRoleModels | undefined): ExecuteFn {
 	return async (state, decision, events) => {
 		switch (decision.operación) {
 			case "comunicar al desarrollador": {
@@ -122,7 +131,10 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 				const lastResult = state.results[state.results.length - 1];
 				const contexto = lastResult?.text ?? state.knownInfo.join("; ");
 				const objetivo = decision.motivo || "obtener información relevante para continuar la tarea";
-				const r = await runWorker("explorer", { objetivo, contexto }, wctx, signal, events);
+				const roleCtx: WorkerToolContext = roleModels?.explorer
+					? { ...wctx, model: roleModels.explorer }
+					: wctx;
+				const r = await runWorker("explorer", { objetivo, contexto }, roleCtx, signal, events);
 				if (r.status === "failed") {
 					return {
 						result: { kind: "fallo", text: r.error, unidadId: null, passed: false } satisfies OperationResult,
@@ -155,10 +167,12 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 						telemetry: NO_TELEM,
 					};
 				}
+				const roleModel = roleModels?.[cap];
+				const roleCtx: WorkerToolContext = roleModel ? { ...wctx, model: roleModel } : wctx;
 				const r = await runWorker(
 					cap,
 					{ objetivo: unit.objetivo, contexto: state.knownInfo.join("; "), unidad: unit.id },
-					wctx,
+					roleCtx,
 					signal,
 					events,
 				);
@@ -196,6 +210,10 @@ export interface RunCycleOptions {
 	resumeGuide?: string | undefined;
 	/** ADR-011 — startup cacheado. Si se omite, se calcula aquí (runStartup). */
 	startup?: StartupReport | undefined;
+	/** AIES-owned ModelRuntime (se inyecta en las sesiones del orquestador y los workers). */
+	modelRuntime?: import("@earendil-works/pi-coding-agent").ModelRuntime | undefined;
+	/** Modelos por rol (override de capability del worker). */
+	roleModels?: ResolvedRoleModels | undefined;
 }
 
 export interface RunCycleResult {
@@ -230,12 +248,19 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		thinkingLevel: opts.thinkingLevel,
 		customTools: startup.customTools,
 		integrationBits: startup.toolNames,
+		modelRuntime: opts.modelRuntime,
 	};
-	const decideCtx = { cwd: opts.cwd, model: opts.model, thinkingLevel: opts.thinkingLevel, signal: opts.signal };
+	const decideCtx = {
+		cwd: opts.cwd,
+		model: opts.model,
+		thinkingLevel: opts.thinkingLevel,
+		signal: opts.signal,
+		modelRuntime: opts.modelRuntime,
+	};
 	const renderer = opts.renderer ?? new StreamRenderer(output);
 	const decide: (state: RuntimeState) => Promise<DecideOutcome> =
 		opts.decideOverride ?? createDecide(decideCtx);
-	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal);
+	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal, opts.roleModels);
 
 	const handlers: AiesEventHandlers = StreamRenderer.merge(renderer, { decide, execute });
 	const rendererOnLogEntry = handlers.onLogEntry?.bind(renderer);
@@ -316,6 +341,10 @@ const HELP_TEXT = [
 	"  /state                      — vista humana del RuntimeState actual",
 	"  /state --json               — JSON resumido del RuntimeState actual",
 	"  /status                     — estado + telemetría agregada del historial (log.jsonl)",
+	"  /login [proveedor]          — guarda credencial (api_key u oauth) en ~/.config/aies/auth.json",
+	"  /logout [proveedor]         — borra credencial persistida",
+	"  /models                     — lista modelos disponibles (proveedor + auth)",
+	"  /pick [<rol> [<ref>]]       — muestra/asigna el modelo por rol (escribe aies.config.json)",
 	"  /clear                      — limpia la pantalla",
 	"  /exit | /quit               — cierra la sesión",
 	"",
@@ -343,13 +372,35 @@ export const PROVIDER_ENV_KEY: Record<string, string> = {
 	mistral: "MISTRAL_API_KEY",
 };
 
-export function preflight(cfg: Config, out: NodeJS.WritableStream, env: NodeJS.ProcessEnv = process.env): void {
+export function preflight(
+	cfg: Config,
+	out: NodeJS.WritableStream,
+	roleModels?: ResolvedRoleModels,
+	runtime?: { hasConfiguredAuth(providerId: string): boolean } | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
 	const provider = cfg.provider;
-	const modelo = cfg.models.orchestrator ?? "(por defecto)";
-	out.write(`aies: provider=${provider} modelo=${modelo} — ok.\n`);
+	const orchRef = cfg.models.orchestrator ?? "(por defecto)";
+	const orchModelId = roleModels?.orchestrator?.id ?? orchRef;
+	out.write(`aies: provider=${provider} modelo=${orchModelId} — ok.\n`);
+	if (roleModels) {
+		for (const role of ["explorer", "implementer", "verifier"] as const) {
+			const ref = cfg.models[role];
+			const resolved = roleModels[role];
+			const resolvedId = resolved?.id ?? ref;
+			out.write(`aies: ${role}=${resolvedId} (provider=${resolved?.provider ?? provider})${resolved ? "" : ref ? " — ⚠ no resuelto" : ""}\n`);
+		}
+	}
+	if (roleModels) {
+		for (const w of roleModels.warnings) {
+			out.write(`${amber("▲")} aies: ${w} — fallback al default.\n`);
+		}
+	}
 	const envKey = PROVIDER_ENV_KEY[provider.toLowerCase()];
-	if (!envKey) return;
-	if (!env[envKey]) {
+	const hasAuth = runtime?.hasConfiguredAuth(provider);
+	if (!envKey && !hasAuth) return;
+	if (hasAuth) return;
+	if (envKey && !env[envKey]) {
 		out.write(`${amber("▲")} aies: ${envKey} no está definida — el runtime degradará sin round-trip.\n`);
 	}
 }
@@ -438,11 +489,15 @@ export function oneshotExitCode(result: Pick<RunCycleResult, "completed">): numb
 const CLI_HELP_TEXT = [
 	"Uso: aies [opción] | aies \"<tarea>\"",
 	"",
-	"  aies \"<tarea>\"     ejecuta una tarea y termina",
-	"  aies               inicia el REPL interactivo",
-	"  aies update        actualiza AIES mediante el instalador oficial",
-	"  aies -V, --version muestra la versión y el commit actual",
-	"  aies -h, --help    muestra esta ayuda",
+	"  aies \"<tarea>\"             ejecuta una tarea y termina",
+	"  aies                         inicia el REPL interactivo",
+	"  aies login [proveedor]       guarda credencial (api_key u oauth)",
+	"  aies logout [proveedor]      borra credencial persistida",
+	"  aies models                  lista modelos disponibles (pipe-safe)",
+	"  aies pick <rol> <ref>        asigna un modelo por rol (escribe aies.config.json)",
+	"  aies update                  actualiza AIES mediante el instalador oficial",
+	"  aies -V, --version           muestra la versión y el commit actual",
+	"  aies -h, --help              muestra esta ayuda",
 	"",
 	"  AIES_NO_UPDATE_CHECK=1 desactiva el chequeo automático de actualizaciones.",
 ].join("\n");
@@ -450,6 +505,41 @@ const CLI_HELP_TEXT = [
 function clearScreen(): void {
 	// ANSI: ESC[2J (borrar pantalla) + ESC[H (cursor arriba-izquierda).
 	output.write("\x1b[2J\x1b[H");
+}
+
+/** Wrapper local de defaultConfigPath (re-export para los comandos REPL/oneshot). */
+function defaultConfigPathLocal(): string {
+	return defaultConfigPath();
+}
+
+async function runModelsOneshot(): Promise<number> {
+	const runtime = await getAiesModelRuntime();
+	const cfg = loadConfig();
+	output.write(`${runModelsCommand(runtime, cfg)}\n`);
+	return 0;
+}
+
+async function runAuthOneshot(command: "login" | "logout", rest: string[]): Promise<number> {
+	const runtime = await getAiesModelRuntime();
+	if (!process.stdin.isTTY) {
+		output.write(`aies: ${command} requiere una terminal interactiva (stdin no es TTY).\n`);
+		return 1;
+	}
+	const rl = readline.createInterface({ input, output });
+	try {
+		await runAuthCommand(command, rl, runtime, rest.join(" ").trim());
+	} finally {
+		rl.close();
+	}
+	return 0;
+}
+
+async function runPickOneshot(rest: string[]): Promise<number> {
+	const runtime = await getAiesModelRuntime();
+	const cfg = loadConfig();
+	const configPath = defaultConfigPathLocal();
+	await runPickCommand(null, runtime, cfg, configPath, rest.join(" ").trim());
+	return 0;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -462,10 +552,10 @@ export interface CliOptions {
 	repl: boolean;
 }
 
-function resolveModel(modelStr: string | undefined): ResolvedModel | undefined {
-	// CLI real: la resolución del modelo (provider + id → instancia) ocurre vía ModelRuntime.create
-	// en `decide.ts`/worker. Aquí sólo devolvemos undefined → el host usará su modelo por defecto.
-	// Si en el futuro se quiere aceptar --model en argv, se puede resolver aquí contra pi.
+function resolveModel(_modelStr: string | undefined): ResolvedModel | undefined {
+	// La resolución del modelo por rol ocurre fuera de este punto (cli.ts::main resuelve
+	// contra `aies.config.json` + catálogo de pi tras crear el ModelRuntime). Este stub
+	// queda sólo para mantener el contrato de la firma.
 	return undefined;
 }
 
@@ -508,11 +598,11 @@ async function printVersion(): Promise<void> {
 
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
-	if (argv.length === 1) {
+	if (argv.length >= 1 && argv[0] === "update" && argv.length === 1) {
+		process.exit(await runUpdate());
+	}
+	if (argv.length >= 1) {
 		const command = argv[0]!;
-		if (command === "update") {
-			process.exit(await runUpdate());
-		}
 		if (command === "--version" || command === "-V") {
 			await printVersion();
 			process.exit(0);
@@ -520,6 +610,15 @@ async function main(): Promise<void> {
 		if (command === "--help" || command === "-h") {
 			output.write(`${CLI_HELP_TEXT}\n`);
 			process.exit(0);
+		}
+		if (command === "models") {
+			process.exit(await runModelsOneshot());
+		}
+		if (command === "login" || command === "logout") {
+			process.exit(await runAuthOneshot(command, argv.slice(1)));
+		}
+		if (command === "pick") {
+			process.exit(await runPickOneshot(argv.slice(1)));
 		}
 	}
 	const taskArg = argv.length > 0 ? argv.join(" ").trim() : null;
@@ -535,15 +634,28 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	const limits: Limits = limitsFromConfig(cfg);
-	const model: ResolvedModel | undefined = resolveModel(process.env.AIES_MODEL);
-	const thinkingLevel = cfg.orchestratorThinkingLevel;
 	const updatePromise = checkForUpdate();
-	preflight(cfg, output);
+	const thinkingLevel = cfg.orchestratorThinkingLevel;
+	const runtime = await getAiesModelRuntime();
+	const roleModels = resolveRoleModels(cfg, runtime);
+	const model = roleModels.orchestrator;
+	if (model === undefined && cfg.models.orchestrator) {
+		output.write(`${amber("▲")} aies: orchestrator="${cfg.models.orchestrator}" no resuelto — fallback.\n`);
+	}
+	preflight(cfg, output, roleModels, runtime);
 
 	if (repl) {
-		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise });
+		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise, modelRuntime: runtime, roleModels });
 	} else {
-		const exitCode = await runOneshot(taskArg!, { cwd, limits, model, thinkingLevel, updatePromise });
+		const exitCode = await runOneshot(taskArg!, {
+			cwd,
+			limits,
+			model,
+			thinkingLevel,
+			updatePromise,
+			modelRuntime: runtime,
+			roleModels,
+		});
 		const status = await waitForUpdateNotice(updatePromise);
 		const notice = formatUpdateNotice(status ?? { kind: "skipped" });
 		if (notice) output.write(`\n${notice}\n`);
@@ -565,6 +677,8 @@ export async function runOneshot(
 		executeOverride?: ExecuteFn | undefined;
 		out?: NodeJS.WritableStream | undefined;
 		signal?: AbortSignal | undefined;
+		modelRuntime?: import("@earendil-works/pi-coding-agent").ModelRuntime | undefined;
+		roleModels?: ResolvedRoleModels | undefined;
 	},
 ): Promise<number> {
 	const out = ctx.out ?? output;
@@ -599,6 +713,8 @@ export async function runOneshot(
 		renderer: ctx.renderer,
 		decideOverride: ctx.decideOverride,
 		executeOverride: ctx.executeOverride,
+		modelRuntime: ctx.modelRuntime,
+		roleModels: ctx.roleModels,
 	});
 
 	if (!ctx.signal) process.off("SIGINT", onSigint);
@@ -618,6 +734,8 @@ async function runRepl(ctx: {
 	model: ResolvedModel | undefined;
 	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
 	updatePromise: Promise<UpdateStatus>;
+	modelRuntime: import("@earendil-works/pi-coding-agent").ModelRuntime;
+	roleModels: ResolvedRoleModels;
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
 	banner();
@@ -721,10 +839,30 @@ async function runRepl(ctx: {
 							store,
 							pollIntervention: () => drainInterventionQueue(interventionQueue),
 							resumeGuide: guide,
+							modelRuntime: ctx.modelRuntime,
+							roleModels: ctx.roleModels,
 						}),
 				});
 				if (result) currentState = result.state;
 				if (exitAfterCycle) break;
+				continue;
+			}
+			if (input0 === "/models") {
+				output.write(`${runModelsCommand(ctx.modelRuntime, loadConfig())}\n`);
+				continue;
+			}
+			if (input0 === "/login" || input0.startsWith("/login ")) {
+				await runAuthCommand("login", rl, ctx.modelRuntime, input0.slice("/login".length).trim());
+				continue;
+			}
+			if (input0 === "/logout" || input0.startsWith("/logout ")) {
+				await runAuthCommand("logout", rl, ctx.modelRuntime, input0.slice("/logout".length).trim());
+				continue;
+			}
+			if (input0 === "/pick" || input0.startsWith("/pick ")) {
+				const cfg = loadConfig();
+				const configPath = defaultConfigPathLocal();
+				await runPickCommand(rl, ctx.modelRuntime, cfg, configPath, input0.slice("/pick".length).trim());
 				continue;
 			}
 
@@ -745,6 +883,8 @@ async function runRepl(ctx: {
 						signal,
 						store,
 						pollIntervention: () => drainInterventionQueue(interventionQueue),
+						modelRuntime: ctx.modelRuntime,
+						roleModels: ctx.roleModels,
 					}),
 			});
 			if (result) currentState = result.state;

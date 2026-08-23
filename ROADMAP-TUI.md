@@ -333,6 +333,55 @@
 
 ---
 
+### T6 — Onboarding (credenciales + modelos por rol) ✅ (2026-08-23)
+
+> **Motivación.** Sin onboarding, un usuario nuevo no puede configurar
+> credenciales, ver qué modelos están disponibles ni asignar un modelo por rol.
+> La promesa del config (`runtime/aies.config.json`) no se cumple: los modelos
+> configurados nunca llegaban a las sesiones (gap verificado en `ROADMAP.md
+> 0.1 — wire gap`). Esta oleada cierra el ciclo.
+
+**Items:**
+
+6.1 **Auth AIES-own en `~/.config/aies/auth.json`** (override `AIES_AUTH`).
+    Ruta separada del store de pi-CLI (`~/.pi/agent/auth.json`) porque `~/.aies`
+    es la instalación (`install.sh` clona ahí el repo y mezcla credenciales con
+    el árbol git). Implementado sobre `AuthStorage` de pi-coding-agent.
+6.2 **`/login` + `aies login`** (REPL + oneshot): api_key y OAuth (delegado
+    al provider del catálogo) con `AuthInteraction` sobre readline. Selección
+    de proveedor por número o id; tipo por número; prompts `text/secret/select`
+    mapeados a `askPrompt`; eventos `info/auth_url/device_code/progress`
+    renderizados.
+6.3 **`/logout` + `aies logout`** (REPL + oneshot): borra credencial del
+    proveedor seleccionado (con confirmación si la interacción lo permite).
+6.4 **`/models` + `aies models`**: catálogo agrupado por proveedor (alfabético),
+    con marca `✓/✗` de auth, `◆` en los modelos asignados a un rol de la
+    config. Pipe-safe (sin ANSI de progreso).
+6.5 **`/pick` + `aies pick <rol> <provider>/<model-id>`**: valida la ref contra
+    el catálogo, escribe `aies.config.json` atómicamente (`.bak` + tmp + rename),
+    re-valida con `loadConfig`. Modelos no resueltos → warning + fallback
+    (RNF-19).
+6.6 **Wiring config → sesiones**: `DecideContext.modelRuntime` y
+    `WorkerSessionDeps.modelRuntime` aceptan el runtime AIES; `createAgentSession`
+    lo inyecta vía `opts.modelRuntime` (ADR-009 §2). `buildExecute` override por
+    capability usando `ResolvedRoleModels`. `preflight` reescrito: una línea
+    por rol + warnings de modelos no resueltos.
+
+**Criterios de salida:**
+
+- `pnpm run typecheck` + `pnpm test` verdes.
+- `aies models` lista catálogo con marcas.
+- `aies pick verifier <provider>/<model-id>` actualiza `aies.config.json` y
+  pasa `loadConfig`.
+- `aies login <proveedor>` guarda credencial con `0600` en
+  `~/.config/aies/auth.json` (verificación manual).
+- Round-trip con modelo del orchestrator configurado aparece en `log.jsonl`.
+
+**Trazabilidad:** `ROADMAP.md §0.1` (wire gap) + plan en
+`.kilo/plans/1787483362545-onboarding-login-models-pick.md`.
+
+---
+
 ## 3. Camino crítico
 
 ```text

@@ -40,6 +40,7 @@ El runtime v0.2.0 cumple su contrato como harness. Lo concreto:
 - **CLI standalone** oneshot (`aies "<tarea>"`) y REPL (`/help`, `/state`,
   `/state --json`, `/status`, `/resume`, `/clear`, `/exit`). Instalador `install.sh` clona a `~/.aies` y enlaza `aies`.
   Reanudación T1: `/resume` continúa un `state.json` `En curso`. `/status` enriquecido (T3.2) lee telemetría agregada del historial sin reejecutar el bucle.
+- **Oleada 0 — Onboarding** ✅ (2026-08-23): `/login` `/logout` `/models` `/pick` (REPL) y `aies login|logout|models|pick` (oneshot). Credenciales AIES-own en `~/.config/aies/auth.json` (override `AIES_AUTH`). Catálogo estático de pi (sin red). Modelos por rol efectivos en decide y workers (wiring del config).
 
 ### 0.2 Lo que la data dice (esto es lo importante)
 

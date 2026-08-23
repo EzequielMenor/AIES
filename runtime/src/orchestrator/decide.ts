@@ -32,6 +32,8 @@ export interface DecideContext {
 	model: ResolvedModel | undefined;
 	thinkingLevel?: "off" | "low" | "medium" | "high" | undefined;
 	signal?: AbortSignal | undefined;
+	/** AIES-owned ModelRuntime (credenciales en ~/.config/aies/auth.json). Si undefined, default de pi. */
+	modelRuntime?: ModelRuntime | undefined;
 }
 
 function unitLine(u: WorkUnit): string {
@@ -93,6 +95,7 @@ async function buildOrchestratorSession(ctx: DecideContext): Promise<{ session: 
 	};
 	if (ctx.model) opts.model = ctx.model;
 	if (ctx.thinkingLevel) opts.thinkingLevel = ctx.thinkingLevel;
+	if (ctx.modelRuntime) opts.modelRuntime = ctx.modelRuntime;
 	const { session } = await createAgentSession(opts);
 	return { session, systemPrompt };
 }

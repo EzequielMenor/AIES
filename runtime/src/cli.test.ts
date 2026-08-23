@@ -167,7 +167,7 @@ const executeTerminar =
 describe("preflight", () => {
 	it("imprime provider/modelo y no avisa si la env está presente", () => {
 		const out = capture();
-		preflight(CFG, out.stream, { ANTHROPIC_API_KEY: "sk-test" });
+		preflight(CFG, out.stream, undefined, undefined, { ANTHROPIC_API_KEY: "sk-test" });
 		const plain = out.plain();
 		assert.match(plain, /aies: provider=anthropic modelo=claude-sonnet-4-5 — ok\./);
 		assert.doesNotMatch(plain, /ANTHROPIC_API_KEY no está definida/);
@@ -175,10 +175,31 @@ describe("preflight", () => {
 
 	it("avisa en ámbar si falta la clave, sin bloquear", () => {
 		const out = capture();
-		preflight(CFG, out.stream, {});
+		preflight(CFG, out.stream, undefined, undefined, {});
 		const plain = out.plain();
 		assert.match(plain, /aies: provider=anthropic modelo=claude-sonnet-4-5 — ok\./);
 		assert.match(plain, /ANTHROPIC_API_KEY no está definida/);
+	});
+
+	it("con roleModels imprime cada rol y warnings", () => {
+		const out = capture();
+		const roleModels = {
+			orchestrator: { id: "claude-sonnet-4-5", provider: "anthropic" } as never,
+			explorer: undefined,
+			implementer: undefined,
+			verifier: undefined,
+			warnings: ["explorer: modelo \"no-existe\" no encontrado en el catálogo"],
+		};
+		const cfg: Config = {
+			provider: "anthropic",
+			models: { orchestrator: "claude-sonnet-4-5", explorer: "no-existe" },
+			orchestratorThinkingLevel: "low",
+		};
+		preflight(cfg, out.stream, roleModels, undefined, { ANTHROPIC_API_KEY: "sk-test" });
+		const plain = out.plain();
+		assert.match(plain, /aies: provider=anthropic modelo=claude-sonnet-4-5 — ok\./);
+		assert.match(plain, /explorer=no-existe.*⚠ no resuelto/);
+		assert.match(plain, /explorer: modelo "no-existe" no encontrado en el catálogo/);
 	});
 });
 

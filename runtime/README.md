@@ -83,6 +83,11 @@ node dist/cli.js --help
 aies "lista los archivos del proyecto"
 aies "añade una función greet() a src/math.ts"
 
+# onboarding (credenciales + modelos)
+aies login anthropic          # api_key u oauth, guarda en ~/.config/aies/auth.json
+aies models                    # lista catálogo (pipe-safe)
+aies pick verifier claude-opus-4-5   # asigna modelo por rol
+
 # actualizar: re-ejecuta el instalador oficial
 aies update
 
@@ -92,6 +97,9 @@ aies
 > /state
 > /state --json
 > /status
+> /login anthropic
+> /models
+> /pick verifier claude-opus-4-5
 > /resume
 > /exit
 
@@ -115,6 +123,7 @@ AIES_NO_UPDATE_CHECK=1 aies
 ## Estado de la implementación
 
 - [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/status`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, ESC parar / Ctrl+C cerrar con pausa reanudable (ADR-012).
+- [x] **Oleada 0 — Onboarding**: `/login`, `/logout`, `/models`, `/pick` (REPL) y `aies login|logout|models|pick` (oneshot). Credenciales AIES-own en `~/.config/aies/auth.json`. Modelos por rol efectivos en decide y workers.
 - [x] **Deprecated — Extensión de Pi** (`src/extension/`): se conserva como código legacy, marcado `@deprecated`, se eliminará en v2. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
 
 Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e y update — todos sin LLM).
@@ -123,8 +132,8 @@ Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, l
 
 ## auth y config
 
-- `runtime/aies.config.json` — `provider` + `models.{orchestrator,explorer,implementer,verifier}` (versionado, sin claves), `orchestratorThinkingLevel: "low"`, `limits.maxIterations: 12`. Modelos provisionales.
-- Claves **sólo por env**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. (leídas por el `ModelRuntime` de pi).
+- `runtime/aies.config.json` — `provider` + `models.{orchestrator,explorer,implementer,verifier}` (versionado, sin claves), `orchestratorThinkingLevel: "low"`, `limits.maxIterations: 12`. Cada `models.<rol>` acepta `model-id` (usa el `provider` global) o `provider/model-id` explícito.
+- **Credenciales** se guardan en `~/.config/aies/auth.json` (override `AIES_AUTH` para tests). Se gestionan con `/login` (api_key u oauth) o `aies login <proveedor>` — separadas del store de pi-CLI en `~/.pi/agent/auth.json`. Las variables de entorno (`ANTHROPIC_API_KEY`, etc.) siguen funcionando como fuente ambient y son la fuente por defecto si no hay auth persistida.
 
 ## scripts
 
