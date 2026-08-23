@@ -44,10 +44,11 @@ import {
 import { LocalStore } from "./cli-persistence.js";
 import { formatLogTail, parseLogArg } from "./cli-log.js";
 import { formatStatus } from "./cli-status.js";
-import { loadConfig, type Config } from "./config.js";
+import { defaultConfigPath, loadConfig, type Config } from "./config.js";
 import { runStartup, type StartupReport } from "./integrations/index.js";
 import { addKnownInfo } from "./core/state.js";
 import { formatModelsTable, parseModelsQuery, resolveModelsForListing, searchModels } from "./models-list.js";
+import { runPickCommand } from "./cli-models.js";
 
 const nodeRequire = createRequire(import.meta.url);
 import type {
@@ -67,7 +68,8 @@ import {
 	initState,
 } from "./core/state.js";
 import { limitsFromConfig } from "./limits.js";
-import { createDecide, type ResolvedModel } from "./orchestrator/decide.js";
+import { parseModelRef, ROLES, type ResolvedModel } from "./model-runtime.js";
+import { createDecide } from "./orchestrator/decide.js";
 import { runWorker, type WorkerToolContext } from "./workers/tools.js";
 import { StreamRenderer, amber, violet } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
@@ -242,7 +244,12 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		customTools: startup.customTools,
 		integrationBits: startup.toolNames,
 	};
-	const decideCtx = { cwd: opts.cwd, model: opts.model, thinkingLevel: opts.thinkingLevel, signal: opts.signal };
+	const decideCtx = {
+		cwd: opts.cwd,
+		model: opts.model,
+		thinkingLevel: opts.thinkingLevel,
+		signal: opts.signal,
+	};
 	const renderer = opts.renderer ?? new StreamRenderer(output);
 	const decide: (state: RuntimeState) => Promise<DecideOutcome> =
 		opts.decideOverride ?? createDecide(decideCtx);
@@ -328,21 +335,21 @@ const HELP_TEXT = [
 	"  /state --json               — JSON resumido del RuntimeState actual",
 	"  /status                     — estado + telemetría agregada del historial (log.jsonl)",
 	"  /log [n|all]                — tail de log.jsonl (últimas n vueltas; por defecto 20)",
+	"  /auth                       — estado de autenticación por provider",
+	"  /login [proveedor]          — guarda credencial (api_key u oauth) en ~/.pi/agent/auth.json",
+	"  /logout [proveedor]         — borra la credencial persistida",
+	"  /models [@prov] [q]         — lista modelos; @prov cambia de provider, el resto filtra por texto",
+	"  /model <id>                 — usa ese modelo para el resto de esta sesión (no persiste)",
+	"  /pick [<rol> [<ref>]]       — muestra/asigna el modelo por rol (escribe aies.config.json)",
 	"  /clear                      — limpia la pantalla",
 	"  /exit | /quit               — cierra la sesión",
-	"",
-	"  /auth              — estado de autenticación por provider",
-	"  /login [provider]  — guarda una API key (persiste en ~/.pi/agent/auth.json)",
-	"  /logout [provider] — borra la credencial guardada de ese provider",
-	"  /models [@prov] [q] — lista modelos; @prov cambia de provider, el resto filtra por texto",
-	"  /model <id>        — usa ese modelo para el resto de esta sesión (no persiste)",
 	"",
 	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
 	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
 	" ESC la pausa (sigue en /resume); Ctrl+C la pausa y cierra la sesión",
 	" (un 2º Ctrl+C fuerza salida inmediata).",
 	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
-	" provider/modelo por defecto: aies.config.json (editar a mano para hacer /model permanente).",
+	" provider/modelo por defecto: aies.config.json (usar /pick para hacerlo permanente).",
 ].join("\n");
 
 function helpText(): string {
@@ -461,16 +468,16 @@ export function oneshotExitCode(result: Pick<RunCycleResult, "completed">): numb
 const CLI_HELP_TEXT = [
 	"Uso: aies [opción] | aies \"<tarea>\"",
 	"",
-	"  aies \"<tarea>\"     ejecuta una tarea y termina",
-	"  aies               inicia el REPL interactivo",
-	"  aies update        actualiza AIES mediante el instalador oficial",
-	"  aies -V, --version muestra la versión y el commit actual",
-	"  aies -h, --help    muestra esta ayuda",
-	"",
-	"  aies auth              estado de autenticación por provider",
-	"  aies login <provider>  guarda una API key (persiste en ~/.pi/agent/auth.json)",
-	"  aies logout <provider> borra la credencial guardada de ese provider",
-	"  aies models [@prov] [q] lista modelos; @prov cambia de provider, el resto filtra por texto",
+	"  aies \"<tarea>\"             ejecuta una tarea y termina",
+	"  aies                         inicia el REPL interactivo",
+	"  aies auth                    estado de autenticación por provider",
+	"  aies login <proveedor>       guarda una API key (persiste en ~/.pi/agent/auth.json)",
+	"  aies logout <proveedor>      borra la credencial persistida",
+	"  aies models [@prov] [q]      lista modelos (pipe-safe)",
+	"  aies pick <rol> <ref>        asigna un modelo por rol (escribe aies.config.json)",
+	"  aies update                  actualiza AIES mediante el instalador oficial",
+	"  aies -V, --version           muestra la versión y el commit actual",
+	"  aies -h, --help              muestra esta ayuda",
 	"",
 	"  AIES_NO_UPDATE_CHECK=1 desactiva el chequeo automático de actualizaciones.",
 	"  AIES_MODEL=<id>         fuerza un modelo puntual, sin tocar aies.config.json.",
@@ -479,6 +486,19 @@ const CLI_HELP_TEXT = [
 function clearScreen(): void {
 	// ANSI: ESC[2J (borrar pantalla) + ESC[H (cursor arriba-izquierda).
 	output.write("\x1b[2J\x1b[H");
+}
+
+/** Wrapper local de defaultConfigPath (re-export para los comandos REPL/oneshot). */
+function defaultConfigPathLocal(): string {
+	return defaultConfigPath();
+}
+
+async function runPickOneshot(rest: string[]): Promise<number> {
+	const runtime = await getModelRuntime();
+	const cfg = loadConfig();
+	const configPath = defaultConfigPathLocal();
+	await runPickCommand(null, runtime, cfg, configPath, rest.join(" ").trim());
+	return 0;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -624,11 +644,11 @@ async function tryRunAuthSubcommand(argv: string[]): Promise<boolean> {
 
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
-	if (argv.length === 1) {
+	if (argv.length >= 1 && argv[0] === "update" && argv.length === 1) {
+		process.exit(await runUpdate());
+	}
+	if (argv.length >= 1) {
 		const command = argv[0]!;
-		if (command === "update") {
-			process.exit(await runUpdate());
-		}
 		if (command === "--version" || command === "-V") {
 			await printVersion();
 			process.exit(0);
@@ -636,6 +656,9 @@ async function main(): Promise<void> {
 		if (command === "--help" || command === "-h") {
 			output.write(`${CLI_HELP_TEXT}\n`);
 			process.exit(0);
+		}
+		if (command === "pick") {
+			process.exit(await runPickOneshot(argv.slice(1)));
 		}
 	}
 	if (argv.length >= 1 && ["auth", "login", "logout", "models"].includes(argv[0]!)) {
@@ -654,17 +677,23 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	const limits: Limits = limitsFromConfig(cfg);
+	const updatePromise = checkForUpdate();
+	const thinkingLevel = cfg.orchestratorThinkingLevel;
 	const runtime = await getModelRuntime();
 	const model = await resolveModel(runtime, cfg, process.env.AIES_MODEL, output);
-	const thinkingLevel = cfg.orchestratorThinkingLevel;
-	const updatePromise = checkForUpdate();
 	preflight(cfg, output);
 	authReadinessNotice(runtime, cfg, output);
 
 	if (repl) {
 		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise, runtime, cfg });
 	} else {
-		const exitCode = await runOneshot(taskArg!, { cwd, limits, model, thinkingLevel, updatePromise });
+		const exitCode = await runOneshot(taskArg!, {
+			cwd,
+			limits,
+			model,
+			thinkingLevel,
+			updatePromise,
+		});
 		const status = await waitForUpdateNotice(updatePromise);
 		const notice = formatUpdateNotice(status ?? { kind: "skipped" });
 		if (notice) output.write(`\n${notice}\n`);
@@ -902,6 +931,12 @@ async function runRepl(ctx: {
 				});
 				if (result) currentState = result.state;
 				if (exitAfterCycle) break;
+				continue;
+			}
+			if (input0 === "/pick" || input0.startsWith("/pick ")) {
+				const cfg = loadConfig();
+				const configPath = defaultConfigPathLocal();
+				await runPickCommand(rl, ctx.runtime, cfg, configPath, input0.slice("/pick".length).trim());
 				continue;
 			}
 

@@ -11,7 +11,7 @@
 // El bucle AIES traduce este shape a `OperationResult { kind: "fallo" }`, lo que marca la
 // unidad como `Fallida` y abre la puerta a la re-delegación o re-descomposición (P-13, REQ-F-16).
 
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { WorkerEventSink } from "../core/events.js";
 import type { IntegrationPromptBits } from "./prompts.js";
 import { createWorkerSession, disposeWorkerSession, type ResolvedModel, type WorkerRunOutcome, type WorkerSessionDeps } from "./session-factory.js";
@@ -27,6 +27,8 @@ export interface WorkerToolContext {
 	customTools?: ToolDefinition[] | undefined;
 	/** Bits por capability que controlan allowlist + prompt addenda (ADR-011). */
 	integrationBits?: IntegrationPromptBits | undefined;
+	/** AIES-owned ModelRuntime (credenciales en ~/.config/aies/auth.json). Si undefined, default de pi. */
+	modelRuntime?: ModelRuntime | undefined;
 }
 
 export interface ExploreParams {
@@ -85,6 +87,7 @@ export async function runWorker(
 		thinkingLevel: ctx.thinkingLevel,
 		customTools: ctx.customTools,
 		integrationBits: ctx.integrationBits,
+		modelRuntime: ctx.modelRuntime,
 	};
 	const ws = await createWorkerSession(deps, sink);
 	try {

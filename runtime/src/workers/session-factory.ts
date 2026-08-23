@@ -37,6 +37,8 @@ export interface WorkerSessionDeps {
 	customTools?: import("@earendil-works/pi-coding-agent").ToolDefinition[] | undefined;
 	/** Bits por capability que controlan allowlist + prompt addenda (ADR-011). */
 	integrationBits?: IntegrationPromptBits | undefined;
+	/** AIES-owned ModelRuntime (credenciales en ~/.config/aies/auth.json). Si undefined, default de pi. */
+	modelRuntime?: ModelRuntime | undefined;
 }
 
 export interface WorkerSession {
@@ -137,6 +139,7 @@ export async function createWorkerSession(deps: WorkerSessionDeps, sink?: Worker
 	if (deps.customTools && deps.customTools.length > 0) opts.customTools = deps.customTools;
 	if (deps.model) opts.model = deps.model;
 	if (deps.thinkingLevel) opts.thinkingLevel = deps.thinkingLevel;
+	if (deps.modelRuntime) opts.modelRuntime = deps.modelRuntime;
 	const { session } = await createAgentSession(opts);
 
 	// Listener de actividad — sólo se conecta si el sink implementa los callbacks (P-02: el bus

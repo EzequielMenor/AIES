@@ -333,6 +333,67 @@
 
 ---
 
+### T6 — Onboarding (credenciales + modelos por rol) ✅ (2026-08-23)
+
+> **Motivación.** Sin onboarding, un usuario nuevo no puede configurar
+> credenciales, ver qué modelos están disponibles ni asignar un modelo por rol.
+> La promesa del config (`runtime/aies.config.json`) no se cumple: los modelos
+> configurados nunca llegaban a las sesiones (gap verificado en `ROADMAP.md
+> 0.1 — wire gap`). Esta oleada cierra el ciclo.
+>
+> **Decisión final de merge (2026-08-23).** La rama del PR de
+> `@lopezsellesarnau-cmd` (`df83d9e`) ya tenía el camino crítico resuelto: el
+> store de auth de pi-coding-agent (`~/.pi/agent/auth.json`), `resolveModel()`
+> real (antes era un stub), `/auth`, `/login`, `/logout`, `/models` y `/model`
+> (session-only). Esta rama añadía `/pick` (writes `aies.config.json`,
+> session-persistente) sobre esa base. El merge final usa el store de pi (mismo
+> path que ya usa el propio `pi` CLI — más simple, sin divergencia de path);
+> `/pick` queda como la única forma de hacer el modelo **permanente**.
+
+**Items:**
+
+6.1 **Auth vía store de pi-coding-agent** (`~/.pi/agent/auth.json`). Es el
+    mismo store que usa `pi` CLI — sin duplicación de credenciales, sin path
+    propio AIES que mantener.
+6.2 **`/auth` + `aies auth`**: tabla `provider → tipo de auth · source` por
+    provider del catálogo (incluye env, login, oauth según corresponda).
+6.3 **`/login` + `aies login`** (REPL + oneshot): api_key persistida vía
+    `runtime.setRuntimeApiKey`. Selección de proveedor por número o id; prompt
+    de secret sin eco cuando es posible (`promptSecret` con `setRawMode`).
+6.4 **`/logout` + `aies logout`** (REPL + oneshot): borra credencial del
+    proveedor seleccionado.
+6.5 **`/models` + `aies models`**: catálogo del provider (alfabético), filtra
+    por `@provider` y/o query libre. Pipe-safe (sin ANSI de progreso).
+6.6 **`/model` + `aies model` (NO `aies model` — sólo REPL)**: cambia el
+    modelo activo para el resto de la sesión (no persiste). Complementa
+    `/pick`: edición rápida sin tocar `aies.config.json`.
+6.7 **`/pick` + `aies pick <rol> <provider>/<model-id>`**: valida la ref
+    contra el catálogo, escribe `aies.config.json` atómicamente (`.bak` +
+    tmp + rename), re-valida con `loadConfig`. Modelos no resueltos → error
+    sin escribir. Equivale a "editar `aies.config.json` a mano" pero con
+    validación contra el catálogo real.
+6.8 **Wiring config → sesiones (fix del wire gap)**: `resolveModel()`
+    resuelve provider+id del config contra el `ModelRuntime`; el resultado se
+    inyecta a las sesiones del orquestador y los workers. `decide.ts`,
+    `session-factory.ts`, `tools.ts` aceptan `modelRuntime?` opcional para
+    futuras inyecciones (no se usa en la versión actual).
+
+**Criterios de salida:**
+
+- `pnpm run typecheck` + `pnpm test` verdes (114/114).
+- `aies models` lista catálogo con marcas.
+- `aies pick verifier <provider>/<model-id>` actualiza `aies.config.json` y
+  pasa `loadConfig` (verificado en smoke).
+- `aies login <proveedor>` guarda credencial (verificación manual con clave
+  de test).
+- Round-trip con modelo del orchestrator configurado aparece en `log.jsonl`.
+
+**Trazabilidad:** `ROADMAP.md §0.1` (wire gap) + plan en
+`.kilo/plans/1787483362545-onboarding-login-models-pick.md` + PR mergeado
+`df83d9e`.
+
+---
+
 ## 3. Camino crítico
 
 ```text

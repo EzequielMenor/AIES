@@ -30,7 +30,7 @@ The traceability chain is `01-Concept → 02-Requirements → 03-Architecture �
 
 ## Runtime v1 at a glance
 
-The v1 runtime (`runtime/`, currently `0.2.0`) realizes everything described in `03-Architecture/MVP-v0-Scope.md` and ships as a **standalone CLI** built on top of `pi` (`@earendil-works/pi-coding-agent@~0.84`). The whole package is small: ~3 600 lines of TypeScript.
+The v1 runtime (`runtime/`, currently `0.3.0`) realizes everything described in `03-Architecture/MVP-v0-Scope.md` and ships as a **standalone CLI** built on top of `pi` (`@earendil-works/pi-coding-agent@~0.84`). The whole package is small: ~3 600 lines of TypeScript.
 
 > `ADR-010` (AIES como extensión de Pi) está **Deprecated** desde 2026-08-20. El código bajo `runtime/src/extension/` se conserva como legacy anotado `@deprecated` y se elimina en v2. El único entry point activo es la CLI.
 
@@ -38,7 +38,7 @@ The v1 runtime (`runtime/`, currently `0.2.0`) realizes everything described in 
 - **Standalone CLI** (`runtime/src/cli.ts`) — oneshot (`aies "<tarea>"`) or REPL (`aies`, prompt `❯ `). State and log live under `<cwd>/.aies/{state.json,log.jsonl}` via `cli-persistence.ts::LocalStore`. Output uses `ui/stream-renderer.ts`.
 - **Three v1 capabilities** (one worker each): `explorer` (read-only), `implementer` (read/write/edit/bash), `verifier` (read/bash — never edits). Allowlists are in `runtime/src/workers/capabilities.ts`. Each is invoked from the loop via `workers/tools.ts::runWorker` (ephemeral `AgentSession` per call).
 - **One orchestrator per turn** — `orchestrator/decide.ts` builds an ephemeral `AgentSession` with `noTools: "all"` and `systemPromptOverride` set to `ORCHESTRATOR_SYSTEM_PROMPT`. The session is disposed at the end of each turn; the next turn builds a fresh one. The orchestrator never accumulates conversation history — the `RuntimeState` is the only input (P-09, ADR-007).
-- **Auth is by env** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …). Provider/model names are in `runtime/aies.config.json`. No secrets in the repo.
+- **Auth is by the pi-coding-agent credential store** (`~/.pi/agent/auth.json`, managed via `/login` or `aies login <provider>`, supporting api_key; OAuth support depends on each provider) **or env vars as ambient source** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …). Provider/model names are in `runtime/aies.config.json`. No secrets in the repo.
 
 Install and run (recommended):
 
