@@ -22,6 +22,7 @@ import {
 	runCycle,
 	runOneshot,
 	runResumeCycle,
+	summarizeOneshotResult,
 	summarizeState,
 } from "./cli.js";
 import { LocalStore } from "./cli-persistence.js";
@@ -211,6 +212,121 @@ describe("oneshot exit code", () => {
 		});
 		assert.equal(code, 1);
 		assert.equal(oneshotExitCode({ state: store.loadState()!, interrupted: false, completed: false }), 1);
+	});
+});
+
+describe("--json (T4.3): stdout es UNA línea de JSON, nada más", () => {
+	it("éxito: stdout parsea como JSON, exitCode 0, sin texto humano mezclado", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-json-ok-"));
+		const store = new LocalStore(cwd);
+		const stdout = capture();
+		const stderr = capture();
+		const code = await runOneshot("tarea trivial", {
+			cwd,
+			limits: { maxIterations: 12 },
+			model: undefined,
+			thinkingLevel: undefined,
+			store,
+			decideOverride: decideTerminar(terminarDecision()),
+			executeOverride: executeTerminar(null),
+			signal: new AbortController().signal,
+			out: stdout.stream,
+			json: true,
+			diagOut: stderr.stream,
+		});
+		assert.equal(code, 0);
+		const text = stdout.text();
+		// Exactamente una línea — un segundo JSON.parse (o cualquier prosa) delataría
+		// que algo más escribió a stdout.
+		assert.equal(text.split("\n").filter(Boolean).length, 1, `stdout debe ser una sola línea: ${JSON.stringify(text)}`);
+		const payload = JSON.parse(text);
+		assert.equal(payload.ok, true);
+		assert.equal(payload.exitCode, 0);
+		assert.equal(payload.completed, true);
+		assert.equal(payload.interrupted, false);
+		assert.equal(payload.state.taskState, "Completada");
+	});
+
+	it("fallo: exitCode 1, stdout sigue siendo JSON parseable (no la prosa 'tarea terminó en estado')", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-json-fail-"));
+		const store = new LocalStore(cwd);
+		const stdout = capture();
+		const code = await runOneshot("tarea inviable", {
+			cwd,
+			limits: { maxIterations: 12 },
+			model: undefined,
+			thinkingLevel: undefined,
+			store,
+			decideOverride: decideTerminar(failTerminarDecision()),
+			executeOverride: executeTerminar(false),
+			signal: new AbortController().signal,
+			out: stdout.stream,
+			json: true,
+			diagOut: capture().stream,
+		});
+		assert.equal(code, 1);
+		const payload = JSON.parse(stdout.text());
+		assert.equal(payload.ok, false);
+		assert.equal(payload.exitCode, 1);
+		assert.doesNotMatch(stdout.text(), /tarea terminó en estado/, "la prosa no-json no debe colarse en stdout");
+	});
+
+	it("los avisos de arranque (state.json corrupto, tarea previa En curso) van a diagOut, no a stdout", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-json-diag-"));
+		mkdirSync(path.join(cwd, ".aies"), { recursive: true });
+		writeFileSync(path.join(cwd, ".aies", "state.json"), "{ esto no es JSON", "utf8");
+		const store = new LocalStore(cwd);
+		const stdout = capture();
+		const stderr = capture();
+		await runOneshot("tarea trivial", {
+			cwd,
+			limits: { maxIterations: 12 },
+			model: undefined,
+			thinkingLevel: undefined,
+			store,
+			decideOverride: decideTerminar(terminarDecision()),
+			executeOverride: executeTerminar(null),
+			signal: new AbortController().signal,
+			out: stdout.stream,
+			json: true,
+			diagOut: stderr.stream,
+		});
+		assert.match(stderr.text(), /corrupto/);
+		assert.doesNotMatch(stdout.text(), /corrupto/, "el aviso de state.json corrupto no es parte del payload");
+		// stdout sigue siendo únicamente el JSON — el aviso no lo precede ni lo rompe.
+		assert.doesNotThrow(() => JSON.parse(stdout.text()));
+	});
+
+	it("sin json (comportamiento previo intacto): stdout lleva la prosa humana, no JSON", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-nojson-"));
+		const store = new LocalStore(cwd);
+		const stdout = capture();
+		const code = await runOneshot("tarea inviable", {
+			cwd,
+			limits: { maxIterations: 12 },
+			model: undefined,
+			thinkingLevel: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: decideTerminar(failTerminarDecision()),
+			executeOverride: executeTerminar(false),
+			signal: new AbortController().signal,
+			out: stdout.stream,
+		});
+		assert.equal(code, 1);
+		assert.match(stdout.text(), /tarea terminó en estado/);
+		assert.throws(() => JSON.parse(stdout.text()));
+	});
+
+	it("summarizeOneshotResult: mismo lenguaje que summarizeState, con el desenlace del oneshot encima", () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-json-summary-"));
+		const store = new LocalStore(cwd);
+		void store; // sólo para reservar el tmpdir con el mismo patrón que el resto del archivo
+		const state = enCursoState(3);
+		const payload = summarizeOneshotResult({ state, interrupted: false, completed: false });
+		assert.equal(payload.ok, false);
+		assert.equal(payload.exitCode, 1);
+		assert.deepEqual(payload.state, summarizeState(state));
 	});
 });
 

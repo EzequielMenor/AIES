@@ -469,6 +469,7 @@ const CLI_HELP_TEXT = [
 	"Uso: aies [opción] | aies \"<tarea>\"",
 	"",
 	"  aies \"<tarea>\"             ejecuta una tarea y termina",
+	"  aies \"<tarea>\" --json      igual, pero stdout es una sola línea de JSON (scripts/pipes)",
 	"  aies                         inicia el REPL interactivo",
 	"  aies auth                    estado de autenticación por provider",
 	"  aies login <proveedor>       guarda una API key (persiste en ~/.pi/agent/auth.json)",
@@ -643,7 +644,13 @@ async function tryRunAuthSubcommand(argv: string[]): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-	const argv = process.argv.slice(2);
+	// T4.3: --json se reconoce en cualquier posición y se retira de argv antes de
+	// cualquier otro dispatch (subcomandos, tarea) — así ni "aies --json login x" ni
+	// "aies login x --json" cambian cómo se parsean update/pick/auth/la tarea en sí.
+	// Sólo lo consume el camino oneshot; en los demás simplemente desaparece del argv.
+	const rawArgv = process.argv.slice(2);
+	const jsonMode = rawArgv.includes("--json");
+	const argv = jsonMode ? rawArgv.filter((a) => a !== "--json") : rawArgv;
 	if (argv.length >= 1 && argv[0] === "update" && argv.length === 1) {
 		process.exit(await runUpdate());
 	}
@@ -668,21 +675,26 @@ async function main(): Promise<void> {
 	const repl = taskArg === null || taskArg.length === 0;
 	const cwd = process.cwd();
 
+	// json: nada de lo previo a la ejecución (config rota, preflight, auth, modelo no
+	// encontrado) puede aterrizar en stdout — todo va a stderr, stdout se reserva
+	// enteramente para el JSON final.
+	const diagOut = jsonMode ? process.stderr : output;
+
 	let cfg;
 	try {
 		cfg = loadConfig();
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
-		output.write(`aies: aies.config.json ausente o inválido: ${msg}\n`);
+		diagOut.write(`aies: aies.config.json ausente o inválido: ${msg}\n`);
 		process.exit(2);
 	}
 	const limits: Limits = limitsFromConfig(cfg);
 	const updatePromise = checkForUpdate();
 	const thinkingLevel = cfg.orchestratorThinkingLevel;
 	const runtime = await getModelRuntime();
-	const model = await resolveModel(runtime, cfg, process.env.AIES_MODEL, output);
-	preflight(cfg, output);
-	authReadinessNotice(runtime, cfg, output);
+	const model = await resolveModel(runtime, cfg, process.env.AIES_MODEL, diagOut);
+	preflight(cfg, diagOut);
+	authReadinessNotice(runtime, cfg, diagOut);
 
 	if (repl) {
 		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise, runtime, cfg });
@@ -693,12 +705,27 @@ async function main(): Promise<void> {
 			model,
 			thinkingLevel,
 			updatePromise,
+			json: jsonMode,
+			diagOut,
 		});
 		const status = await waitForUpdateNotice(updatePromise);
 		const notice = formatUpdateNotice(status ?? { kind: "skipped" });
-		if (notice) output.write(`\n${notice}\n`);
+		// json: el JSON ya se escribió (una única línea) dentro de runOneshot() — el
+		// aviso de actualización, si lo hay, va a stderr, nunca añadido después en stdout.
+		if (notice) diagOut.write(`\n${notice}\n`);
 		process.exit(exitCode);
 	}
+}
+
+/** Payload de `--json`: mismo lenguaje que `/state --json` (summarizeState), más el desenlace del oneshot en sí. */
+export function summarizeOneshotResult(result: RunCycleResult): Record<string, unknown> {
+	return {
+		ok: result.completed,
+		exitCode: oneshotExitCode(result),
+		interrupted: result.interrupted,
+		completed: result.completed,
+		state: summarizeState(result.state),
+	};
 }
 
 export async function runOneshot(
@@ -715,16 +742,27 @@ export async function runOneshot(
 		executeOverride?: ExecuteFn | undefined;
 		out?: NodeJS.WritableStream | undefined;
 		signal?: AbortSignal | undefined;
+		/**
+		 * T4.3: stdout (`out`) carries ONLY one line of JSON — the machine-readable
+		 * result, so `aies "<tarea>" --json | jq .` never sees anything else.
+		 * Every human notice this function would normally print (loaded-state
+		 * warnings, "tarea pausada", "tarea terminó en estado X") goes to
+		 * `diagOut` instead (stderr in practice — see main()), same unix split as
+		 * any tool meant to be piped: stdout = payload, stderr = diagnostics.
+		 */
+		json?: boolean | undefined;
+		diagOut?: NodeJS.WritableStream | undefined;
 	},
 ): Promise<number> {
 	const out = ctx.out ?? output;
+	const diag = ctx.json ? (ctx.diagOut ?? process.stderr) : out;
 	const task = taskFromArg(taskArg);
 	const store = ctx.store ?? new LocalStore(ctx.cwd);
 	const loaded = store.loadStateResult();
-	if (loaded.kind === "invalid") out.write(`${schemaInvalidNotice(loaded.reason)}\n`);
+	if (loaded.kind === "invalid") diag.write(`${schemaInvalidNotice(loaded.reason)}\n`);
 	const prior = loaded.kind === "ok" ? loaded.state : null;
 	const overwrite = oneshotOverwriteNotice(prior);
-	if (overwrite) out.write(`${overwrite}\n`);
+	if (overwrite) diag.write(`${overwrite}\n`);
 
 	const controller = new AbortController();
 	// ADR-012 — 1ª SIGINT aborta y deja la tarea pausada (reanudable); 2ª SIGINT fuerza exit(130).
@@ -732,7 +770,7 @@ export async function runOneshot(
 	const onSigint = () => {
 		sigintCount += 1;
 		if (sigintCount >= 2) {
-			out.write("\naies: segunda señal recibida — saliendo (130).\n");
+			diag.write("\naies: segunda señal recibida — saliendo (130).\n");
 			process.exit(130);
 		}
 		controller.abort(new Error("SIGINT"));
@@ -746,12 +784,19 @@ export async function runOneshot(
 		limits: ctx.limits,
 		signal: ctx.signal ?? controller.signal,
 		store,
-		renderer: ctx.renderer,
+		// json: el StreamRenderer por defecto de runCycle() pinta a `output` (ANSI,
+		// spinners, bloques de worker) — ese ruido se manda a stderr, nunca a stdout.
+		renderer: ctx.renderer ?? (ctx.json ? new StreamRenderer(diag) : undefined),
 		decideOverride: ctx.decideOverride,
 		executeOverride: ctx.executeOverride,
 	});
 
 	if (!ctx.signal) process.off("SIGINT", onSigint);
+
+	if (ctx.json) {
+		out.write(`${JSON.stringify(summarizeOneshotResult(result))}\n`);
+		return oneshotExitCode(result);
+	}
 
 	if (result.completed) return 0;
 	if (result.interrupted) {
