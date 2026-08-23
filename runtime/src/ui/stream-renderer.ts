@@ -408,9 +408,9 @@ export class StreamRenderer implements AiesEventHandlers {
 				);
 				return;
 			}
-			case "intervention:stopped": {
+			case "intervention:paused": {
 				this.detachSpinner();
-				this.line(`${amber("▲")} Intervención del usuario: ejecución detenida.`);
+				this.line(`${amber("▲")} Tarea pausada por el desarrollador — usa /resume para continuarla.`);
 				return;
 			}
 			case "intervention:adjustment": {

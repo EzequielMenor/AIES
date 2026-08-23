@@ -17,7 +17,7 @@ runtime/
 │   ├── cli.ts                # aies "<tarea>" / aies (REPL) entrypoint (CLI standalone)
 │   ├── cli-persistence.ts    # REPL session persistence
 │   ├── config.ts             # Zod-validated aies.config.json loader (AIES_CONFIG env override)
-│   ├── intervention.ts       # SIGINT → StopController (1st → request stop, 2nd → exit 130)
+│   ├── intervention.ts       # legacy StopController (mantenido para extension/ @deprecated); el wireado activo vive en cli.ts (ADR-012: ESC parar / Ctrl+C cerrar → pausa reanudable)
 │   ├── limits.ts             # LIMIT_POLICY + limitsFromConfig
 │   ├── observability.ts      # shapes of decision/result/compaction log entries + serializers
 │   ├── core/                 # domain (no pi): state.ts, loop.ts, events.ts, types.ts, observation.ts
@@ -52,7 +52,7 @@ cli.ts
   ├── decide = createDecide({ cwd, model, thinkingLevel, signal })
   │                                            # orchestrator/decide.ts — AgentSession efímera por turno
   ├── execute = buildExecute(wctx, signal)      # workers/tools.ts::runWorker (WorkerToolContext)
-  ├── controller = new AbortController()        # SIGINT → abort (no exit, no kill)
+  ├── controller = new AbortController()        # SIGINT → abort (no exit, no kill en la primera señal; segunda SIGINT → exit 130)
   ├── renderer = new StreamRenderer(...)        # ui/stream-renderer.ts (merged into handlers below)
   └── runCycle(task, { ... })                   # runLoop(state, { decide, execute, handlers, ... })
         └─ store.saveState(finalState)
@@ -60,7 +60,7 @@ cli.ts
 
 What this means:
 
-- Los modos: argv con texto posicional corre `runOneshot(taskArg)`; sin texto entra en `runRepl()` hasta `/exit`. El REPL carga `.aies/state.json`; si está `En curso`, avisa y `/resume` continúa el snapshot (`resumeFrom`). SIGINT aborta el run sin matar el proceso.
+- Los modos: argv con texto posicional corre `runOneshot(taskArg)`; sin texto entra en `runRepl()` hasta `/exit`. El REPL carga `.aies/state.json`; si está `En curso` (o `Recibida`), avisa y `/resume` continúa el snapshot (`resumeFrom`). **Señales durante un run (ADR-012):** ESC → pausa (vuelve al prompt). Ctrl+C → pausa, persiste estado, cierra el REPL. 2º Ctrl+C → `process.exit(130)`. `Fallida` se reserva para inviabilidad y terminación por límite.
 - **Persistence path** — the CLI uses `LocalStore` (`cli-persistence.ts`) at `<cwd>/.aies/{state.json,log.jsonl}`. The legacy `persistence/file_store.ts` (used by the deprecated extension) lives at `<agentDir>/aies/<sha1(cwd).slice(0,16)>/{state.json,log.jsonl}` and is still exercised by `self-check/persistence.ts`. Both write JSONL append-only and `state.json` atomically (`.tmp` + rename).
 - **`runLoop`** runs while `taskState ∈ {Recibida, En curso}`. Each iteration is `decide(state) → execute(state, decision) → applyOperationResult`. Limits, parse failures, and SIGINT are checked before each turn; see [architecture.md §3](architecture.md#3-the-decision-loop).
 - **Worker call** — `execute` invokes `workers/tools.ts::runWorker(cap, …)`, which builds an ephemeral `AgentSession` via `workers/session-factory.ts::createWorkerSession` with the capability's tool allowlist (`workers/capabilities.ts`), the persona prompt (`workers/prompts.ts::CAPABILITY_PROMPT`), and an `AbortSignal` wired to `controller.signal`.

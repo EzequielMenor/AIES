@@ -237,11 +237,11 @@ describe("StreamRenderer TTY", () => {
 		assert.equal(stream.text(), "");
 	});
 
-	it("intervention:stopped pinta aviso ámbar", () => {
+	it("intervention:paused pinta aviso ámbar (ADR-012)", () => {
 		const stream = captureStream(true);
 		renderer = new StreamRenderer(stream);
-		renderer.onLoopObservation({ phase: "intervention:stopped", state: sampleState() });
-		assert.match(stream.plain(), /Intervención del usuario: ejecución detenida/);
+		renderer.onLoopObservation({ phase: "intervention:paused", state: sampleState() });
+		assert.match(stream.plain(), /Tarea pausada por el desarrollador — usa \/resume para continuarla\./);
 	});
 
 	it("intervention:adjustment pinta línea violeta (T2.1)", () => {

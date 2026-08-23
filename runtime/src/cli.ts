@@ -12,10 +12,16 @@
 //   - state.json: snapshot final de RuntimeState tras cada ciclo.
 //   - log.jsonl:  entradas estructuradas del bus onLogEntry.
 //
-// SIGINT (Ctrl+C):
-//   - Si hay un run en curso, aborta el worker vía AbortSignal y marca el bucle como
-//     interrumpido (stopSignal → setTerminal fail → onTaskFailed). El proceso NO muere.
-//   - En REPL vuelve al prompt. En oneshot sale con código 1.
+// SIGINT / ESC (ADR-012 — `5-Decisions/ADR-012-intervencion-pausa-no-fallo.md`):
+//   - ESC durante un run (sólo en REPL con TTY) → aborta el worker; la tarea queda PAUSADA
+//     (`En curso`/`Recibida` intactos, `nextStep` marcador) y el REPL vuelve al prompt.
+//     Reanudable con `/resume`. No se cierra el proceso.
+//   - SIGINT (Ctrl+C) durante un run → aborta el worker, persiste el estado y, tras drenar el
+//     turno, cierra el REPL. Oneshot: sale con código 1 y deja estado reanudable. Reanudable
+//     con `/resume` en la siguiente invocación.
+//   - 2º SIGINT consecutivo (sin importar timing) → `process.exit(130)` inmediato: el drenado
+//     del turno puede quedarse colgado y el usuario tiene la última palabra.
+//   - SIGINT en el prompt del REPL (sin run) → cierra el REPL tras persistir.
 
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -23,6 +29,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
+import { emitKeypressEvents, type Key } from "node:readline";
 import pc from "picocolors";
 
 import { LocalStore } from "./cli-persistence.js";
@@ -199,12 +206,19 @@ export interface RunCycleResult {
 	startup: StartupReport;
 }
 
+/** Prefijo estable para que el filtro en `runCycle` pueda reemplazar el briefing entre ciclos. */
+export const BRIEFING_PREFIX = "briefing de arranque:";
+
 export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCycleResult> {
 	const startup = opts.startup ?? runStartup(opts.cwd);
 	let initial = opts.resumeFrom ?? initState(task, opts.limits);
-	// ADR-011 §4 — briefing al estado ANTES del bucle: el orquestador (P-09) ve `knownInfo`
-	// serializado en cada turno. Se añade tras la guía de /resume si la hay.
-	for (const line of startup.briefing) initial = addKnownInfo(initial, line);
+	// ADR-011 §4 + ADR-012 — briefing al estado como UNA entrada marcada (no N) para acotar el
+	// crecimiento de `knownInfo` en /resume. Sin resumeFrom: primera tarea, no hay briefing previo.
+	// Con resumeFrom: filtramos el briefing del ciclo anterior antes de inyectar el nuevo.
+	const knownInfoWithoutBriefing = initial.knownInfo.filter((k) => !k.startsWith(BRIEFING_PREFIX));
+	initial = { ...initial, knownInfo: knownInfoWithoutBriefing };
+	const briefingEntry = `${BRIEFING_PREFIX}\n${startup.briefing.join("\n")}`;
+	initial = addKnownInfo(initial, briefingEntry);
 	if (opts.resumeGuide && opts.resumeFrom) {
 		// T2.2 — la guía se inyecta al estado reanudado como `knownInfo` antes de arrancar el bucle.
 		const note = `guía del desarrollador al reanudar: ${opts.resumeGuide}`;
@@ -307,7 +321,8 @@ const HELP_TEXT = [
 	"",
 	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
 	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
-	" Ctrl+C la aborta limpiamente (sin matar el proceso).",
+	" ESC la pausa (sigue en /resume); Ctrl+C la pausa y cierra la sesión",
+	" (un 2º Ctrl+C fuerza salida inmediata).",
 	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
 ].join("\n");
 
@@ -340,13 +355,13 @@ export function preflight(cfg: Config, out: NodeJS.WritableStream, env: NodeJS.P
 }
 
 export function priorInProgressNotice(state: RuntimeState | null): string | null {
-	if (!state || state.taskState !== "En curso") return null;
-	return `aies: hay una tarea previa "En curso" (objetivo: "${state.task.objetivo}"). Usa /resume para continuarla. Cualquier otro texto arranca una tarea nueva.`;
+	if (!state || (state.taskState !== "En curso" && state.taskState !== "Recibida")) return null;
+	return `aies: hay una tarea previa "${state.taskState}" (objetivo: "${state.task.objetivo}"). Usa /resume para continuarla. Cualquier otro texto arranca una tarea nueva.`;
 }
 
 export function oneshotOverwriteNotice(state: RuntimeState | null): string | null {
-	if (!state || state.taskState !== "En curso") return null;
-	return `aies: hay una tarea previa "En curso" (objetivo: "${state.task.objetivo}"). Esta oneshot la sobreescribirá.`;
+	if (!state || (state.taskState !== "En curso" && state.taskState !== "Recibida")) return null;
+	return `aies: hay una tarea previa "${state.taskState}" (objetivo: "${state.task.objetivo}"). Esta oneshot la sobreescribirá.`;
 }
 
 export function schemaInvalidNotice(reason: "corrupt" | "schema"): string {
@@ -367,8 +382,10 @@ export function replStartupMessages(store: LocalStore): string[] {
 export function resolveResume(
 	state: RuntimeState | null,
 ): { ok: true; state: RuntimeState } | { ok: false; message: string } {
-	if (!state || state.taskState !== "En curso") {
-		return { ok: false, message: 'aies: no hay una tarea "En curso" para reanudar.' };
+	// ADR-012: una tarea pausada antes del primer ajuste de plan queda en "Recibida"; también es
+	// reanudable. Coherente con `persistence/recover.ts::isResumable` (ya lo aceptaba).
+	if (!state || (state.taskState !== "En curso" && state.taskState !== "Recibida")) {
+		return { ok: false, message: 'aies: no hay una tarea reanudable ("En curso"/"Recibida").' };
 	}
 	return { ok: true, state };
 }
@@ -560,8 +577,17 @@ export async function runOneshot(
 	if (overwrite) out.write(`${overwrite}\n`);
 
 	const controller = new AbortController();
-	const onSigint = () => controller.abort(new Error("Interrumpido por el usuario"));
-	if (!ctx.signal) process.once("SIGINT", onSigint);
+	// ADR-012 — 1ª SIGINT aborta y deja la tarea pausada (reanudable); 2ª SIGINT fuerza exit(130).
+	let sigintCount = 0;
+	const onSigint = () => {
+		sigintCount += 1;
+		if (sigintCount >= 2) {
+			out.write("\naies: segunda señal recibida — saliendo (130).\n");
+			process.exit(130);
+		}
+		controller.abort(new Error("SIGINT"));
+	};
+	if (!ctx.signal) process.on("SIGINT", onSigint);
 
 	const result = await runCycle(task, {
 		cwd: ctx.cwd,
@@ -579,7 +605,7 @@ export async function runOneshot(
 
 	if (result.completed) return 0;
 	if (result.interrupted) {
-		out.write("\naies: tarea interrumpida por el usuario.\n");
+		out.write("\naies: tarea pausada; reanúdala en la siguiente invocación con `/resume`.\n");
 	} else {
 		out.write(`\naies: tarea terminó en estado ${result.state.taskState}.\n`);
 	}
@@ -602,14 +628,32 @@ async function runRepl(ctx: {
 	if (updateNotice) output.write(`\n${updateNotice}\n`);
 
 	const rl = readline.createInterface({ input, output, terminal: true });
+	// ADR-012 — explícito pese a que `terminal:true` ya emite keypress; si el proceso se ejecuta
+	// sin TTY (pipe), `input.isTTY` es false y los keypress no se entregarán — fallback documentado.
+	emitKeypressEvents(input);
 	let runInProgress = false;
 	let activeAbort: AbortController | null = null;
 	// T2.1 — cola de intervención acumulada mientras corre un run.
 	const interventionQueue: string[] = [];
 
+	// ADR-012 — control plane del REPL. Cierra tras el ciclo en curso y deja la tarea PAUSADA
+	// (no Fallida). El estado ya quedó persistido por `runCycle::saveState` antes de retornar.
+	let exitAfterCycle = false;
+	let sigintCount = 0;
 	const onSigint = () => {
+		sigintCount += 1;
+		if (sigintCount >= 2) {
+			// 2º SIGINT en cualquier momento dentro del REPL → forzar salida inmediata.
+			output.write(`\naies: segunda señal recibida — saliendo (130).\n`);
+			process.exit(130);
+		}
 		if (runInProgress && activeAbort) {
-			activeAbort.abort(new Error("Interrumpido por el usuario"));
+			activeAbort.abort(new Error("SIGINT"));
+			exitAfterCycle = true;
+		} else if (!runInProgress) {
+			// Sin run en curso: SIGINT cierra el REPL directamente.
+			exitAfterCycle = true;
+			rl.close();
 		}
 	};
 	process.on("SIGINT", onSigint);
@@ -631,6 +675,8 @@ async function runRepl(ctx: {
 			}
 			const input0 = line.trim();
 			if (!input0) continue;
+			// Tras cada comando atendido: el próximo SIGINT empieza una ráfaga nueva.
+			sigintCount = 0;
 
 			if (input0 === "/help") {
 				output.write(`${helpText()}\n`);
@@ -660,7 +706,7 @@ async function runRepl(ctx: {
 					output.write(`${resolved.message}\n`);
 					continue;
 				}
-				const result = await runTrackedReplCycle(output, rl, interventionQueue, {
+				const result = await runTrackedReplCycle(output, rl, interventionQueue, input, {
 					mark: (running, abort) => {
 						runInProgress = running;
 						activeAbort = abort;
@@ -678,13 +724,14 @@ async function runRepl(ctx: {
 						}),
 				});
 				if (result) currentState = result.state;
+				if (exitAfterCycle) break;
 				continue;
 			}
 
 			// Nueva tarea sobre el proyecto (manteniendo persistencia).
 			const task = taskFromArg(input0);
 			const before = currentState;
-			const result = await runTrackedReplCycle(output, rl, interventionQueue, {
+			const result = await runTrackedReplCycle(output, rl, interventionQueue, input, {
 				mark: (running, abort) => {
 					runInProgress = running;
 					activeAbort = abort;
@@ -702,6 +749,7 @@ async function runRepl(ctx: {
 			});
 			if (result) currentState = result.state;
 			else if (before && !currentState) currentState = before;
+			if (exitAfterCycle) break;
 		}
 	} finally {
 		close();
@@ -730,6 +778,7 @@ async function runTrackedReplCycle(
 	out: NodeJS.WritableStream,
 	rl: readline.Interface,
 	interventionQueue: string[],
+	inputStream: NodeJS.ReadableStream,
 	opts: {
 		mark: (running: boolean, abort: AbortController | null) => void;
 		run: (signal: AbortSignal) => Promise<RunCycleResult>;
@@ -750,11 +799,25 @@ async function runTrackedReplCycle(
 		out.write(`${violet("⚑ tú (intervención):")} ${text} — se aplicará en la siguiente decisión.\n`);
 	};
 	rl.on("line", onInterventionLine);
+	// ADR-012 — ESC durante el run = parar la tarea y volver al prompt (sin cerrar el REPL).
+	// Se instala sobre `inputStream` (no sobre `rl`) porque las teclas llegan antes de que readline
+	// las consuma para la edición de línea — los listeners son aditivos.
+	const onKeypress = (_ch: string | undefined, key: Key | undefined) => {
+		if (key?.name === "escape") {
+			abort.abort(new Error("ESC"));
+		}
+	};
+	inputStream.on("keypress", onKeypress);
 	try {
-		out.write(`${pc.dim("(escribe para intervenir · Ctrl+C detiene)")}\n`);
+		out.write(`${pc.dim("(escribe para intervenir · ESC para parar · Ctrl+C para salir)")}\n`);
 		const result = await opts.run(abort.signal);
 		if (result.interrupted) {
-			out.write("\naies: tarea interrumpida por el usuario (Ctrl+C). Volviendo al prompt.\n");
+			const reason = String(abort.signal.reason ?? "");
+			if (reason.includes("SIGINT")) {
+				out.write("\naies: tarea pausada — sesión cerrada. El estado queda guardado para /resume.\n");
+			} else {
+				out.write("\naies: tarea pausada (ESC). Usa /resume para continuarla.\n");
+			}
 		}
 		return result;
 	} catch (e) {
@@ -763,6 +826,7 @@ async function runTrackedReplCycle(
 		return undefined;
 	} finally {
 		rl.removeListener("line", onInterventionLine);
+		inputStream.removeListener("keypress", onKeypress);
 		opts.mark(false, null);
 	}
 }

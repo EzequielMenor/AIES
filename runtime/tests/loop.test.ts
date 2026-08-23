@@ -391,6 +391,65 @@ async function testPollInterventionHandlerThrowsIsolated(): Promise<void> {
 	console.log("OK pollIntervention que lanza: aislado, el bucle sigue");
 }
 
+async function testStopSignalPausesTaskNotFails(): Promise<void> {
+	// ADR-012: stopSignal (ESC / SIGINT) PAUSA la tarea, no la marca Fallida.
+	// taskState se conserva ("En curso" / "Recibida"), nextStep lleva marcador de pausa,
+	// no se emiten onTaskCompleted ni onTaskFailed.
+	const state: RuntimeState = initState({
+		objetivo: "tarea pausable",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	const rec = makeRecorder();
+	let stopped = false;
+	const finalState = await runLoop(state, {
+		...rec.handlers,
+		decide: async () => {
+			// Primera vuelta: indicamos stop; el bucle procesa stopSignal al inicio del siguiente
+			// turno y sale. Devolvemos una decisión válida para que se ejecute al menos un turno
+			// antes del stop (cubre la rama stopSignal al inicio del 2º turno).
+			return {
+				decision: {
+					operación: "obtener información",
+					ajustePlan: null,
+					unidad: null,
+					capacidad: null,
+					comunicación: null,
+					motivo: "preparar",
+					condición: null,
+				},
+				telemetry: TELEM,
+				raw: "{}",
+				parseFail: false,
+			};
+		},
+		execute: async (): Promise<ExecuteOutcome> => ({
+			result: { kind: "info", text: "preparado", unidadId: null, passed: null },
+			telemetry: TELEM,
+		}),
+		stopSignal: () => stopped || (stopped = true, false), // false la 1ª vez, true la 2ª
+	});
+
+	// Estado final: NO Fallida, NO Completada — pausada.
+	assert.ok(
+		finalState.taskState === "En curso" || finalState.taskState === "Recibida",
+		`stopSignal debe preservar taskState (visto: ${finalState.taskState})`,
+	);
+	assert.match(finalState.nextStep, /pausada por el desarrollador/);
+	assert.equal(finalState.terminalCondition, null, "pausa no es terminal");
+	assert.notEqual(finalState.taskState, "Fallida");
+	assert.notEqual(finalState.taskState, "Completada");
+
+	const completed = rec.events.filter((e) => e.kind === "onTaskCompleted");
+	const failed = rec.events.filter((e) => e.kind === "onTaskFailed");
+	assert.equal(completed.length, 0, "stopSignal no emite onTaskCompleted");
+	assert.equal(failed.length, 0, "stopSignal no emite onTaskFailed (ADR-012)");
+
+	console.log("OK stopSignal: pausa en lugar de Fallida; nextStep marcador; sin onTaskFailed/Completed");
+}
+
 async function main(): Promise<void> {
 	await testImplementVerifyEmitsAllEventsInOrder();
 	await testParseFailDoesNotEmitDecideSuccess();
@@ -398,7 +457,8 @@ async function main(): Promise<void> {
 	await testPollInterventionAbsentNoRegression();
 	await testPollInterventionAppliesAdjustment();
 	await testPollInterventionHandlerThrowsIsolated();
-	console.log("\nloop.test OK: 6 tests unitarios del bucle + bus de eventos verificados");
+	await testStopSignalPausesTaskNotFails();
+	console.log("\nloop.test OK: 7 tests unitarios del bucle + bus de eventos verificados");
 }
 
 main().catch((e) => {

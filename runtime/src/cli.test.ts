@@ -8,6 +8,7 @@ import { afterEach, describe, it } from "vitest";
 
 import {
 	BANNER_BAR,
+	BRIEFING_PREFIX,
 	formatStateHuman,
 	formatStateOutput,
 	oneshotExitCode,
@@ -345,9 +346,29 @@ describe("T1 persistencia y /resume", () => {
 		const resolved = resolveResume(null);
 		assert.equal(resolved.ok, false);
 		if (resolved.ok) throw new Error("unreachable");
-		assert.match(resolved.message, /no hay una tarea "En curso"/);
+		assert.match(resolved.message, /no hay una tarea reanudable/);
 		const done = resolveResume({ ...enCursoState(1), taskState: "Completada" });
 		assert.equal(done.ok, false);
+	});
+
+	it("/resume acepta Recibida (pausa antes del primer ajustePlan) — ADR-012 D4", () => {
+		const recibida = { ...enCursoState(0), taskState: "Recibida" as const };
+		const r = resolveResume(recibida);
+		assert.equal(r.ok, true, "Recibida debe ser reanudable");
+		if (!r.ok) throw new Error("unreachable");
+	});
+
+	it("priorInProgressNotice incluye Recibida", () => {
+		const recibida = { ...enCursoState(0), taskState: "Recibida" as const };
+		assert.match(priorInProgressNotice(recibida) ?? "", /tarea previa "Recibida"/);
+		assert.match(oneshotOverwriteNotice(recibida) ?? "", /tarea previa "Recibida"/);
+	});
+
+	it("resolveResume rechaza Completada y Fallida", () => {
+		const completada = { ...enCursoState(0), taskState: "Completada" as const };
+		const fallida = { ...enCursoState(0), taskState: "Fallida" as const };
+		assert.equal(resolveResume(completada).ok, false);
+		assert.equal(resolveResume(fallida).ok, false);
 	});
 });
 
@@ -428,6 +449,96 @@ describe("T2.2 /resume con guía inyecta knownInfo", () => {
 
 		assert.ok(seenKnownInfo);
 		assert.ok(!seenKnownInfo!.some((k) => /guía del desarrollador/.test(k)), "sin guide: no se añade la nota");
+	});
+});
+
+describe("ADR-012 T4 — briefing: reemplazar, no acumular", () => {
+	function startupWith(lines: string[]): ReturnType<typeof runStartup> {
+		return {
+			availability: { codegraph: "missing", projectmem: "missing", cwd: "/tmp" },
+			codegraphInit: { status: "skipped", message: "test" },
+			memoryBriefing: null,
+			briefing: lines,
+			customTools: [],
+			toolNames: { code_explore: false, mem_read: false, mem_log: false },
+		};
+	}
+
+	it("runCycle sin resumeFrom inyecta una sola entrada de briefing en knownInfo", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-brief-fresh-"));
+		const store = new LocalStore(cwd);
+		let seenKnownInfo: string[] | undefined;
+		await runCycle(enCursoState(0).task, {
+			cwd,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (state) => {
+				seenKnownInfo = state.knownInfo;
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: executeTerminar(null),
+			startup: startupWith(["HERRAMIENTAS: codegraph=missing, projectmem=missing."]),
+		});
+		assert.ok(seenKnownInfo);
+		const briefings = seenKnownInfo!.filter((k) => k.startsWith(BRIEFING_PREFIX));
+		assert.equal(briefings.length, 1, "una sola entrada de briefing tras tarea nueva");
+		assert.match(briefings[0]!, /HERRAMIENTAS: codegraph=missing/);
+	});
+
+	it("dos runResumeCycle encadenados dejan una sola entrada de briefing", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-brief-resume-"));
+		const store = new LocalStore(cwd);
+		const fixture = enCursoState(2);
+		store.saveState(fixture);
+
+		const startup = startupWith(["HERRAMIENTAS: codegraph=missing, projectmem=missing."]);
+
+		// Primer resume: añadir el briefing, correr y persistir.
+		let after1: RuntimeState | undefined;
+		await runResumeCycle(resolveResume(store.loadState()).ok ? (store.loadState()!) : fixture, {
+			cwd,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (state) => {
+				after1 = state;
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: executeTerminar(null),
+			startup,
+		});
+		assert.ok(after1);
+		const briefingsAfter1 = after1!.knownInfo.filter((k) => k.startsWith(BRIEFING_PREFIX));
+		assert.equal(briefingsAfter1.length, 1, "después del primer resume: una sola entrada");
+		store.saveState(after1!);
+
+		// Segundo resume sobre el estado recién persistido (que ya tiene el briefing).
+		let after2: RuntimeState | undefined;
+		await runResumeCycle(store.loadState()!, {
+			cwd,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (state) => {
+				after2 = state;
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: executeTerminar(null),
+			startup,
+		});
+		assert.ok(after2);
+		const briefingsAfter2 = after2!.knownInfo.filter((k) => k.startsWith(BRIEFING_PREFIX));
+		assert.equal(briefingsAfter2.length, 1, "segundo resume: briefing reemplazado, no acumulado");
 	});
 });
 

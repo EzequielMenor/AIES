@@ -133,16 +133,15 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 	emit(handlers, "onTaskStart", () => handlers.onTaskStart?.(state));
 
 	while (state.taskState === "Recibida" || state.taskState === "En curso") {
-		// Intervención externa (Runtime §7) — se procesa como una entrada más (detención).
+		// Intervención externa (Runtime §7, ADR-012) — el desarrollador detuvo el run (ESC en REPL o
+		// SIGINT). La tarea QUEDA PAUSADA, no Fallida: `taskState` intacto, `nextStep` marcador,
+		// `Fallida` se reserva para inviabilidad y terminación controlada por límite. Reanudable
+		// con /resume (estado persistido por el caller en runCycle::saveState).
 		if (handlers.stopSignal?.()) {
-			emitLog(syntheticDecision(state.iterations, "comunicar al desarrollador", "intervención: detención por el desarrollador"));
-			emitLog(resultEntry(state.iterations, { kind: "límite", text: "tarea detenida por intervención", unidadId: null, passed: null }, telemetryEmpty()));
-			safeObserve(observe, { phase: "intervention:stopped", state });
-			state = setTerminal(state, { execution: "fail", verification: "unknown", scope: "unknown" }, "intervención del desarrollador (detención)");
-			emit(handlers, "onTaskFailed", () => {
-				const reason = state.terminalCondition ?? "intervención del desarrollador (detención)";
-				handlers.onTaskFailed?.(reason);
-			});
+			emitLog(syntheticDecision(state.iterations, "comunicar al desarrollador", "intervención: detención solicitada por el desarrollador"));
+			emitLog(resultEntry(state.iterations, { kind: "intervención", text: "tarea pausada por el desarrollador", unidadId: null, passed: null }, telemetryEmpty()));
+			safeObserve(observe, { phase: "intervention:paused", state });
+			state = { ...state, nextStep: "pausada por el desarrollador — reanudable con /resume" };
 			break;
 		}
 

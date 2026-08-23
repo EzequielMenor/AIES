@@ -71,13 +71,13 @@ Reglas del bucle:
 | Estado | Significado |
 |---|---|
 | **Recibida** | El desarrollador ha solicitado la tarea; el bucle aún no ha comenzado |
-| **En curso** | El bucle de decisión está operando |
+| **En curso** | El bucle de decisión está operando, **o** pausado por el desarrollador (ESC/SIGINT) o por límite — `nextStep` lleva el marcador (`ADR-005`, `ADR-012`) |
 | **Completada** | Condiciones de finalización cumplidas y verificadas (`P-12`) |
-| **Fallida** | Se decidió que no hay forma viable de completarla, o el desarrollador la detuvo |
+| **Fallida** | Se decidió que no hay forma viable de completarla (inviabilidad declarada o terminación controlada por límite — `ADR-005`, `ADR-012`) |
 
-**[Propuesta]** — Intervención del desarrollador (`REQ-F-11`, `RNF-04`): si ajusta la tarea, esta continúa **En curso** con la nueva información; si la detiene, pasa a **Fallida** con ese motivo.
+**[Propuesta]** — Intervención del desarrollador (`REQ-F-11`, `RNF-04`): si ajusta la tarea, esta continúa **En curso** con la nueva información; si la detiene (ESC/Ctrl+C), la tarea queda **En curso** pausada, reanudable con `/resume` (`ADR-012`). `Fallida` se reserva para inviabilidad y terminación controlada por límite.
 
-> Un estado "pausada" se descarta por ahora: no hay requisito que exija suspensión y reanudación como estado propio (`P-06`, `P-17`). Se reintroducirá si aparece necesidad.
+> Reintroducción del patrón de pausa: el catálogo de estados no crece (`P-06`, `P-17`); se reutiliza `En curso` + `nextStep` marcador, mismo patrón que `ADR-005` para la pausa por límite. Necesidad materializada en `ADR-012` (UX v0: ESC parar / Ctrl+C cerrar).
 
 ---
 
@@ -106,7 +106,7 @@ Reglas:
 |---|---|---|---|
 | Recibida | En curso | El orquestador toma la tarea y arranca el bucle | P-01 |
 | En curso | Completada | Condiciones de finalización cumplidas y verificadas | P-12, REQ-F-13 |
-| En curso | Fallida | Decisión de imposibilidad, o detención del desarrollador | P-13, RNF-04 |
+| En curso | Fallida | Decisión de imposibilidad, o terminación controlada por límite (`ADR-005` acción `terminar`) | P-13, RNF-04, ADR-005, ADR-012 |
 | En curso | En curso | Cada iteración del bucle (obtener info / ejecutar / observar) | P-10, P-13 |
 
 **[Hecho]** — El número de iteraciones forma parte del estado explícito (`P-09`: "cuántas iteraciones se han realizado").

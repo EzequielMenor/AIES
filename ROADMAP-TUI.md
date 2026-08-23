@@ -8,7 +8,7 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-22 (T0+T1+T2.1+T2.2+T3.1+3.2 implementados; T2.3 aplazado).
+> Última revisión: 2026-08-23 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2 implementados; T2.3 aplazado).
 
 ---
 
@@ -209,6 +209,29 @@
 2.3 **Restricciones de tarea.** Aplazado. P-13/ponytail: `taskFromArg` deja
     `alcance`/`restricciones` siempre `null`; abrir esto en TUI es ortogonal a
     T2.1/T2.2 y no está pedido por un usuario real todavía.
+
+2.4 **ESC parar / Ctrl+C cerrar (ADR-012).** ✅ (2026-08-23)
+    - Rama `stopSignal` del bucle (`core/loop.ts`) deja `taskState` intacto, fija
+      `nextStep: "pausada por el desarrollador — reanudable con /resume"` y emite
+      `phase: "intervention:paused"` en `onLoopObservation`. Sin `setTerminal`,
+      sin `onTaskFailed`. Estado persistido por `runCycle::saveState` antes de
+      retornar; `/resume` retoma.
+    - REPL: listener `keypress` sobre `inputStream` durante el run; `key.name === "escape"`
+      aborta el worker (pausa, vuelve al prompt). `emitKeypressEvents(input)` explícito.
+      SIGINT durante un run aborta + marca `exitAfterCycle`; al cerrar el ciclo el REPL sale.
+      2º SIGINT en cualquier momento → `process.exit(130)` inmediato. SIGINT en el prompt
+      (sin run) cierra el REPL directamente.
+    - Oneshot: 1ª SIGINT aborta y deja estado reanudable; exit 1 con mensaje
+      "tarea pausada; reanúdala en la siguiente invocación con `/resume`." 2ª SIGINT →
+      `process.exit(130)`.
+    - `resolveResume` acepta `"Recibida" | "En curso"` (pausa antes del primer
+      `ajustePlan`); mensajes actualizados.
+    - Briefing en `knownInfo` se inyecta como **una sola entrada** con prefijo estable
+      `briefing de arranque:`; en cada ciclo se filtra la previa y se añade la nueva
+      (no acumulación entre `/resume`).
+    - Renderer: línea ámbar `Tarea pausada por el desarrollador — usa /resume para
+      continuarla.` (sustituye a `Intervención del usuario: ejecución detenida.`).
+    - Pista dim durante el run: `(escribe para intervenir · ESC para parar · Ctrl+C para salir)`.
 
 **Criterios de salida:**
 

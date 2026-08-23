@@ -150,7 +150,9 @@ export interface AiesEventHandlers {
 	onVerificationResult?: (unitId: string, verdict: "PASS" | "FAIL", output: string) => void;
 	/** Cuando la tarea alcanza `Completada`. */
 	onTaskCompleted?: (summary: string, telemetry: TaskTelemetry) => void;
-	/** Cuando la tarea alcanza `Fallida` o es abortada por stop-signal. */
+	/** Cuando la tarea alcanza `Fallida` (inviabilidad / terminación controlada por límite). La
+	 *  pausa por intervención del desarrollador (ADR-012) ya NO pasa por aquí — el bucle conserva
+	 *  `taskState` intacto y emite `intervention:paused` vía `onLoopObservation`. */
 	onTaskFailed?: (reason: string, error?: Error) => void;
 
 	// ── Primitivas de control (compatibilidad) ───────────────────────────────

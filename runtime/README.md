@@ -19,7 +19,7 @@ aies CLI (cli.ts, bin aies)
     │   ├── State management (persistence/file_store.ts)
     │   ├── Decide: sesión efímera con ORCHESTRATOR_SYSTEM_PROMPT → parseo Zod
     │   ├── Execute: llama a runWorker("explorer"|"implementer"|"verifier")
-    │   └── Limits + intervention (SIGINT → StopController)
+    │   └── Limits + intervention (ADR-012: ESC parar / Ctrl+C cerrar → pausar, no Fallida)
     │
     ├── Custom Tools (workers/tools.ts)
     │   ├── explore: AgentSession efímera con [read, grep, find, ls]
@@ -28,6 +28,18 @@ aies CLI (cli.ts, bin aies)
     │
     └── Telemetry (telemetry/pi-events.ts) — mapeo de eventos pi → dominio AIES
 ```
+
+### Señales durante la ejecución (ADR-012)
+
+| Señal | REPL | Oneshot |
+|---|---|---|
+| **ESC** durante un run | Pausa la tarea (queda `En curso`), vuelve al prompt. Sin cerrar sesión. | No aplica (sin readline). |
+| **Ctrl+C** (1ª) durante un run | Pausa la tarea, persiste estado, cierra el REPL. La siguiente invocación ofrece `/resume`. | Pausa la tarea, persiste estado, sale con código 1. |
+| **Ctrl+C** (2ª) en cualquier momento | `process.exit(130)` inmediato (escape si el drenado del turno se cuelga). | `process.exit(130)` inmediato. |
+| **Ctrl+C** en el prompt del REPL (sin run) | Cierra el REPL. | No aplica. |
+
+`Fallida` queda reservada para inviabilidad declarada por el orquestador y terminación
+controlada por límite (`ADR-005`). La intervención del desarrollador nunca produce `Fallida`.
 
 ---
 
@@ -102,7 +114,7 @@ AIES_NO_UPDATE_CHECK=1 aies
 
 ## Estado de la implementación
 
-- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/status`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, SIGINT controlado.
+- [x] **v1 — CLI standalone**: oneshot (`aies "<tarea>"`), `aies update`, `--version` y REPL (`/help`, `/state`, `/state --json`, `/status`, `/resume`, `/clear`, `/exit`), persistencia en `<cwd>/.aies/{state.json,log.jsonl}`, recuperación ante corrupción, ESC parar / Ctrl+C cerrar con pausa reanudable (ADR-012).
 - [x] **Deprecated — Extensión de Pi** (`src/extension/`): se conserva como código legacy, marcado `@deprecated`, se eliminará en v2. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
 
 Verificación: `pnpm run typecheck` (tsc strict) + `pnpm test` (parse, unitid, loop, cost, e2e y update — todos sin LLM).
