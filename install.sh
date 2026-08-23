@@ -40,7 +40,25 @@ detect_pm() {
 clone_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     info "Actualizando $INSTALL_DIR"
-    git -C "$INSTALL_DIR" pull --ff-only
+    local prev_short prev_full new_full new_short
+    prev_short=$(git -C "$INSTALL_DIR" rev-parse --short HEAD)
+    prev_full=$(git -C "$INSTALL_DIR" rev-parse HEAD)
+    if ! git -C "$INSTALL_DIR" pull --ff-only --quiet; then
+      fail "git pull falló — repo local divergente en $INSTALL_DIR"
+    fi
+    new_full=$(git -C "$INSTALL_DIR" rev-parse HEAD)
+    new_short=$(git -C "$INSTALL_DIR" rev-parse --short HEAD)
+    if [ "$prev_full" = "$new_full" ]; then
+      info "Ya estás en la última versión ($prev_short)"
+    else
+      info "Actualizado $prev_short → $new_short"
+      if git -C "$INSTALL_DIR" rev-parse -q --verify "$prev_full^{commit}" >/dev/null 2>&1; then
+        git -C "$INSTALL_DIR" log --oneline "$prev_full..HEAD"
+      else
+        warn "No se puede listar el historial completo (clone shallow). Mostrando los últimos 10 commits:"
+        git -C "$INSTALL_DIR" log --oneline -10 HEAD
+      fi
+    fi
   else
     if [ -d "$INSTALL_DIR" ]; then
       local backup="$INSTALL_DIR.bak.$(date +%Y%m%d%H%M%S)"
@@ -48,25 +66,25 @@ clone_or_update() {
       mv "$INSTALL_DIR" "$backup"
     fi
     info "Clonando AIES en $INSTALL_DIR"
-    git clone --depth 1 "$REPO" "$INSTALL_DIR"
+    git clone --depth 1 --quiet "$REPO" "$INSTALL_DIR"
   fi
 }
 
 install_deps() {
   info "Instalando dependencias ($PM install)"
   if [ "$PM" = "pnpm" ]; then
-    pnpm --dir "$INSTALL_DIR/runtime" install
+    pnpm --silent --dir "$INSTALL_DIR/runtime" install
   else
-    npm install --prefix "$INSTALL_DIR/runtime"
+    npm --silent install --prefix "$INSTALL_DIR/runtime"
   fi
 }
 
 build() {
-  info "Compilando (tsc)"
+  info "Compilando (tsc — puede tardar ~30s)…"
   if [ "$PM" = "pnpm" ]; then
-    pnpm --dir "$INSTALL_DIR/runtime" run build
+    pnpm --silent --dir "$INSTALL_DIR/runtime" run build
   else
-    npm run build --prefix "$INSTALL_DIR/runtime"
+    npm --silent run build --prefix "$INSTALL_DIR/runtime"
   fi
 }
 
