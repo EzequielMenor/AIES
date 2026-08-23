@@ -30,7 +30,7 @@ The traceability chain is `01-Concept → 02-Requirements → 03-Architecture �
 
 ## Runtime v1 at a glance
 
-The v1 runtime (`runtime/`, currently `0.2.0`) realizes everything described in `03-Architecture/MVP-v0-Scope.md` and ships as a **standalone CLI** built on top of `pi` (`@earendil-works/pi-coding-agent@~0.84`). The whole package is small: ~3 600 lines of TypeScript.
+The v1 runtime (`runtime/`, currently `0.3.0`) realizes everything described in `03-Architecture/MVP-v0-Scope.md` and ships as a **standalone CLI** built on top of `pi` (`@earendil-works/pi-coding-agent@~0.84`). The whole package is small: ~3 600 lines of TypeScript.
 
 > `ADR-010` (AIES como extensión de Pi) está **Deprecated** desde 2026-08-20. El código bajo `runtime/src/extension/` se conserva como legacy anotado `@deprecated` y se elimina en v2. El único entry point activo es la CLI.
 

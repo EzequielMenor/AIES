@@ -3,7 +3,7 @@
 # ⚡ AIES
 ### *Autonomous Software Engineering Harness & Runtime*
 
-[![Version](https://img.shields.io/badge/version-0.2.0--beta-38bdf8?style=flat-square)](./runtime/package.json)
+[![Version](https://img.shields.io/badge/version-0.3.0--beta-38bdf8?style=flat-square)](./runtime/package.json)
 [![Architecture](https://img.shields.io/badge/spec-P--01..P--20-3fb950?style=flat-square)](./01-Concept/Principles.md)
 [![Decisions](https://img.shields.io/badge/ADRs-10%20accepted-d2a8ff?style=flat-square)](./05-Decisions/)
 [![Research](https://img.shields.io/badge/research-H--01%20%7C%20H--02-ffa657?style=flat-square)](./06-research/)
