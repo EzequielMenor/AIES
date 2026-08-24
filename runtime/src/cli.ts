@@ -489,6 +489,103 @@ function clearScreen(): void {
 	output.write("\x1b[2J\x1b[H");
 }
 
+/**
+ * Lee UNA línea del REPL preservando saltos de línea dentro de un paste.
+ *
+ * Por qué existe:
+ *   `rl.question(prompt)` resuelve en el PRIMER \n del input — incluyendo los \n
+ *   embebidos en un paste multi-línea. Sin este wrapper, pegar "line1\nline2\n"
+ *   envía "line1" como tarea al orquestador mientras "line2\n" aún llega al
+ *   stream, donde el listener de intervención (`runTrackedReplCycle::onInterventionLine`)
+ *   los captura como `⚑ tú (intervención)` y los mete en la cola.
+ *
+ * Diseño:
+ *   1. NO usamos `rl.question()` (consume la primera línea sin emitir `'line'`).
+ *      Mostramos el prompt con `rl.prompt()` y escuchamos `'line'` + `'data'`
+ *      directamente.
+ *   2. Cada `'line'` event (paste \n y Enter \r) entra al buffer `lines`.
+ *   3. La ÚNICA señal que dispara la resolución es un `\r` STANDALONE
+ *      (no parte de CRLF) en el input crudo — eso es exactamente lo que
+ *      envía la tecla Enter en TTY real, y lo que los tests simulan con
+ *      `input.write("\r")`. CRLF llega como "\r\n" en el mismo chunk y NO
+ *      cuenta → descarta falsos positivos de paste (los paste modernos
+ *      usan \n, pero por si acaso).
+ *   4. `close` (Ctrl+C desde el SIGINT handler del REPL, Ctrl+D directo)
+ *      rechaza: el caller hace `break` sin enviar contenido parcial.
+ *
+ * Por qué NO usamos debounce:
+ *   Resolvería también al "final de paste sin Enter", que es exactamente el
+ *   bug que arreglamos. La señal correcta es Enter (tecla explícita del
+ *   usuario), NO el silencio del stream.
+ *
+ * Garantías del contrato (`tests/cli-repl.test.ts`):
+ *   - Pulsar Enter UNA vez produce UNA llamada al orquestador.
+ *   - El mensaje preserva los saltos de línea del paste.
+ *   - Paste sin Enter posterior NO dispara el orquestador.
+ *   - Ningún fragmento del mensaje se convierte en intervención.
+ *   - Ctrl+C / cierre del stream NO envía contenido parcial.
+ */
+export function readPromptLine(
+	rl: readline.Interface,
+	inputStream: NodeJS.ReadableStream,
+	prompt: string,
+): Promise<string> {
+	return new Promise<string>((resolve, reject) => {
+		const lines: string[] = [];
+		let settled = false;
+		let enterPressed = false;
+
+		const trimTrailingEmpty = () => {
+			while (lines.length > 0 && lines[lines.length - 1] === "") {
+				lines.pop();
+			}
+		};
+
+		const settle = (fn: () => void) => {
+			if (settled) return;
+			settled = true;
+			rl.removeListener("line", onLine);
+			rl.removeListener("close", onClose);
+			inputStream.removeListener("data", onData);
+			fn();
+		};
+
+		// Detecta Enter en el input crudo. CRLF ("\r\n") se ignora; un \r
+		// standalone al final del chunk sí cuenta. (Un paste con line endings
+		// CR-only, raro/legacy, sería un falso positivo — aceptable.)
+		const onData = (chunk: Buffer | string) => {
+			const str = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+			if (str.endsWith("\r") && !str.endsWith("\r\n")) {
+				enterPressed = true;
+			}
+		};
+
+		// Acumulamos cada line event. Sólo resolvemos cuando Enter fue pulsado.
+		const onLine = (line: string) => {
+			lines.push(line);
+			if (enterPressed) {
+				settle(() => {
+					trimTrailingEmpty();
+					resolve(lines.join("\n"));
+				});
+			}
+		};
+
+		const onClose = () => settle(() => reject(new Error("readline closed")));
+
+		// `prependListener` para que onData se registre ANTES que el handler interno
+		// de readline y así procesemos el \r (Enter) en el mismo tick que el `line`
+		// event correspondiente — si va detrás, llegaría tarde y no detectaríamos
+		// el Enter en la primera línea de un paste+Enter compacto.
+		inputStream.prependListener("data", onData);
+		rl.on("line", onLine);
+		rl.once("close", onClose);
+
+		rl.setPrompt(prompt);
+		rl.prompt();
+	});
+}
+
 /** Wrapper local de defaultConfigPath (re-export para los comandos REPL/oneshot). */
 function defaultConfigPathLocal(): string {
 	return defaultConfigPath();
@@ -868,9 +965,14 @@ async function runRepl(ctx: {
 		while (true) {
 			let line: string;
 			try {
-				line = await rl.question("❯ ");
+				// readPromptLine preserva saltos de línea de un paste y sólo resuelve
+				// cuando el usuario pulsa Enter explícitamente. `rl.question()`
+				// resolvería en el primer \n del input (incluyendo \n embebidos en
+				// un paste), así que sin el wrapper el orquestador arrancaba sobre
+				// un fragmento y el resto del paste acababa como intervención.
+				line = await readPromptLine(rl, input, "❯ ");
 			} catch {
-				// readline aborted (Ctrl+D / cierre del stream).
+				// readline aborted (Ctrl+D / cierre del stream por SIGINT).
 				break;
 			}
 			const input0 = line.trim();
