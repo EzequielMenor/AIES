@@ -1,5 +1,7 @@
 ---
 import '../styles/global.css';
+import Analytics from '../components/Analytics.astro';
+import { inject } from '@vercel/analytics';
 
 interface Props {
   title?: string;
@@ -40,6 +42,10 @@ const {
         }
       })();
     </script>
+    <Analytics />
+    <script>
+      inject();
+    </script>
   </head>
 
   <body class="bg-[var(--color-bg)] text-[var(--color-text)] transition-colors duration-200 relative min-h-screen flex flex-col justify-between">
@@ -56,9 +62,9 @@ const {
         </a>
 
         <nav class="hidden md:flex items-center gap-8 text-sm text-[var(--color-text-muted)] font-normal">
-          <a href="/#problema" class="hover:text-[var(--color-text)] transition-colors">Problema</a>
-          <a href="/#arquitectura" class="hover:text-[var(--color-text)] transition-colors">Arquitectura</a>
-          <a href="/#quickstart" class="hover:text-[var(--color-text)] transition-colors">Instalación</a>
+          <a href="/#problema" class="nav-underline hover:text-[var(--color-text)] transition-colors">Problema</a>
+          <a href="/#arquitectura" class="nav-underline hover:text-[var(--color-text)] transition-colors">Arquitectura</a>
+          <a href="/#quickstart" class="nav-underline hover:text-[var(--color-text)] transition-colors">Instalación</a>
           <a href="/roadmap" class="hover:text-[var(--color-text)] text-[var(--color-text)] font-medium transition-colors">
             Hoja de ruta
           </a>
@@ -77,7 +83,7 @@ const {
             href="https://github.com/EzequielMenor/AIES"
             target="_blank"
             rel="noopener noreferrer"
-            class="px-3 py-1.5 rounded-md text-xs font-medium border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] hover:bg-[var(--color-surface-2)] hover:border-[var(--color-border-hover)] transition-all flex items-center gap-1.5"
+            class="btn-arrow px-3 py-1.5 rounded-md text-xs font-medium border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] hover:bg-[var(--color-surface-2)] hover:border-[var(--color-border-hover)] transition-all"
           >
             <span>GitHub</span>
             <span class="text-[11px] text-[var(--color-text-muted)]">&nearr;</span>
@@ -89,10 +95,10 @@ const {
             aria-label="Cambiar tema"
             class="p-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-hover)] transition-colors cursor-pointer"
           >
-            <svg id="theme-icon-sun" class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <svg id="theme-icon-sun" class="icon-rotate w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>
             </svg>
-            <svg id="theme-icon-moon" class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <svg id="theme-icon-moon" class="icon-rotate w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
             </svg>
           </button>
@@ -100,7 +106,7 @@ const {
       </div>
     </header>
 
-    <div id="top" class="relative z-10 hero-glow grow">
+    <div id="top" class="relative z-10 hero-glow hero-parallax grow">
       <slot />
     </div>
 
@@ -122,14 +128,17 @@ const {
           <a href="https://github.com/EzequielMenor/AIES/tree/main/05-Decisions" target="_blank" rel="noopener noreferrer" class="hover:text-[var(--color-text)] transition-colors">
             ADRs
           </a>
-          <a href="https://buymeacoffee.com/wm2jv22vfmx" target="_blank" rel="noopener noreferrer" class="hover:text-[var(--color-text)] transition-colors">
-            Buy Me a Coffee &nearr;
+          <a href="https://buymeacoffee.com/wm2jv22vfmx" target="_blank" rel="noopener noreferrer" class="btn-arrow hover:text-[var(--color-text)] transition-colors">
+            <span>Buy Me a Coffee</span>
+            <span>&nearr;</span>
           </a>
-          <a href="https://ko-fi.com/ezequiel_33" target="_blank" rel="noopener noreferrer" class="hover:text-[var(--color-text)] transition-colors">
-            Ko-fi &nearr;
+          <a href="https://ko-fi.com/ezequiel_33" target="_blank" rel="noopener noreferrer" class="btn-arrow hover:text-[var(--color-text)] transition-colors">
+            <span>Ko-fi</span>
+            <span>&nearr;</span>
           </a>
-          <a href="https://github.com/EzequielMenor/AIES" target="_blank" rel="noopener noreferrer" class="hover:text-[var(--color-text)] transition-colors">
-            GitHub &nearr;
+          <a href="https://github.com/Ezequielmenor/AIES" target="_blank" rel="noopener noreferrer" class="btn-arrow hover:text-[var(--color-text)] transition-colors">
+            <span>GitHub</span>
+            <span>&nearr;</span>
           </a>
         </div>
       </div>
@@ -137,29 +146,106 @@ const {
 
     <!-- Global Client Scripts -->
     <script>
+      const prefersReducedMotion = window.matchMedia(
+        '(prefers-reduced-motion: reduce)'
+      ).matches;
+
+      // Mark body as loaded on next frame so initial hero animation can play
+      requestAnimationFrame(() => {
+        document.body.classList.add('is-loaded');
+      });
+
+      // Theme toggle: flip .dark, persist, rotate icons 180° each click
       const themeToggle = document.getElementById('theme-toggle');
+      const sunIcon = document.getElementById('theme-icon-sun');
+      const moonIcon = document.getElementById('theme-icon-moon');
+      let iconRot = 0;
+      const rotateIcons = () => {
+        iconRot += 180;
+        if (sunIcon) sunIcon.style.setProperty('--icon-rot', `${iconRot}deg`);
+        if (moonIcon) moonIcon.style.setProperty('--icon-rot', `${iconRot}deg`);
+      };
       if (themeToggle) {
         themeToggle.addEventListener('click', () => {
           const isDark = document.documentElement.classList.toggle('dark');
           localStorage.setItem('theme', isDark ? 'dark' : 'light');
+          rotateIcons();
         });
       }
 
-      const observer = new IntersectionObserver(
+      // Reveal observer: handles both .animate-on-scroll and .reveal-stagger
+      const revealObserver = new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              entry.target.classList.add('visible');
+            if (!entry.isIntersecting) return;
+            const el = entry.target;
+            if (el.hasAttribute('data-stagger')) {
+              el.classList.add('is-visible');
+            } else {
+              el.classList.add('visible');
             }
+            revealObserver.unobserve(el);
           });
         },
-        { threshold: 0.08 }
+        { threshold: 0.04 }
       );
 
       document.querySelectorAll('[data-animate="true"]').forEach((el) => {
-        el.classList.add('animate-on-scroll');
-        observer.observe(el);
+        if (el.hasAttribute('data-stagger')) {
+          el.classList.add('reveal-stagger');
+        } else {
+          el.classList.add('animate-on-scroll');
+        }
+        revealObserver.observe(el);
       });
+
+      // Hairline draw observer
+      const hairlineObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-in-view');
+              hairlineObserver.unobserve(entry.target);
+            }
+          });
+        },
+        { threshold: 0.5 }
+      );
+      document.querySelectorAll('.hairline-draw, .hairline-rule').forEach((el) => {
+        hairlineObserver.observe(el);
+      });
+
+      // Hero parallax on #top — only when motion is allowed
+      if (!prefersReducedMotion) {
+        const hero = document.getElementById('top');
+        if (hero) {
+          let rafId = 0;
+          let targetX = 0;
+          let targetY = 0;
+          const onMove = (e) => {
+            const rect = hero.getBoundingClientRect();
+            const nx = (e.clientX - rect.left) / rect.width - 0.5;
+            const ny = (e.clientY - rect.top) / rect.height - 0.5;
+            targetX = nx * 8;
+            targetY = ny * 6;
+            if (!rafId) {
+              rafId = requestAnimationFrame(() => {
+                hero.style.setProperty('--parallax-x', `${targetX.toFixed(2)}px`);
+                hero.style.setProperty('--parallax-y', `${targetY.toFixed(2)}px`);
+                rafId = 0;
+              });
+            }
+          };
+          const onLeave = () => {
+            targetX = 0;
+            targetY = 0;
+            hero.style.setProperty('--parallax-x', '0px');
+            hero.style.setProperty('--parallax-y', '0px');
+          };
+          hero.addEventListener('mousemove', onMove);
+          hero.addEventListener('mouseleave', onLeave);
+        }
+      }
     </script>
   </body>
 </html>

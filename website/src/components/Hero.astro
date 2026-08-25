@@ -2,7 +2,7 @@
 import TerminalSimulator from './TerminalSimulator.astro';
 ---
 
-<section class="pt-20 pb-20 space-y-12 max-w-4xl mx-auto text-center sm:text-left" data-animate="true">
+<section class="pt-20 pb-20 space-y-12 max-w-4xl mx-auto text-center sm:text-left" data-animate="true" data-stagger>
   <!-- Minimalist Pill Badge -->
   <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text-muted)] font-mono">
     <span class="w-2 h-2 rounded-full bg-[var(--color-accent)] animate-pulse"></span>
@@ -12,9 +12,17 @@ import TerminalSimulator from './TerminalSimulator.astro';
   <!-- Hero Main Copy -->
   <div class="space-y-6">
     <h1 class="text-4xl sm:text-6xl md:text-7xl font-semibold tracking-tight text-[var(--color-text)] leading-[1.08]">
-      Agentes de IA con contexto limpio y verificación real.
+      <span class="h-word">Agentes</span>{' '}
+      <span class="h-word">de</span>{' '}
+      <span class="h-word">IA</span>{' '}
+      <span class="h-word">con</span>{' '}
+      <span class="h-word">contexto</span>{' '}
+      <span class="h-word">limpio</span>{' '}
+      <span class="h-word">y</span>{' '}
+      <span class="h-word">verificación</span>{' '}
+      <span class="h-word">real.</span>
     </h1>
-    
+
     <p class="max-w-2xl text-lg sm:text-xl text-[var(--color-text-muted)] font-normal leading-relaxed">
       AIES es el harness de ingeniería que descompone tareas complejas, ejecuta subagentes efímeros y valida cada cambio antes de darlo por completado.
     </p>
@@ -39,9 +47,10 @@ import TerminalSimulator from './TerminalSimulator.astro';
 
     <a
       href="#quickstart"
-      class="w-full sm:w-auto px-5 py-2.5 rounded-lg text-xs font-medium border border-[var(--color-border)] bg-[var(--color-surface-2)] text-[var(--color-text)] hover:border-[var(--color-border-hover)] transition-colors text-center"
+      class="btn-arrow w-full sm:w-auto px-5 py-2.5 rounded-lg text-xs font-medium border border-[var(--color-border)] bg-[var(--color-surface-2)] text-[var(--color-text)] hover:border-[var(--color-border-hover)] transition-colors text-center"
     >
-      Guía de Inicio &darr;
+      <span>Guía de Inicio</span>
+      <span>&darr;</span>
     </a>
   </div>
 

@@ -12,6 +12,14 @@
     --color-text: #09090b;
     --color-text-muted: #71717a;
     --color-accent: #0284c7;
+
+    /* Editorial motion tokens */
+    --ease-editorial: cubic-bezier(0.16, 1, 0.3, 1);
+    --dur-fast: 180ms;
+    --dur-med: 320ms;
+    --dur-slow: 600ms;
+    --reveal-y: 14px;
+    --reveal-stagger: 70ms;
   }
 
   .dark {
@@ -39,11 +47,18 @@
   }
 }
 
-/* Minimalist scroll animation */
+/* =========================================================================
+   Editorial motion utilities
+   ========================================================================= */
+
+/* Base reveal: fade + 14px translateY on intersection */
 .animate-on-scroll {
   opacity: 0;
-  transform: translateY(16px);
-  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translateY(var(--reveal-y));
+  transition:
+    opacity var(--dur-slow) var(--ease-editorial),
+    transform var(--dur-slow) var(--ease-editorial);
+  will-change: opacity, transform;
 }
 
 .animate-on-scroll.visible {
@@ -51,7 +66,211 @@
   transform: translateY(0);
 }
 
-/* Subtle glow effect for hero */
+/* Stagger cascade for children inside [data-stagger].
+   The container itself gets the .visible class; each direct child reads
+   its own index via :nth-child to compute the delay. */
+.reveal-stagger > * {
+  opacity: 0;
+  transform: translateY(var(--reveal-y));
+  transition:
+    opacity var(--dur-slow) var(--ease-editorial),
+    transform var(--dur-slow) var(--ease-editorial);
+}
+
+.reveal-stagger.is-visible > * {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reveal-stagger.is-visible > *:nth-child(1) { transition-delay: calc(0 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(2) { transition-delay: calc(1 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(3) { transition-delay: calc(2 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(4) { transition-delay: calc(3 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(5) { transition-delay: calc(4 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(6) { transition-delay: calc(5 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(7) { transition-delay: calc(6 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(8) { transition-delay: calc(7 * var(--reveal-stagger)); }
+.reveal-stagger.is-visible > *:nth-child(n + 9) { transition-delay: calc(8 * var(--reveal-stagger)); }
+
+/* Card lift: 2px up + border shift, no shadow */
+.card-lift {
+  transition:
+    transform var(--dur-med) var(--ease-editorial),
+    border-color var(--dur-med) var(--ease-editorial),
+    background-color var(--dur-med) var(--ease-editorial);
+}
+
+.card-lift:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-border-hover);
+}
+
+/* Animated divider: SVG line draws in on intersection */
+.hairline-line {
+  stroke: var(--color-border);
+  stroke-width: 1;
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+  transition: stroke-dashoffset var(--dur-slow) var(--ease-editorial);
+}
+
+.hairline-draw.is-in-view .hairline-line {
+  stroke-dashoffset: 0;
+}
+
+/* Drop-in replacement for `border-t border-[var(--color-border)]` on section
+   wrappers. The rule is drawn from the centre when it scrolls into view. */
+.hairline-rule {
+  position: relative;
+}
+
+.hairline-rule::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 100%;
+  height: 1px;
+  background-color: var(--color-border);
+  transform: translateX(-50%) scaleX(0);
+  transform-origin: center center;
+  transition: transform var(--dur-slow) var(--ease-editorial);
+}
+
+.hairline-rule.is-in-view::before {
+  transform: translateX(-50%) scaleX(1);
+}
+
+/* Nav underline: pseudo-element grows from left on hover */
+.nav-underline {
+  position: relative;
+}
+
+.nav-underline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 100%;
+  height: 1px;
+  background-color: currentColor;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-med) var(--ease-editorial);
+}
+
+.nav-underline:hover::after {
+  transform: scaleX(1);
+}
+
+/* Subtle decorative dot grid; opacity fade-in on load */
+.dot-grid {
+  background-image: radial-gradient(circle, var(--color-border) 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0;
+  animation: dotGridIn var(--dur-slow) var(--ease-editorial) 200ms forwards;
+}
+
+@keyframes dotGridIn {
+  to { opacity: 0.5; }
+}
+
+/* Theme toggle icon rotation. The container tracks --icon-rot in degrees
+   and increments by 180 on each click for a continuous spin feel. */
+.icon-rotate {
+  transform: rotate(var(--icon-rot, 0deg));
+  transition: transform var(--dur-slow) var(--ease-editorial);
+}
+
+/* Arrow micro-interaction on the last span of a button/link */
+.btn-arrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.btn-arrow > span:last-child {
+  display: inline-block;
+  transition: transform var(--dur-fast) var(--ease-editorial);
+}
+
+.btn-arrow:hover > span:last-child {
+  transform: translateX(3px);
+}
+
+/* Hero word reveal: per-word clip-path slide from right */
+.h-word {
+  display: inline-block;
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 700ms var(--ease-editorial);
+}
+
+body.is-loaded .h-word {
+  clip-path: inset(0 0 0 0);
+}
+
+body.is-loaded .h-word:nth-child(1) { transition-delay: 0ms; }
+body.is-loaded .h-word:nth-child(2) { transition-delay: 80ms; }
+body.is-loaded .h-word:nth-child(3) { transition-delay: 160ms; }
+body.is-loaded .h-word:nth-child(4) { transition-delay: 240ms; }
+body.is-loaded .h-word:nth-child(5) { transition-delay: 320ms; }
+body.is-loaded .h-word:nth-child(6) { transition-delay: 400ms; }
+body.is-loaded .h-word:nth-child(7) { transition-delay: 480ms; }
+body.is-loaded .h-word:nth-child(8) { transition-delay: 560ms; }
+body.is-loaded .h-word:nth-child(9) { transition-delay: 640ms; }
+body.is-loaded .h-word:nth-child(10) { transition-delay: 720ms; }
+body.is-loaded .h-word:nth-child(n + 11) { transition-delay: 800ms; }
+
+/* Hero parallax displacement driven by JS via CSS vars */
+.hero-parallax {
+  transform: translate3d(
+    var(--parallax-x, 0px),
+    var(--parallax-y, 0px),
+    0
+  );
+  transition: transform 200ms ease-out;
+  will-change: transform;
+}
+
+/* Subtle glow for hero */
 .hero-glow {
   background: radial-gradient(circle at 50% 20%, rgba(56, 189, 248, 0.08) 0%, transparent 60%);
+}
+
+/* =========================================================================
+   Reduced motion: neutralise everything added in this file
+   ========================================================================= */
+@media (prefers-reduced-motion: reduce) {
+  .animate-on-scroll,
+  .reveal-stagger > *,
+  .card-lift,
+  .nav-underline,
+  .hairline-line,
+  .hairline-rule::before,
+  .icon-rotate,
+  .btn-arrow,
+  .dot-grid,
+  .h-word,
+  .hero-parallax {
+    transition: none !important;
+    animation: none !important;
+    transform: none !important;
+  }
+
+  .animate-on-scroll,
+  .reveal-stagger > * {
+    opacity: 1 !important;
+  }
+
+  .h-word {
+    clip-path: none !important;
+  }
+
+  .hairline-line {
+    stroke-dashoffset: 0 !important;
+  }
+
+  .hairline-rule::before {
+    transform: translateX(-50%) scaleX(1) !important;
+  }
 }
