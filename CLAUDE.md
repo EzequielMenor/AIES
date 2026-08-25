@@ -36,3 +36,14 @@ via the MCP tools and the summary will follow.
 Do not re-scan source files when MCP tools can give you the same
 answer in ~500 tokens instead of ~5000. This is not optional.
 <!-- <<< projectmem bridge <<< -->
+
+## OpenWiki
+
+This repository has documentation located in the /openwiki directory.
+
+Start here:
+- [OpenWiki quickstart](openwiki/quickstart.md)
+
+OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.

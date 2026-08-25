@@ -8,10 +8,12 @@
 [![Decisions](https://img.shields.io/badge/ADRs-10%20accepted-d2a8ff?style=flat-square)](./05-Decisions/)
 [![Research](https://img.shields.io/badge/research-H--01%20%7C%20H--02-ffa657?style=flat-square)](./06-research/)
 [![License](https://img.shields.io/badge/license-MIT-gray?style=flat-square)](LICENSE)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?style=flat-square&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/wm2jv22vfmx)
+[![Ko-Fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?style=flat-square&logo=ko-fi&logoColor=white)](https://ko-fi.com/ezequiel_33)
 
 **AIES** es un harness y runtime de ingeniería de software que orquesta agentes de IA mediante **descomposición adaptativa de tareas**, **aislamiento estricto de contexto** y **verificación continua**, eliminando el desperdicio de tokens y la burocracia innecesaria.
 
-[¿Qué es AIES?](#-qué-es-aies) • [Problemas que resuelve](#-el-problema-del-agente-único) • [Arquitectura](#-arquitectura-y-bucle-de-decisión) • [Instalación y Uso](#-quickstart) • [Investigación](#-evidencia-empírica) • [Estructura](#-mapa-del-repositorio)
+[¿Qué es AIES?](#-qué-es-aies) • [Problemas que resuelve](#-el-problema-del-agente-único) • [Arquitectura](#-arquitectura-y-bucle-de-decisión) • [Instalación y Uso](#-quickstart) • [Investigación](#-evidencia-empírica) • [Estructura](#-mapa-del-repositorio) • [Apoyo](#-apoyo)
 
 </div>
 
@@ -153,6 +155,12 @@ AIES/
 2. [`01-Concept/Principles.md`](01-Concept/Principles.md) — Las 20 reglas que guían el diseño.
 3. [`05-Decisions/ADR-010-extension-de-pi.md`](05-Decisions/ADR-010-extension-de-pi.md) — Arquitectura de ejecución actual.
 4. [`runtime/README.md`](runtime/README.md) — Detalles técnicos de la implementación del runtime.
+
+---
+
+## ☕ Apoyo
+
+Si encuentras útil AIES y quieres apoyar su desarrollo independiente, puedes [invitarme a un café en Buy Me a Coffee](https://buymeacoffee.com/wm2jv22vfmx) o en [Ko-fi](https://ko-fi.com/ezequiel_33). ¡Cualquier contribución ayuda enormemente a mantener y evolucionar el proyecto!
 
 ---
 

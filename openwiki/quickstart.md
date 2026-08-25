@@ -25,8 +25,12 @@ The repo is a spec + a working v1 runtime, both in the same tree.
 | **Decisions** | ADR-001…ADR-010 (architecture decisions record; `ADR-010` deprecated) | `05-Decisions/` |
 | **Research** | Measurement and validation scaffolding (hypotheses `H-01…H-06`, baselines, experiments) | `06-research/` |
 | **Runtime v1** | The TypeScript implementation of the spec on top of `pi` | `runtime/` |
+| **Product brief** | Top-level one-pager: platform, users, capabilities, brand commitments | `PRODUCT.md` |
+| **Design system** | Top-level design tokens, typography, components (editorial engineering aesthetic) | `DESIGN.md` |
+| **Website** | Public marketing site built from `DESIGN.md`; Astro 5 + Tailwind, sections consumed by `src/pages/index.astro` and `src/pages/roadmap.astro`; deployed to Cloudflare Workers via `wrangler deploy` (`website/wrangler.jsonc`) | `website/` (`pnpm dev` / `pnpm build` / `pnpm deploy` from `website/`) |
+| **pnpm workspace** | Root manifest grouping `runtime/` and `website/` into a single workspace (`onlyBuiltDependencies: @google/genai, esbuild, protobufjs, sharp, workerd`) | `pnpm-workspace.yaml`, `pnpm-lock.yaml` |
 
-The traceability chain is `01-Concept → 02-Requirements → 03-Architecture → 04-Behavior ↔ 05-Decisions → runtime → 06-research`. Concept is the only source of truth for goals, principles, and non-goals; later phases derive from it and must not contradict it.
+The traceability chain is `01-Concept → 02-Requirements → 03-Architecture → 04-Behavior ↔ 05-Decisions → runtime → 06-research`. Concept is the only source of truth for goals, principles, and non-goals; later phases derive from it and must not contradict it. The repo-root `pnpm-workspace.yaml` ties `runtime/` and `website/` into one pnpm workspace; per-package install (`pnpm install` inside `runtime/` or `website/`) still works because of the workspace, and `pnpm install` from the repo root installs both.
 
 ## Runtime v1 at a glance
 

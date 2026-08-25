@@ -8,7 +8,7 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-23 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2 implementados; T2.3 aplazado).
+> Última revisión: 2026-08-24 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T6 implementados; T2.3 aplazado; T4 ampliado con 4.6 vocabulario de estados y 4.7 tarjeta de cierre).
 
 ---
 
@@ -330,13 +330,32 @@
 4.4 **Truncado de salidas largas** con marca expandible vía `--verbose`
     (outputs de bash no inundan el scroll).
 4.5 **Fallback de color** para terminales sin truecolor.
+4.6 **Vocabulario formal de estados.** Glifos consistentes en el
+    renderer: `◌` pensando, `◉` decidiendo, `●` ejecutando, `✓`
+    verificado, `!` intervención, `✗` fallido. Aplica al spinner
+    (`onDecideStart`, ya activo por T0.3) y a los rótulos de bloques
+    de worker (✓/✗ ya activos en `stream-renderer.ts`). Solo cambios
+    locales en `stream-renderer.ts` + tests; el bucle no se toca
+    (P-02 intacto).
+4.7 **Tarjeta de cierre (`CompletionCard` / `FailureCard`).** Al
+    terminar una tarea (`Completada` o `Fallida`), pintar una tarjeta
+    resumen con `{objetivo}`, métricas agregadas de `TaskTelemetry`
+    (tokens, coste, duración, iteraciones) y, si están disponibles en
+    el log, `files_changed`, `tests passed` y regresiones. Telemetría
+    ausente → `n/d` explícito (RNF-07/17), nunca `$0`/`0 tok`. En
+    no-TTY degenera a una línea resumen (mismo criterio que el resto
+    del renderer). Prolonga el footer de T3.1.
 
 **Criterios de salida:**
 
-- 1 sesión larga de REPL (≥ 30 min, smoke de aceptación de ROADMAP 3.4)
-  completada sin fricción de usabilidad.
+- 1 sesión larga de REPL (≥ 30 min, smoke de aceptación de `ROADMAP.md`
+  3.4) completada sin fricción de usabilidad y cerrada con una tarjeta
+  de cierre legible (4.7) en cuyo vocabulario de estados (4.6) no
+  aparecen fases fantasma.
+- 4.6 y 4.7 activos en TTY; en no-TTY degeneran a una sola línea
+  (pipe-safe) sin perder la información esencial.
 
-**Trazabilidad:** `ROADMAP.md 3.4`.
+**Trazabilidad:** `ROADMAP.md 3.4`, RNF-07, RNF-17, P-02.
 
 ---
 

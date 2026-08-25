@@ -109,6 +109,12 @@ export class StreamRenderer implements AiesEventHandlers {
 	private telemKnown: boolean = false;
 	/** T3.1 — último `contextUsage.percent` observado (int 0..100). `null` = nunca conocido. */
 	private lastContextPct: number | null = null;
+	/** Unidades que fallaron (unitId → reason). */
+	private failedUnits: Map<string, string> = new Map();
+	/** Verificaciones que fallaron. */
+	private failedVerifications: string[] = [];
+	/** Flag: el último fallo es retry-safe (se puede reintentar). */
+	private isRetrySafe = false;
 
 	constructor(stream: NodeJS.WritableStream = process.stdout) {
 		this.stream = stream;
@@ -332,6 +338,9 @@ export class StreamRenderer implements AiesEventHandlers {
 		} else {
 			this.detachSpinner();
 		}
+		if (verdict === "FAIL") {
+			this.failedVerifications.push(output.slice(0, 80));
+		}
 		this.branch("│  ", `${cyan("└─")} Salida: ${output}`);
 		const color = verdict === "PASS" ? green : red;
 		this.line(`└─ ${color(`VEREDICTO: ${verdict}`)}`);
@@ -342,6 +351,9 @@ export class StreamRenderer implements AiesEventHandlers {
 	onWorkerFinish(unitId: string, result: UnitResult): void {
 		if (!this.worker) return;
 		this.detachSpinner();
+		if (result.passed === false) {
+			this.failedUnits.set(unitId, result.text);
+		}
 		if (this.worker.esVerificacion) {
 			this.branch("│  ", `${cyan("└─")} Salida: ${result.text}`);
 			const color = result.passed === true ? green : result.passed === false ? red : cyan;
@@ -365,7 +377,41 @@ export class StreamRenderer implements AiesEventHandlers {
 	onTaskFailed(reason: string): void {
 		this.detachSpinner();
 		this.line("");
-		this.line(this.renderBar(`${red("✗ TASK FAILED")} ${bright(`(${reason})`)}`));
+		// Marca retry-safe si aplica
+		const retryMark = this.isRetrySafe ? ` ${green("[retry-safe]")}` : "";
+		this.line(this.renderBar(`${red("✗ TASK FAILED")}${retryMark} ${bright(`(${reason})`)}`));
+		// Resumen compacto: unidades / verificaciones fallidas
+		const failSummary = this.buildFailureSummary();
+		if (failSummary) {
+			this.line(failSummary);
+		}
+		// Detalles expandidos (compactos, en una línea por fallo)
+		this.line("");
+		if (this.failedUnits.size > 0) {
+			this.line(`${red("✗")} Unidades fallidas:`);
+			for (const [id, text] of this.failedUnits) {
+				this.line(`     ${red("•")} ${cyan(id)}: ${text}`);
+			}
+		}
+		if (this.failedVerifications.length > 0) {
+			this.line(`${red("✗")} Verificaciones fallidas:`);
+			for (const cmd of this.failedVerifications) {
+				this.line(`     ${red("•")} ${cmd}`);
+			}
+		}
+	}
+
+	/** Construye línea de resumen compacto de fallos. */
+	private buildFailureSummary(): string | null {
+		const parts: string[] = [];
+		if (this.failedUnits.size > 0) {
+			parts.push(`${red(String(this.failedUnits.size))} unidad${this.failedUnits.size > 1 ? "es" : ""} fallida${this.failedUnits.size > 1 ? "s" : ""}`);
+		}
+		if (this.failedVerifications.length > 0) {
+			parts.push(`${red(String(this.failedVerifications.length))} verific${this.failedVerifications.length > 1 ? "aciones" : "ación"} fallida${this.failedVerifications.length > 1 ? "s" : ""}`);
+		}
+		if (parts.length === 0) return null;
+		return `${bright("Fallos:")} ${parts.join(" · ")}`;
 	}
 
 	/**
@@ -428,6 +474,12 @@ export class StreamRenderer implements AiesEventHandlers {
 				if (obs.telemetry?.contextUsage?.percent !== null && obs.telemetry?.contextUsage?.percent !== undefined) {
 					this.lastContextPct = obs.telemetry.contextUsage.percent;
 				}
+				// Marcar retry-safe según tipo de resultado.
+				if (obs.result.kind === "fallo" || obs.result.kind === "parse_error") {
+					this.isRetrySafe = true;
+				} else if (obs.result.kind === "límite") {
+					this.isRetrySafe = false;
+				}
 				const verifyP = obs.state.results.filter((r) => r.kind === "unidad" && r.passed === true).length;
 				const verifyQ = obs.state.results.filter((r) => r.kind === "unidad" && r.passed !== null).length;
 				const iterN = obs.state.iterations;
@@ -467,6 +519,9 @@ export class StreamRenderer implements AiesEventHandlers {
 	finalize(): void {
 		this.detachSpinner();
 		this.worker = null;
+		this.failedUnits.clear();
+		this.failedVerifications = [];
+		this.isRetrySafe = false;
 	}
 
 	/**

@@ -101,6 +101,158 @@ describe("StreamRenderer TTY", () => {
 		renderer?.finalize();
 	});
 
+	// ── Tests de renderizado de errores (u2) ─────────────────────────────────
+
+	it("onTaskFailed muestra barra con marca retry-safe cuando isRetrySafe=true", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		// Simular que execution:resolved fijó isRetrySafe=true (tipo fallo/parse_error)
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision: infoDecision(),
+			result: { kind: "fallo", text: "test", unidadId: "u0", passed: false },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		renderer.onTaskFailed("límite de iteraciones");
+		const plain = stream.plain();
+		assert.match(plain, /✗ TASK FAILED/);
+		assert.match(plain, /\[retry-safe\]/);
+		assert.match(plain, /límite de iteraciones/);
+	});
+
+	it("onTaskFailed sin retry-safe (tipo límite) no muestra marca retry-safe", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		// Simular límite → no retry-safe
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision: infoDecision(),
+			result: { kind: "límite", text: "max", unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		renderer.onTaskFailed("límite de iteraciones");
+		const plain = stream.plain();
+		assert.match(plain, /✗ TASK FAILED/);
+		assert.doesNotMatch(plain, /\[retry-safe\]/);
+	});
+
+	it("onWorkerFinish populate failedUnits cuando passed=false", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		// Necesita un worker abierto
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u1", { kind: "unidad", text: "archivo no encontrado", unidadId: "u1", passed: false });
+		renderer.onTaskFailed("error");
+		const plain = stream.plain();
+		assert.match(plain, /Unidades fallidas:/);
+		assert.match(plain, /• u1: archivo no encontrado/);
+	});
+
+	it("onVerificationResult populate failedVerifications cuando verdict=FAIL", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "v0", objetivo: "verify", capacidad: "verifier", estado: "En curso" }, { model: "test" });
+		renderer.onVerificationStart("v0", "npm test");
+		renderer.onVerificationResult("v0", "FAIL", "Expected 2, got 1");
+		renderer.onTaskFailed("error");
+		const plain = stream.plain();
+		assert.match(plain, /Verificaciones fallidas:/);
+		assert.match(plain, /• Expected 2, got 1/);
+	});
+
+	it("buildFailureSummary genera línea compacta correcta para fallos mixtos", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u1", { kind: "unidad", text: "fail", unidadId: "u1", passed: false });
+		renderer.onWorkerStart({ id: "u2", objetivo: "test2", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u2", { kind: "unidad", text: "fail2", unidadId: "u2", passed: false });
+		renderer.onWorkerStart({ id: "v0", objetivo: "verify", capacidad: "verifier", estado: "En curso" }, { model: "test" });
+		renderer.onVerificationStart("v0", "npm test");
+		renderer.onVerificationResult("v0", "FAIL", "error");
+		renderer.onTaskFailed("error");
+		const plain = stream.plain();
+		assert.match(plain, /Fallos:.*2 unidades fallidas.*1 verificación fallida/);
+	});
+
+	it("buildFailureSummary singular/plural correcto", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		// Una unidad fallida
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u1", { kind: "unidad", text: "fail", unidadId: "u1", passed: false });
+		renderer.onTaskFailed("error");
+		let plain = stream.plain();
+		assert.match(plain, /1 unidad fallida/);
+		assert.doesNotMatch(plain, /1 unidades fallidas/);
+
+		// Reset y probar 2+ unidades
+		const stream2 = captureStream(true);
+		renderer = new StreamRenderer(stream2);
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u1", { kind: "unidad", text: "fail", unidadId: "u1", passed: false });
+		renderer.onWorkerStart({ id: "u2", objetivo: "test2", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u2", { kind: "unidad", text: "fail2", unidadId: "u2", passed: false });
+		renderer.onTaskFailed("error");
+		plain = stream2.plain();
+		assert.match(plain, /2 unidades fallidas/);
+		assert.doesNotMatch(plain, /2 unidad fallidas/);
+	});
+
+	it("onTaskFailed sin fallos pendientes solo muestra barra y razón", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onTaskFailed("causa desconocida");
+		const plain = stream.plain();
+		assert.match(plain, /✗ TASK FAILED.*causa desconocida/);
+		assert.doesNotMatch(plain, /Unidades fallidas:/);
+		assert.doesNotMatch(plain, /Verificaciones fallidas:/);
+	});
+
+	it("finalize() limpia failedUnits, failedVerifications e isRetrySafe", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		// Poblar estado de fallo
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision: infoDecision(),
+			result: { kind: "fallo", text: "test", unidadId: "u0", passed: false },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u1", { kind: "unidad", text: "fail", unidadId: "u1", passed: false });
+		renderer.finalize();
+		// Llamar onTaskFailed después de finalize → sin fallos pendientes
+		renderer.onTaskFailed("después de finalize");
+		const plain = stream.plain();
+		assert.doesNotMatch(plain, /Unidades fallidas:/);
+		assert.doesNotMatch(plain, /\[retry-safe\]/);
+	});
+
+	it("parse_error en execution:resolved también fija isRetrySafe=true", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision: infoDecision(),
+			result: { kind: "parse_error", text: "json inválido", unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		renderer.onTaskFailed("parse error");
+		const plain = stream.plain();
+		assert.match(plain, /\[retry-safe\]/);
+	});
+
+	// ── Tests existentes ──────────────────────────────────────────────────────
+
 	it("parse-fail muestra el contador ya incrementado (1/3), no 0/3", () => {
 		const stream = captureStream(true);
 		renderer = new StreamRenderer(stream);

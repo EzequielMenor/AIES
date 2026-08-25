@@ -33,6 +33,8 @@ runtime/
 └── node_modules/             # gitignored
 ```
 
+`runtime/` is one half of the repo-root pnpm workspace declared in `pnpm-workspace.yaml` (the other half is `website/`). Per-package install (`pnpm install` inside `runtime/`) still works; the lockfile lives at the repo root as `pnpm-lock.yaml`.
+
 The runtime is **the only module** of this repo that imports `@earendil-works/pi-coding-agent`. The decoupling lives in `workers/session-factory.ts` (workers) and `orchestrator/decide.ts` (decide) — the rest of the domínio (`core/`, `state.ts`, `loop.ts`, `parse.ts`) stays pure. That is the price of `ADR-009` (DIP over a 0.x SDK) and the place to refactor if pi is replaced.
 
 > La extensión de Pi (`src/extension/`) está **deprecated** desde 2026-08-20. La CLI standalone (`src/cli.ts`) es el único entry point. Ver `05-Decisions/ADR-010-extension-de-pi.md`.
@@ -61,6 +63,7 @@ cli.ts
 What this means:
 
 - Los modos: argv con texto posicional corre `runOneshot(taskArg)`; sin texto entra en `runRepl()` hasta `/exit`. El REPL carga `.aies/state.json`; si está `En curso` (o `Recibida`), avisa y `/resume` continúa el snapshot (`resumeFrom`). **Señales durante un run (ADR-012):** ESC → pausa (vuelve al prompt). Ctrl+C → pausa, persiste estado, cierra el REPL. 2º Ctrl+C → `process.exit(130)`. `Fallida` se reserva para inviabilidad y terminación por límite.
+- **Input del REPL — contrato de Enter** (`cli.ts::readPromptLine`): el REPL NO usa `rl.question()` (resolvería en el primer `\n` del input y enviaría un fragmento de un paste multi-línea al orquestador, con el resto entrando luego como intervención al `onInterventionLine`). En su lugar `readPromptLine` muestra el prompt con `rl.prompt()` y sólo resuelve con el contenido completo cuando llega un `\r` *standalone* en el stream crudo — exactamente lo que envía la tecla Enter. Los `\n` embebidos en un paste (CRLF o LF) NO disparan el orquestador; preservan saltos de línea dentro del mensaje. `close` (Ctrl+C / Ctrl+D) rechaza: no se envía contenido parcial. Las garantías están cubiertas por `src/cli-repl.test.ts`.
 - **Persistence path** — the CLI uses `LocalStore` (`cli-persistence.ts`) at `<cwd>/.aies/{state.json,log.jsonl}`. The legacy `persistence/file_store.ts` (used by the deprecated extension) lives at `<agentDir>/aies/<sha1(cwd).slice(0,16)>/{state.json,log.jsonl}` and is still exercised by `self-check/persistence.ts`. Both write JSONL append-only and `state.json` atomically (`.tmp` + rename).
 - **`runLoop`** runs while `taskState ∈ {Recibida, En curso}`. Each iteration is `decide(state) → execute(state, decision) → applyOperationResult`. Limits, parse failures, and SIGINT are checked before each turn; see [architecture.md §3](architecture.md#3-the-decision-loop).
 - **Worker call** — `execute` invokes `workers/tools.ts::runWorker(cap, …)`, which builds an ephemeral `AgentSession` via `workers/session-factory.ts::createWorkerSession` with the capability's tool allowlist (`workers/capabilities.ts`), the persona prompt (`workers/prompts.ts::CAPABILITY_PROMPT`), and an `AbortSignal` wired to `controller.signal`.
@@ -118,6 +121,18 @@ Defined in `runtime/src/observability.ts`. Three entry shapes:
 
 The CLI assigns `ts: new Date().toISOString()` at emission time, so wall-clock per turn is computable from the log alone.
 
+## 5.1 Renderer behavior on task failure
+
+`runtime/src/ui/stream-renderer.ts` accumulates state across the loop so that `onTaskFailed(reason)` can paint more than a single line. The contract:
+
+- **`failedUnits: Map<unitId, text>`** — populated by `onWorkerFinish` whenever `result.passed === false`; cleared on `finalize()`.
+- **`failedVerifications: string[]`** — populated by `onVerificationResult` when `verdict === "FAIL"`; cleared on `finalize()`.
+- **`isRetrySafe: boolean`** — set on `execution:resolved` from the result kind: `fallo` / `parse_error` → `true`, `límite` → `false`, anything else leaves the previous value.
+- **`onTaskFailed(reason)`** renders a bar with `✗ TASK FAILED`; if `isRetrySafe` it appends a green `[retry-safe]` marker; then a compact `Fallos: N unidades fallidas · M verificaciones fallidas` line (singular/plural agreed); then, when present, a `Unidades fallidas:` and `Verificaciones fallidas:` block with one bullet per entry.
+- **`finalize()`** clears the three pieces of state so the next task starts clean.
+
+The companion tests live in `runtime/src/ui/stream-renderer.test.ts` (retry-safe marker, populated lists, singular/plural, post-`finalize()` reset). The vocabulary is governed by `ROADMAP-TUI.md` §4.6 (state glyphs) and the closing card by §4.7 (`CompletionCard` / `FailureCard`).
+
 ## 6. Running it
 
 From the [quickstart](quickstart.md):
@@ -140,6 +155,7 @@ pnpm run research:metrics -- .aies/log.jsonl
 - `tests/loop.test.ts` — happy path of MVP-v0-Scope §9, plus C3 (3 parse-failures → intervención) and ADR-005 (limit → intervención, not Fallida).
 - `tests/cost.test.ts` — cost telemetry deltas (cost stays `off` per `ADR-005`).
 - `tests/smoke-e2e.test.ts` — vitest e2e harness around the loop and persistence.
+- `src/cli-repl.test.ts` — contrato del input del REPL (`readPromptLine`): paste multi-línea NO dispara el orquestador hasta que el usuario pulsa Enter; los fragmentos del mensaje NO se filtran como intervención; Ctrl+C rechaza sin enviar contenido parcial.
 - `self-check/persistence.js` — state.json + log.jsonl, recovery on corrupt (uses `FileStore`).
 - `self-check/orchestrator.js` — Zod parser against the orchestrator schema.
 - `self-check/compaction.js` — pi → domain mapping for `compaction_start` / `compaction_end` (imports `telemetry/pi-events.ts::mapCompaction`).

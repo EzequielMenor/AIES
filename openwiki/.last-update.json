@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-08-20T15:10:25.127Z",
+  "updatedAt": "2026-08-25T09:42:47.256Z",
   "command": "update",
-  "gitHead": "dac6a59c9aa469d6503802288cf5095118a3d761",
+  "gitHead": "f68e6e070e5ebd40853c11cdc4b93b7c17880900",
   "model": "MiniMax-M3"
 }
