@@ -1,0 +1,85 @@
+---
+// SupportSection.astro — Project Sponsorship & Support CTA
+---
+
+<section id="apoyo" class="py-20 border-t border-[var(--color-border)] space-y-10" data-animate="true">
+  <div class="space-y-3 max-w-2xl">
+    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-amber-500/20 bg-amber-500/10 text-xs text-amber-500 dark:text-amber-400 font-mono">
+      <span>☕</span>
+      <span>Proyecto Independiente &bull; Open Source</span>
+    </div>
+    <h2 class="text-3xl sm:text-4xl font-semibold tracking-tight text-[var(--color-text)]">
+      Impulsa el desarrollo de AIES
+    </h2>
+    <p class="text-base text-[var(--color-text-muted)] font-normal leading-relaxed">
+      AIES se desarrolla de forma abierta e independiente. Si te ahorra tiempo y tokens en tu flujo diario, o quieres acelerar las siguientes fases de la hoja de ruta, cualquier contribución ayuda a mantener el ritmo de desarrollo.
+    </p>
+  </div>
+
+  <!-- Cards Grid -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <!-- Buy Me a Coffee Card -->
+    <a
+      href="https://buymeacoffee.com/wm2jv22vfmx"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="group p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-amber-500/50 hover:bg-[var(--color-surface-2)] transition-all duration-200 flex flex-col justify-between space-y-4"
+    >
+      <div class="flex items-start justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-lg text-amber-500 group-hover:scale-105 transition-transform">
+            ☕
+          </div>
+          <div>
+            <h3 class="font-semibold text-sm text-[var(--color-text)] group-hover:text-amber-500 dark:group-hover:text-amber-400 transition-colors">
+              Buy Me a Coffee
+            </h3>
+            <p class="text-xs text-[var(--color-text-muted)]">Aportación rápida y puntual</p>
+          </div>
+        </div>
+        <span class="text-xs font-mono text-[var(--color-text-muted)] group-hover:text-[var(--color-text)] transition-colors">&nearr;</span>
+      </div>
+
+      <p class="text-xs text-[var(--color-text-muted)] leading-relaxed">
+        Invítame a un café para respaldar el trabajo diario en la arquitectura y el runtime.
+      </p>
+
+      <div class="pt-2 border-t border-[var(--color-border)] flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>buymeacoffee.com/wm2jv22vfmx</span>
+        <span class="text-amber-500 font-medium">Apoyar &rarr;</span>
+      </div>
+    </a>
+
+    <!-- Ko-fi Card -->
+    <a
+      href="https://ko-fi.com/ezequiel_33"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="group p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-rose-500/50 hover:bg-[var(--color-surface-2)] transition-all duration-200 flex flex-col justify-between space-y-4"
+    >
+      <div class="flex items-start justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-lg text-rose-500 group-hover:scale-105 transition-transform">
+            ❤️
+          </div>
+          <div>
+            <h3 class="font-semibold text-sm text-[var(--color-text)] group-hover:text-rose-500 dark:group-hover:text-rose-400 transition-colors">
+              Ko-fi
+            </h3>
+            <p class="text-xs text-[var(--color-text-muted)]">0% comisiones directas</p>
+          </div>
+        </div>
+        <span class="text-xs font-mono text-[var(--color-text-muted)] group-hover:text-[var(--color-text)] transition-colors">&nearr;</span>
+      </div>
+
+      <p class="text-xs text-[var(--color-text-muted)] leading-relaxed">
+        Donaciones sin intermediarios o aportaciones recurrentes para sostener la infraestructura.
+      </p>
+
+      <div class="pt-2 border-t border-[var(--color-border)] flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>ko-fi.com/ezequiel_33</span>
+        <span class="text-rose-500 font-medium">Apoyar &rarr;</span>
+      </div>
+    </a>
+  </div>
+</section>
