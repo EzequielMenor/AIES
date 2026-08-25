@@ -1,0 +1,75 @@
+---
+import TerminalSimulator from './TerminalSimulator.astro';
+---
+
+<section class="pt-20 pb-20 space-y-12 max-w-4xl mx-auto text-center sm:text-left" data-animate="true">
+  <!-- Minimalist Pill Badge -->
+  <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text-muted)] font-mono">
+    <span class="w-2 h-2 rounded-full bg-[var(--color-accent)] animate-pulse"></span>
+    <span>AIES v0.3.0 &bull; Open Source Software Harness</span>
+  </div>
+
+  <!-- Hero Main Copy -->
+  <div class="space-y-6">
+    <h1 class="text-4xl sm:text-6xl md:text-7xl font-semibold tracking-tight text-[var(--color-text)] leading-[1.08]">
+      Agentes de IA con contexto limpio y verificación real.
+    </h1>
+    
+    <p class="max-w-2xl text-lg sm:text-xl text-[var(--color-text-muted)] font-normal leading-relaxed">
+      AIES es el harness de ingeniería que descompone tareas complejas, ejecuta subagentes efímeros y valida cada cambio antes de darlo por completado.
+    </p>
+  </div>
+
+  <!-- Action Row: Copyable Command + Docs Link -->
+  <div class="flex flex-col sm:flex-row items-center gap-4 pt-2">
+    <!-- One-line Install Pill -->
+    <div class="w-full sm:w-auto flex items-center justify-between gap-3 px-4 py-2.5 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-xs font-mono group">
+      <span class="text-[var(--color-text-muted)] select-none">$</span>
+      <code id="install-cmd" class="text-[var(--color-text)] select-all truncate">
+        curl -fsSL https://raw.githubusercontent.com/EzequielMenor/AIES/main/install.sh | bash
+      </code>
+      <button
+        id="copy-btn"
+        title="Copiar comando"
+        class="text-[var(--color-text-muted)] hover:text-[var(--color-text)] p-1 rounded transition-colors cursor-pointer text-xs font-sans font-medium"
+      >
+        <span id="copy-text">Copiar</span>
+      </button>
+    </div>
+
+    <a
+      href="#quickstart"
+      class="w-full sm:w-auto px-5 py-2.5 rounded-lg text-xs font-medium border border-[var(--color-border)] bg-[var(--color-surface-2)] text-[var(--color-text)] hover:border-[var(--color-border-hover)] transition-colors text-center"
+    >
+      Guía de Inicio &darr;
+    </a>
+  </div>
+
+  <!-- Interactive Terminal Simulator -->
+  <div class="pt-6">
+    <TerminalSimulator />
+  </div>
+</section>
+
+<script>
+  const copyBtn = document.getElementById('copy-btn');
+  const installCmd = document.getElementById('install-cmd');
+  const copyText = document.getElementById('copy-text');
+
+  if (copyBtn && installCmd && copyText) {
+    copyBtn.addEventListener('click', async () => {
+      const textToCopy = installCmd.textContent?.trim() || '';
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        copyText.textContent = '¡Copiado!';
+        copyText.classList.add('text-emerald-400');
+        setTimeout(() => {
+          copyText.textContent = 'Copiar';
+          copyText.classList.remove('text-emerald-400');
+        }, 2000);
+      } catch (err) {
+        console.error('Error al copiar:', err);
+      }
+    });
+  }
+</script>

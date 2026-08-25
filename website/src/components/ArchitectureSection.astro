@@ -1,0 +1,85 @@
+---
+// ArchitectureSection.astro — How it works & Subagents
+---
+
+<section id="arquitectura" class="py-24 border-t border-[var(--color-border)] space-y-12" data-animate="true">
+  <div class="space-y-4 max-w-2xl">
+    <h2 class="text-3xl sm:text-4xl font-semibold tracking-tight text-[var(--color-text)]">
+      Arquitectura y Subagentes Especializados
+    </h2>
+    <p class="text-base text-[var(--color-text-muted)] font-normal leading-relaxed">
+      AIES separa la inteligencia de decisión del trabajo manual mediante tres trabajadores efímeros coordinados por el bucle central de TypeScript.
+    </p>
+  </div>
+
+  <!-- Subagents Row -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <!-- Explorer -->
+    <div class="p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-3 font-mono text-xs">
+      <div class="flex items-center justify-between">
+        <span class="text-[var(--color-text)] font-semibold text-sm">Explorer</span>
+        <span class="text-[10px] bg-[var(--color-surface-2)] text-[var(--color-text-muted)] px-2 py-0.5 rounded border border-[var(--color-border)]">Read-Only</span>
+      </div>
+      <p class="text-xs text-[var(--color-text-muted)] font-sans leading-relaxed">
+        Investiga el árbol de archivos, realiza búsquedas con grep y analiza definiciones sin permisos de escritura ni riesgo de modificar código.
+      </p>
+      <div class="pt-2 text-[11px] text-[var(--color-text-muted)] border-t border-[var(--color-border)]">
+        Herramientas: <code class="text-[var(--color-text)]">find, grep, view_file</code>
+      </div>
+    </div>
+
+    <!-- Implementer -->
+    <div class="p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-3 font-mono text-xs">
+      <div class="flex items-center justify-between">
+        <span class="text-[var(--color-text)] font-semibold text-sm">Implementer</span>
+        <span class="text-[10px] bg-[var(--color-surface-2)] text-[var(--color-text-muted)] px-2 py-0.5 rounded border border-[var(--color-border)]">Write/Edit</span>
+      </div>
+      <p class="text-xs text-[var(--color-text-muted)] font-sans leading-relaxed">
+        Aplica las modificaciones precisas y atómicas solicitadas por la unidad de trabajo, sin arrastrar ruido previo de exploración.
+      </p>
+      <div class="pt-2 text-[11px] text-[var(--color-text-muted)] border-t border-[var(--color-border)]">
+        Herramientas: <code class="text-[var(--color-text)]">replace, write, bash</code>
+      </div>
+    </div>
+
+    <!-- Verifier -->
+    <div class="p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-3 font-mono text-xs">
+      <div class="flex items-center justify-between">
+        <span class="text-[var(--color-text)] font-semibold text-sm">Verifier</span>
+        <span class="text-[10px] bg-[var(--color-surface-2)] text-[var(--color-text-muted)] px-2 py-0.5 rounded border border-[var(--color-border)]">Read/Bash</span>
+      </div>
+      <p class="text-xs text-[var(--color-text-muted)] font-sans leading-relaxed">
+        Ejecuta las pruebas unitarias, linters y suites de testing en bash sin permisos de edición, emitiendo veredictos formales PASS / FAIL.
+      </p>
+      <div class="pt-2 text-[11px] text-[var(--color-text-muted)] border-t border-[var(--color-border)]">
+        Herramientas: <code class="text-[var(--color-text)]">test, lint, bash (no edit)</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bounded Decision Loop Details -->
+  <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-6">
+    <h3 class="text-lg font-semibold text-[var(--color-text)]">Control estricto de ejecución</h3>
+    
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 text-sm text-[var(--color-text-muted)]">
+      <div class="space-y-1.5">
+        <h4 class="font-medium text-[var(--color-text)]">Zod Trust-Boundary</h4>
+        <p class="text-xs leading-relaxed">
+          Todas las salidas de los modelos se validan estrictamente contra esquemas antes de ejecutar cualquier acción.
+        </p>
+      </div>
+      <div class="space-y-1.5">
+        <h4 class="font-medium text-[var(--color-text)]">Límites de Iteración (ADR-005)</h4>
+        <p class="text-xs leading-relaxed">
+          Control estricto de turnos máximos y costes de tokens. Sin bucles infinitos silenciosos.
+        </p>
+      </div>
+      <div class="space-y-1.5">
+        <h4 class="font-medium text-[var(--color-text)]">Re-descomposición (ADR-006)</h4>
+        <p class="text-xs leading-relaxed">
+          Si una unidad resulta ser demasiado compleja, se divide dinámicamente sin perder el progreso previo.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>

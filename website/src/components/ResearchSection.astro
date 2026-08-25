@@ -1,0 +1,76 @@
+---
+// ResearchSection.astro — 03. Evidencia Empírica & Benchmarks
+---
+
+<section id="investigacion" class="py-16 border-t border-[var(--color-border)] space-y-8 scroll-mt-16" data-animate="true">
+  <!-- Section Header -->
+  <div class="flex items-baseline justify-between border-b border-[var(--color-border)] pb-3 text-[var(--color-text)]">
+    <div class="space-y-1">
+      <span class="text-xs font-mono text-[var(--color-text-muted)] block">03 &mdash; Investigación</span>
+      <h2 class="font-serif text-3xl sm:text-4xl font-normal tracking-tight">Evidencia Empírica & Benchmarks</h2>
+    </div>
+    <span class="text-xs font-mono text-[var(--color-text-muted)] hidden sm:inline-block">06-research / README.md</span>
+  </div>
+
+  <p class="text-sm sm:text-base text-[var(--color-text-muted)] font-light leading-relaxed max-w-2xl">
+    AIES se rige por el <strong class="text-[var(--color-text)] font-normal">Principio P-19 (Evidencia frente a intuición)</strong>. Toda afirmación sobre ahorro de tokens, fiabilidad o latencia está respaldada por experimentos reproducibles frente a baselines de agente único.
+  </p>
+
+  <!-- Benchmark Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <!-- H-01 -->
+    <div class="p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-4 font-mono text-xs">
+      <div class="flex items-center justify-between">
+        <span class="text-cyan-400 font-semibold">HIPÓTESIS H-01</span>
+        <span class="text-emerald-400 font-bold text-sm">-40% a -60% Tokens</span>
+      </div>
+      <h3 class="font-serif text-xl text-[var(--color-text)] font-normal font-sans">Aislamiento de Contexto</h3>
+      <p class="text-xs text-[var(--color-text-muted)] font-sans font-light leading-relaxed">
+        En tareas que involucran múltiples archivos, el 70% de los tokens de un chat monolítico corresponden a lecturas y búsquedas intermedias. Al aislar cada subagente en una sesión efímera, el orquestador consume solo los metadatos relevantes.
+      </p>
+      <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1.5 text-[11px]">
+        <div class="flex justify-between">
+          <span class="text-[var(--color-text-muted)]">Agente Único Tradicional:</span>
+          <span class="text-rose-400 font-medium">~94.2k tokens / tarea</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-[var(--color-text-muted)]">AIES Harness (v1):</span>
+          <span class="text-emerald-400 font-medium">~41.8k tokens / tarea</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- H-02 -->
+    <div class="p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-4 font-mono text-xs">
+      <div class="flex items-center justify-between">
+        <span class="text-amber-400 font-semibold">HIPÓTESIS H-02</span>
+        <span class="text-emerald-400 font-bold text-sm">Cero Overhead L1–L2</span>
+      </div>
+      <h3 class="font-serif text-xl text-[var(--color-text)] font-normal font-sans">Coste vs Complejidad Proporcional</h3>
+      <p class="text-xs text-[var(--color-text-muted)] font-sans font-light leading-relaxed">
+        En tareas de baja complejidad (cambiar una línea, corregir una configuración o añadir un tipo), AIES no genera árboles de decisión ficticios: delega directamente al worker en 1 turno y verifica, igualando la latencia del agente directo.
+      </p>
+      <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1.5 text-[11px]">
+        <div class="flex justify-between">
+          <span class="text-[var(--color-text-muted)]">Sobrecarga en Tareas Triviales:</span>
+          <span class="text-emerald-400 font-medium">1 turno directo</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-[var(--color-text-muted)]">Garantía de Verificación:</span>
+          <span class="text-emerald-400 font-medium">Mantenida (100%)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Telemetry Dataset Callout -->
+  <div class="p-4 rounded-xl bg-[var(--color-surface-2)] border border-[var(--color-border)] flex flex-col sm:flex-row sm:items-center justify-between gap-4 font-mono text-xs">
+    <div class="space-y-0.5">
+      <span class="text-[var(--color-text)] font-medium">Dataset y Telemetría Abierta:</span>
+      <p class="text-[11px] text-[var(--color-text-muted)]">Cada sesión registra eventos estructurados en <code class="text-[var(--color-text)]">.aies/log.jsonl</code> para reproducir métricas.</p>
+    </div>
+    <code class="bg-[var(--color-surface)] px-3 py-1.5 rounded border border-[var(--color-border)] text-cyan-400 select-all shrink-0">
+      pnpm run research:metrics -- .aies/log.jsonl
+    </code>
+  </div>
+</section>

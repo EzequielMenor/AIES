@@ -1,0 +1,222 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout
+  title="Hoja de Ruta — AIES"
+  description="Hacia dónde va AIES: qué está completado, qué estamos construyendo hoy y las próximas etapas del proyecto."
+>
+  <main class="max-w-4xl mx-auto px-6 pt-16 pb-28 space-y-16">
+    <!-- Header -->
+    <div class="space-y-4 text-center sm:text-left" data-animate="true">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text-muted)] font-mono">
+        <span class="w-2 h-2 rounded-full bg-[var(--color-accent)]"></span>
+        <span>Plan de Desarrollo Público</span>
+      </div>
+
+      <h1 class="text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-[var(--color-text)]">
+        Hoja de Ruta
+      </h1>
+
+      <p class="text-base sm:text-lg text-[var(--color-text-muted)] max-w-2xl font-normal leading-relaxed">
+        El desarrollo de AIES se guía por objetivos claros y medibles. Aquí puedes ver lo que ya funciona, en qué estamos trabajando ahora y qué llegará próximamente.
+      </p>
+    </div>
+
+    <!-- Timeline Container -->
+    <div class="space-y-8 relative before:absolute before:inset-0 before:left-3 sm:before:left-4 before:h-full before:w-0.5 before:bg-[var(--color-border)] before:hidden sm:before:block">
+      
+      <!-- Phase 0: Completado -->
+      <div class="relative pl-0 sm:pl-12 space-y-4" data-animate="true">
+        <!-- Marker point -->
+        <div class="hidden sm:flex absolute left-2.5 -translate-x-1/2 top-7 w-4 h-4 rounded-full bg-[var(--color-surface)] border border-[var(--color-border)] items-center justify-center">
+          <div class="w-1.5 h-1.5 rounded-full bg-[var(--color-text-muted)]"></div>
+        </div>
+
+        <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5">
+              <span class="text-xs font-mono text-[var(--color-text-muted)] uppercase tracking-wider">Fase 0</span>
+              <h2 class="text-xl font-semibold text-[var(--color-text)]">Cimientos y Fiabilidad</h2>
+            </div>
+            <span class="text-xs font-mono px-2.5 py-1 rounded-md bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] font-medium">
+              Completado
+            </span>
+          </div>
+
+          <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+            Construcción del motor central determinista y validación de las bases del sistema.
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 text-xs text-[var(--color-text-muted)]">
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Bucle central determinista</p>
+              <p>El orquestador decide paso a paso sin acumular historial muerto.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">3 Roles especializados</p>
+              <p>Explorer (lectura), Implementer (edición) y Verifier (pruebas).</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Terminal independiente</p>
+              <p>Comando directo <code>aies "&lt;tarea&gt;"</code> y modo interactivo REPL.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Autenticación flexible</p>
+              <p>Soporte para Anthropic, OpenAI y otros proveedores sin exponer claves.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase 1: En desarrollo activo -->
+      <div class="relative pl-0 sm:pl-12 space-y-4" data-animate="true">
+        <!-- Marker point -->
+        <div class="hidden sm:flex absolute left-2.5 -translate-x-1/2 top-7 w-4 h-4 rounded-full bg-[var(--color-surface)] border border-[var(--color-accent)] items-center justify-center">
+          <div class="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)]"></div>
+        </div>
+
+        <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border-hover)] space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5">
+              <span class="text-xs font-mono text-[var(--color-accent)] uppercase tracking-wider">Fase 1</span>
+              <h2 class="text-xl font-semibold text-[var(--color-text)]">Eficiencia en Proyectos Reales</h2>
+            </div>
+            <span class="text-xs font-mono px-2.5 py-1 rounded-md bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] font-medium flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)]"></span>
+              <span>En desarrollo</span>
+            </span>
+          </div>
+
+          <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+            Optimización del traspaso de contexto entre subagentes para maximizar el ahorro de tokens en tareas complejas.
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 text-xs text-[var(--color-text-muted)]">
+            <div class="p-3.5 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Comunicación directa entre agentes</p>
+              <p>El explorador entrega un resumen exacto al implementador para que no tenga que releer el código desde cero.</p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Refactorizaciones multi-archivo</p>
+              <p>Mejora de la precisión en cambios que afectan a varios archivos a la vez sin perder el hilo.</p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Banco de pruebas reales</p>
+              <p>Medición empírica continua para certificar que AIES siempre gaste menos tokens que un agente único.</p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Sesiones opcionales persistentes</p>
+              <p>Reutilización ágil de contexto cuando se realizan ediciones consecutivas en el mismo fichero.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase 2: Próximamente -->
+      <div class="relative pl-0 sm:pl-12 space-y-4" data-animate="true">
+        <!-- Marker point -->
+        <div class="hidden sm:flex absolute left-2.5 -translate-x-1/2 top-7 w-4 h-4 rounded-full bg-[var(--color-surface)] border border-[var(--color-border)] items-center justify-center">
+          <div class="w-1.5 h-1.5 rounded-full bg-[var(--color-border)]"></div>
+        </div>
+
+        <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5">
+              <span class="text-xs font-mono text-[var(--color-text-muted)] uppercase tracking-wider">Fase 2</span>
+              <h2 class="text-xl font-semibold text-[var(--color-text)]">Calibración y Control de Costes</h2>
+            </div>
+            <span class="text-xs font-mono px-2.5 py-1 rounded-md bg-[var(--color-surface-2)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
+              Próximamente
+            </span>
+          </div>
+
+          <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+            Mecanismos automáticos para garantizar que ninguna tarea consuma más tiempo ni dinero del necesario.
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 text-xs text-[var(--color-text-muted)]">
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Límite de gasto configurable</p>
+              <p>Fija un tope económico por tarea para evitar sorpresas en la factura de la API.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">División automática de tareas</p>
+              <p>Si una tarea se vuelve demasiado compleja, el sistema la divide en subtareas más manejables.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Asignación inteligente de modelos</p>
+              <p>Usa modelos rápidos y económicos para tareas rutinarias y modelos avanzados solo para razonamiento crítico.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Detección de bucles</p>
+              <p>Interrupción proactiva si el agente se atasca en un mismo error más de 3 veces.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase 3: Experiencia de Producto -->
+      <div class="relative pl-0 sm:pl-12 space-y-4" data-animate="true">
+        <!-- Marker point -->
+        <div class="hidden sm:flex absolute left-2.5 -translate-x-1/2 top-7 w-4 h-4 rounded-full bg-[var(--color-surface)] border border-[var(--color-border)] items-center justify-center">
+          <div class="w-1.5 h-1.5 rounded-full bg-[var(--color-border)]"></div>
+        </div>
+
+        <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5">
+              <span class="text-xs font-mono text-[var(--color-text-muted)] uppercase tracking-wider">Fase 3</span>
+              <h2 class="text-xl font-semibold text-[var(--color-text)]">Experiencia en Terminal</h2>
+            </div>
+            <span class="text-xs font-mono px-2.5 py-1 rounded-md bg-[var(--color-surface-2)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
+              Planificado
+            </span>
+          </div>
+
+          <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+            Herramientas interactivas para seguir la evolución del trabajo y guiar a los agentes en tiempo real.
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 text-xs text-[var(--color-text-muted)]">
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Barra de estado en vivo</p>
+              <p>Visualiza en tiempo real tokens consumidos, tiempo transcurrido y estado de los tests.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Guía interactiva sobre la marcha</p>
+              <p>Pausa la ejecución en cualquier instante para darle indicaciones al agente o corregir el rumbo.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Historial de tareas por proyecto</p>
+              <p>Guarda y reanuda tareas con nombre propio en cualquier momento.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1">
+              <p class="font-medium text-[var(--color-text)]">Resúmenes claros de cambios</p>
+              <p>Muestra exactamente qué ficheros se tocaron y por qué antes de cerrar la tarea.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom CTA / GitHub -->
+    <div class="p-8 rounded-xl bg-[var(--color-surface-2)] border border-[var(--color-border)] flex flex-col sm:flex-row items-center justify-between gap-6 text-center sm:text-left" data-animate="true">
+      <div class="space-y-1">
+        <h3 class="font-semibold text-base text-[var(--color-text)]">¿Quieres seguir el avance en tiempo real?</h3>
+        <p class="text-xs text-[var(--color-text-muted)]">AIES es 100% código abierto y se desarrolla públicamente en GitHub.</p>
+      </div>
+
+      <a
+        href="https://github.com/EzequielMenor/AIES"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="px-5 py-2.5 rounded-lg text-xs font-medium border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] hover:border-[var(--color-border-hover)] transition-all inline-flex items-center gap-1.5 shrink-0"
+      >
+        <span>Ver Repositorio en GitHub</span>
+        <span class="text-[11px] text-[var(--color-text-muted)]">&nearr;</span>
+      </a>
+    </div>
+  </main>
+</Layout>

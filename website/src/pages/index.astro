@@ -1,0 +1,17 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Hero from '../components/Hero.astro';
+import ProblemSection from '../components/ProblemSection.astro';
+import ArchitectureSection from '../components/ArchitectureSection.astro';
+import QuickstartSection from '../components/QuickstartSection.astro';
+---
+
+<Layout>
+  <!-- Main Container with generous breathing room (inspired by omp.sh / openchamber.dev) -->
+  <main class="max-w-5xl mx-auto px-6 pb-24">
+    <Hero />
+    <ProblemSection />
+    <ArchitectureSection />
+    <QuickstartSection />
+  </main>
+</Layout>

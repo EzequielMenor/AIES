@@ -1,0 +1,50 @@
+---
+// ProblemSection.astro — 3 Core Pillars (Clean, spacious cards without emojis)
+---
+
+<section id="problema" class="py-24 border-t border-[var(--color-border)] space-y-12" data-animate="true">
+  <div class="space-y-4 max-w-2xl">
+    <h2 class="text-3xl sm:text-4xl font-semibold tracking-tight text-[var(--color-text)]">
+      Por qué los chats monolíticos fallan en tareas reales.
+    </h2>
+    <p class="text-base text-[var(--color-text-muted)] font-normal leading-relaxed">
+      Dejar que un único agente conversacional busque archivos, edite código y se auto-apruebe produce saturación de contexto y errores silenciosos. AIES separa las responsabilidades.
+    </p>
+  </div>
+
+  <!-- 3 Column Feature Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <!-- Card 1 -->
+    <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-[var(--color-border-hover)] transition-colors space-y-4">
+      <div class="w-9 h-9 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] flex items-center justify-center text-xs font-mono font-medium text-[var(--color-text)]">
+        01
+      </div>
+      <h3 class="text-lg font-semibold text-[var(--color-text)]">Contexto Limpio</h3>
+      <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+        Cada subagente (Explorer, Implementer, Verifier) se ejecuta en una sesión efímera. Al terminar su unidad de trabajo, se destruye sin dejar residuos de tokens.
+      </p>
+    </div>
+
+    <!-- Card 2 -->
+    <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-[var(--color-border-hover)] transition-colors space-y-4">
+      <div class="w-9 h-9 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] flex items-center justify-center text-xs font-mono font-medium text-[var(--color-text)]">
+        02
+      </div>
+      <h3 class="text-lg font-semibold text-[var(--color-text)]">Orquestador Puro</h3>
+      <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+        El orquestador no dispone de herramientas de edición ni bash. Su única función es evaluar el estado y decidir el siguiente paso en un contrato estructurado y validado.
+      </p>
+    </div>
+
+    <!-- Card 3 -->
+    <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-[var(--color-border-hover)] transition-colors space-y-4">
+      <div class="w-9 h-9 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] flex items-center justify-center text-xs font-mono font-medium text-[var(--color-text)]">
+        03
+      </div>
+      <h3 class="text-lg font-semibold text-[var(--color-text)]">Verificación Real</h3>
+      <p class="text-sm text-[var(--color-text-muted)] leading-relaxed">
+        El subagente que modifica el código nunca se auto-certifica. Un verificador independiente ejecuta las suites de tests objetivas con veredictos formales PASS / FAIL.
+      </p>
+    </div>
+  </div>
+</section>

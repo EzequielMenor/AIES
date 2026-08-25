@@ -1,0 +1,51 @@
+---
+// QuickstartSection.astro — Installation & CLI usage
+---
+
+<section id="quickstart" class="py-24 border-t border-[var(--color-border)] space-y-12" data-animate="true">
+  <div class="space-y-4 max-w-2xl">
+    <h2 class="text-3xl sm:text-4xl font-semibold tracking-tight text-[var(--color-text)]">
+      Instalación y Uso en Terminal
+    </h2>
+    <p class="text-base text-[var(--color-text-muted)] font-normal leading-relaxed">
+      AIES se compila en un binario nativo independiente que puedes ejecutar en cualquier repositorio local.
+    </p>
+  </div>
+
+  <!-- Install Box -->
+  <div class="p-8 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-6">
+    <div class="flex items-center justify-between">
+      <span class="text-sm font-semibold text-[var(--color-text)]">Instalador Oficial (macOS & Linux)</span>
+      <span class="text-xs font-mono text-[var(--color-text-muted)]">Node ≥ 20.0.0</span>
+    </div>
+
+    <div class="p-4 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] flex items-center justify-between gap-4 font-mono text-xs">
+      <code class="text-[var(--color-text)] select-all truncate">
+        curl -fsSL https://raw.githubusercontent.com/EzequielMenor/AIES/main/install.sh | bash
+      </code>
+    </div>
+
+    <!-- Commands 2x2 Grid -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 font-mono text-xs">
+      <div class="p-4 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1.5">
+        <span class="text-[11px] text-[var(--color-text-muted)] block">Modo directo (oneshot)</span>
+        <code class="text-[var(--color-text)] font-semibold">$ aies "añadir retry al cliente HTTP"</code>
+      </div>
+
+      <div class="p-4 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1.5">
+        <span class="text-[11px] text-[var(--color-text-muted)] block">Modo interactivo (REPL)</span>
+        <code class="text-[var(--color-text)] font-semibold">$ aies</code>
+      </div>
+
+      <div class="p-4 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1.5">
+        <span class="text-[11px] text-[var(--color-text-muted)] block">Actualizar AIES</span>
+        <code class="text-[var(--color-text)] font-semibold">$ aies update</code>
+      </div>
+
+      <div class="p-4 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] space-y-1.5">
+        <span class="text-[11px] text-[var(--color-text-muted)] block">Autenticación de modelos</span>
+        <code class="text-[var(--color-text)] font-semibold">$ aies login anthropic</code>
+      </div>
+    </div>
+  </div>
+</section>

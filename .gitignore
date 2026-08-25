@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-test/
+.astro/
 .DS_Store
 .env
 .env.local
@@ -12,6 +13,7 @@ dist-test/
 .cursor/
 .kilo/
 .projectmem/
+.impeccable/
 
 # Notas privadas / outputs generados
 .tui-*.md
