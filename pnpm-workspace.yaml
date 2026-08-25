@@ -1,0 +1,9 @@
+packages:
+  - 'runtime'
+  - 'website'
+
+onlyBuiltDependencies:
+  - '@google/genai'
+  - esbuild
+  - protobufjs
+  - sharp
