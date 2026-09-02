@@ -25,9 +25,9 @@
     "test:unitid": "tsc -p tsconfig.test.json && node dist-test/tests/unitid.test.js",
     "test:cost": "tsc -p tsconfig.test.json && node dist-test/tests/cost.test.js",
     "test:parse": "tsc -p tsconfig.test.json && node dist-test/tests/parse.test.js",
-    "test:e2e": "vitest run tests/smoke-e2e.test.ts",
+		"test:e2e": "vitest run tests/smoke-e2e.test.ts tests/dogfooding.test.ts",
     "test:update": "vitest run tests/update.test.ts",
-		"test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts src/cli-status.test.ts src/cli-log.test.ts src/integrations/integrations.test.ts src/auth.test.ts src/models-list.test.ts src/model-runtime.test.ts src/cli-models.test.ts src/cli-repl.test.ts",
+    "test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts src/ui/prompt-ui.test.ts src/cli-status.test.ts src/cli-log.test.ts src/integrations/integrations.test.ts src/auth.test.ts src/commands.test.ts src/models-list.test.ts src/model-runtime.test.ts src/cli-models.test.ts src/cli-repl-helpers.test.ts src/cli-repl.test.ts",
     "test:persist": "node dist/self-check/persistence.js",
     "test:orch": "node dist/self-check/orchestrator.js",
     "test:compaction": "node dist/self-check/compaction.js",
@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "~0.84.2",
+    "@vercel/analytics": "^2.0.1",
     "picocolors": "^1.1.1",
     "typebox": "1.3.7",
     "zod": "^3"

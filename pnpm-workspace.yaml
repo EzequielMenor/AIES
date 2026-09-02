@@ -2,6 +2,10 @@ packages:
   - 'runtime'
   - 'website'
 
+allowBuilds:
+  esbuild: true
+  workerd: true
+
 onlyBuiltDependencies:
   - '@google/genai'
   - esbuild
