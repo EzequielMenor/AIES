@@ -16,6 +16,9 @@ export const LIMIT_REPERTOIRE = ["terminar controladamente", "pedir intervenció
  */
 export const LIMIT_POLICY = { cost: "off", context: "observed-autoCompaction-backstop-iter" } as const;
 
-export function limitsFromConfig(cfg: { limits?: { maxIterations?: number | undefined } | undefined } | undefined): Limits {
-	return { maxIterations: cfg?.limits?.maxIterations ?? DEFAULT_LIMITS.maxIterations };
+export function limitsFromConfig(cfg: { limits?: { maxIterations?: number | undefined; maxConsecutiveNoProgress?: number | undefined } | undefined } | undefined): Limits {
+	return {
+		maxIterations: cfg?.limits?.maxIterations ?? DEFAULT_LIMITS.maxIterations,
+		maxConsecutiveNoProgress: cfg?.limits?.maxConsecutiveNoProgress ?? DEFAULT_LIMITS.maxConsecutiveNoProgress,
+	};
 }

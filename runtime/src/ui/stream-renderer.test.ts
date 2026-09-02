@@ -526,4 +526,32 @@ describe("StreamRenderer pipe (no-TTY)", () => {
 		assert.match(plain, /límite alcanzado — requiere intervención: cap/);
 		assert.equal(plain.includes("\r"), false);
 	});
+
+	it("renderiza plan multi-unidad con ramas de árbol ├─ y └─", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		const multiPlanDecision: Decision = {
+			operación: "ejecutar una unidad",
+			ajustePlan: {
+				tipo: "descomponer",
+				unidades: [
+					{ objetivo: "explorar endpoints", alcance: null, infoNecesaria: null, resultadoEsperado: "mapa", condicionFinalizacion: "ok", capacidad: "explorer" },
+					{ objetivo: "implementar auth middleware", alcance: null, infoNecesaria: null, resultadoEsperado: "código", condicionFinalizacion: "ok", capacidad: "implementer" },
+					{ objetivo: "verificar suite completa", alcance: null, infoNecesaria: null, resultadoEsperado: "pass", condicionFinalizacion: "ok", capacidad: "verifier" },
+				],
+			},
+			unidad: "u0",
+			capacidad: "explorer",
+			comunicación: null,
+			motivo: "descomposición en 3 fases",
+			condición: null,
+		};
+		renderer.onDecideSuccess(multiPlanDecision);
+		const plain = stream.plain();
+		assert.match(plain, /Plan:/);
+		assert.match(plain, /├─ explorar endpoints/);
+		assert.match(plain, /├─ implementar auth middleware/);
+		assert.match(plain, /└─ verificar suite completa/);
+	});
 });
+

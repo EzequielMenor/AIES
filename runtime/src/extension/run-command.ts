@@ -25,7 +25,7 @@ import type { LogEntry } from "../observability.js";
 import { loadConfig } from "../config.js";
 import { limitsFromConfig } from "../limits.js";
 import { createDecide, type ResolvedModel } from "../orchestrator/decide.js";
-import { runWorker, type WorkerToolContext } from "../workers/tools.js";
+import { runWorker, toWorkerRunParams, type WorkerToolContext } from "../workers/tools.js";
 import { getCurrentTask, setCurrentTask, updateCurrentTask, clearCurrentTask, isResumable, type AiesTaskState } from "./state-store.js";
 
 const NO_TELEM: WorkerTelemetry = { usage: null, contextUsage: null, telemetryUnavailable: false };
@@ -46,17 +46,19 @@ function buildExecute(wctx: WorkerToolContext, notify: (msg: string) => void): E
 	return async (state: RuntimeState, decision: Decision, events: WorkerEventSink) => {
 		switch (decision.operación) {
 			case "comunicar al desarrollador": {
-				const text = decision.comunicación ?? "";
+				const text = decision.comunicación?.pregunta ?? "";
 				notify(text);
 				return { result: { kind: "comunicación", text, unidadId: null, passed: null } satisfies OperationResult, telemetry: NO_TELEM };
 			}
 			case "terminar": {
-				const cond = decision.condición ?? "";
-				const inviable = /sin (continuación|v([íi])a viable)|no hay (continuación|v([íi])a)|^inviable|irrecuperable/i.test(cond);
+				const cond = decision.condición;
+				const desenlace = cond?.desenlace ?? "completed";
+				const detalle = cond?.detalle ?? "terminación";
+				const inviable = desenlace === "failed";
 				return {
 					result: {
 						kind: "terminación",
-						text: inviable ? cond || "sin continuación viable" : "finalización declarada",
+						text: inviable ? detalle || "sin continuación viable" : "finalización declarada",
 						unidadId: null,
 						passed: inviable ? false : null,
 					} satisfies OperationResult,
@@ -67,28 +69,41 @@ function buildExecute(wctx: WorkerToolContext, notify: (msg: string) => void): E
 				const lastResult = state.results[state.results.length - 1];
 				const contexto = lastResult?.text ?? state.knownInfo.join("; ");
 				const objetivo = decision.motivo || "obtener información relevante para continuar la tarea";
-				const r = await runWorker("explorer", { objetivo, contexto }, wctx, undefined, events);
+				const params = toWorkerRunParams("explorer", { objetivo, contexto });
+				const r = await runWorker("explorer", params, wctx, undefined, events);
 				if (r.status === "failed") {
-					return { result: { kind: "fallo", text: r.error, unidadId: null, passed: false } satisfies OperationResult, telemetry: NO_TELEM };
+					return { result: { kind: "fallo", text: r.error, unidadId: null, passed: false } satisfies OperationResult, telemetry: NO_TELEM, report: null, reportError: r.reportError ?? null };
 				}
-				return { result: { kind: "info", text: r.text, unidadId: null, passed: null } satisfies OperationResult, telemetry: NO_TELEM };
+				return { result: { kind: "info", text: r.text, unidadId: null, passed: null } satisfies OperationResult, telemetry: NO_TELEM, report: r.report ?? null, reportError: r.reportError ?? null };
 			}
 			case "ejecutar una unidad": {
-				const unitId = decision.unidad;
-				const unit = unitId ? state.units.find((u) => u.id === unitId) ?? null : null;
+				const unitRef = decision.unidad;
+				let unit = null;
+				if (unitRef?.tipo === "existente") {
+					unit = state.units.find((u) => u.id === unitRef.id) ?? null;
+				} else {
+					unit = state.units.find((u) => u.estado === "En curso") ?? null;
+				}
 				if (!unit) {
-					return { result: { kind: "fallo", text: `unidad no encontrada en el estado: ${unitId ?? "(sin unidad)"}`, unidadId: unitId, passed: false } satisfies OperationResult, telemetry: NO_TELEM };
+					return { result: { kind: "fallo", text: `unidad no encontrada en el estado (ref=${JSON.stringify(unitRef)})`, unidadId: null, passed: false } satisfies OperationResult, telemetry: NO_TELEM };
 				}
-				const cap = (decision.capacidad ?? unit.capacidad) as "explorer" | "implementer" | "verifier";
-				if (cap !== "explorer" && cap !== "implementer" && cap !== "verifier") {
-					return { result: { kind: "fallo", text: `capacidad desconocida: ${cap}`, unidadId: unit.id, passed: false } satisfies OperationResult, telemetry: NO_TELEM };
-				}
-				const r = await runWorker(cap, { objetivo: unit.objetivo, contexto: state.knownInfo.join("; "), unidad: unit.id }, wctx, undefined, events);
+				const cap = unit.capacidad;
+				const evidence = unit.infoNecesaria ?? "";
+				const params = toWorkerRunParams(cap, { objetivo: unit.objetivo, contexto: evidence, unidad: unit.id }, decision.feedbackCorrectivo ?? null);
+				params.task = state.task;
+				const r = await runWorker(cap, params, wctx, undefined, events);
 				if (r.status === "failed") {
-					return { result: { kind: "fallo", text: r.error, unidadId: unit.id, passed: false } satisfies OperationResult, telemetry: NO_TELEM };
+					return { result: { kind: "fallo", text: r.error, unidadId: unit.id, passed: false } satisfies OperationResult, telemetry: NO_TELEM, report: null, reportError: r.reportError ?? null };
 				}
-				const passed = cap === "verifier" ? (r.verdict === "PASS") : true;
-				return { result: { kind: "unidad", text: r.text, unidadId: unit.id, passed } satisfies OperationResult, telemetry: NO_TELEM };
+				let passed: boolean | null;
+				if (cap === "verifier") {
+					passed = r.report ? r.report.status === "satisfied" : r.verdict === "PASS";
+				} else if (cap === "explorer") {
+					passed = null;
+				} else {
+					passed = r.report?.status === "satisfied" ? true : (r.report ? false : null);
+				}
+				return { result: { kind: "unidad", text: r.text, unidadId: unit.id, passed } satisfies OperationResult, telemetry: NO_TELEM, report: r.report ?? null, reportError: r.reportError ?? null };
 			}
 		}
 	};

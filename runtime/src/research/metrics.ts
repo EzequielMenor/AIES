@@ -166,7 +166,7 @@ export function computeMetrics(file: string, entries?: LogEntry[]): MetricsRepor
 			tiempo: { total_ms: diffMs(firstTs, lastTs), por_iter_ms: porIter },
 			coste: { total: costTotal, orquestador: costOrquestador, por_unidad: porUnidad },
 			contexto: { tokens_total: tokens, orquestador_tokens: orquestadorTokens, workers_tokens: workersTokens, pct_min: pctMin, pct_max: pctMax, window },
-			calidad: { verify_pass: verifyPass, verify_fail: verifyFail, terminado, condicion: termDec?.condición ?? null },
+			calidad: { verify_pass: verifyPass, verify_fail: verifyFail, terminado, condicion: termDec?.condición ? termDec.condición.detalle : null },
 			observabilidad: { decisiones: decisions.length, resultados: results.length, compactions, parseFail, limites },
 			fiabilidad: { fallos, parse_errors: parseErrors },
 		},

@@ -7,7 +7,7 @@
 
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { runExplore, runImplement, runVerify, type WorkerToolContext } from "../workers/tools.js";
+import { runExplore, runImplement, runVerify, toWorkerRunParams, type WorkerToolContext } from "../workers/tools.js";
 import { resumeCommand, runCommand, statusCommand } from "./run-command.js";
 import { getCurrentTask } from "./state-store.js";
 
@@ -44,7 +44,7 @@ const ExploreTool = {
 	description: "Delega una unidad de exploración a un worker con tools read-only (read/grep/find/ls). Devuelve un resumen estructurado y conciso.",
 	parameters: ExploreParamsSchema,
 	async execute(_toolCallId: string, params: ExploreInput, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: { cwd: string; model: any; signal: AbortSignal | undefined }) {
-		const r = await runExplore({ objetivo: params.objetivo, contexto: params.contexto }, makeWorkerCtx(ctx), signal ?? ctx.signal);
+		const r = await runExplore(toWorkerRunParams("explorer", { objetivo: params.objetivo, contexto: params.contexto }), makeWorkerCtx(ctx), signal ?? ctx.signal);
 		if (r.status === "failed") {
 			return { content: [{ type: "text" as const, text: r.error }], details: {}, isError: true };
 		}
@@ -58,7 +58,7 @@ const ImplementTool = {
 	description: "Delega una unidad de implementación a un worker con tools de escritura (read/edit/write/bash/grep/find). Realiza el cambio mínimo y describe lo realizado.",
 	parameters: ImplementParamsSchema,
 	async execute(_toolCallId: string, params: ImplementInput, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: { cwd: string; model: any; signal: AbortSignal | undefined }) {
-		const r = await runImplement({ objetivo: params.objetivo, contexto: params.contexto, unidad: params.unidad }, makeWorkerCtx(ctx), signal ?? ctx.signal);
+		const r = await runImplement(toWorkerRunParams("implementer", { objetivo: params.objetivo, contexto: params.contexto, unidad: params.unidad }), makeWorkerCtx(ctx), signal ?? ctx.signal);
 		if (r.status === "failed") {
 			return { content: [{ type: "text" as const, text: r.error }], details: { verdict: null }, isError: true };
 		}
@@ -72,7 +72,7 @@ const VerifyTool = {
 	description: "Delega una unidad de verificación a un worker read-only (read/bash/grep/find/ls). SIN edit/write (ADR-002). Devuelve `VEREDICTO: PASS|FAIL` + evidencia.",
 	parameters: VerifyParamsSchema,
 	async execute(_toolCallId: string, params: VerifyInput, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: { cwd: string; model: any; signal: AbortSignal | undefined }) {
-		const r = await runVerify({ objetivo: params.objetivo, contexto: params.contexto, unidad: params.unidad }, makeWorkerCtx(ctx), signal ?? ctx.signal);
+		const r = await runVerify(toWorkerRunParams("verifier", { objetivo: params.objetivo, contexto: params.contexto, unidad: params.unidad }), makeWorkerCtx(ctx), signal ?? ctx.signal);
 		if (r.status === "failed") {
 			return { content: [{ type: "text" as const, text: r.error }], details: { verdict: null }, isError: true };
 		}

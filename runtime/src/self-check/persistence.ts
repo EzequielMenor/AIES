@@ -21,8 +21,6 @@ const DEC: Decision = {
 		{ objetivo: "explore", alcance: null, infoNecesaria: null, resultadoEsperado: "info", condicionFinalizacion: "ok", capacidad: "explorer" },
 	] },
 	unidad: null,
-	capacidad: null,
-	comunicación: null,
 	motivo: "tarea Recibida",
 	condición: null,
 };
@@ -30,7 +28,7 @@ const DEC: Decision = {
 function sampleState(): RuntimeState {
 	const s = initState(
 		{ objetivo: "test tarea", alcance: null, restricciones: ["no-touch"], resultadoEsperado: "x", condicionFinalizacion: "x ok" },
-		{ maxIterations: 7 },
+		{ maxIterations: 7, maxConsecutiveNoProgress: 3 },
 	);
 	return { ...s, iterations: 3, consecutiveParseFailures: 0 };
 }

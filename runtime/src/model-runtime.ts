@@ -40,3 +40,32 @@ export interface AiesModelRuntimeLike {
 	getModel(providerId: string, modelId: string): ResolvedModel | undefined;
 	hasConfiguredAuth(providerId: string): boolean;
 }
+
+/**
+ * Busca un modelo por id cruzando TODOS los providers con auth configurada. Se usa en `/model
+ * <query>` para que el usuario no necesite saber el provider de antemano.
+ *
+ * Coincidencia por `id` exacto (case-insensitive) devuelve el primero; si no hay coincidencia
+ * exacta, se devuelve el match por substring (también case-insensitive). `null` cuando nada
+ * coincide.
+ *
+ * El orden de providers se respeta (estable por id).
+ */
+export function findModelAcrossProviders(
+	runtime: AiesModelRuntimeLike,
+	query: string,
+): ResolvedModel | null {
+	const needle = query.trim().toLowerCase();
+	if (!needle) return null;
+	const providers = [...runtime.getProviders()].sort((a, b) => a.id.localeCompare(b.id));
+	let fallback: ResolvedModel | null = null;
+	for (const p of providers) {
+		if (!runtime.hasConfiguredAuth(p.id)) continue;
+		const models = runtime.getModels(p.id);
+		for (const model of models) {
+			if (model.id.toLowerCase() === needle) return model;
+			if (!fallback && model.id.toLowerCase().includes(needle)) fallback = model;
+		}
+	}
+	return fallback;
+}

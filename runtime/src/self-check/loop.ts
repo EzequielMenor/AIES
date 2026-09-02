@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { runLoop, dumpJsonl } from "../core/loop.js";
 import type { AiesEventHandlers, ExecuteOutcome, WorkerEventSink } from "../core/events.js";
-import type { Decision } from "../core/state.js";
+import type { CommunicationRequest, Decision, TerminationCondition, UnitRef } from "../core/state.js";
 import { initState, type RuntimeState } from "../core/state.js";
 import type { DecisionLogEntry, LogEntry } from "../observability.js";
 import type { WorkerTelemetry } from "../telemetry/types.js";
@@ -18,14 +18,24 @@ const TELEM: WorkerTelemetry = {
 };
 const EMPTY_RAW = "";
 
+function ref(id: string): UnitRef {
+	return { tipo: "existente", id };
+}
+function term(detalle: string, desenlace: "completed" | "failed" = "completed"): TerminationCondition {
+	return { desenlace, detalle };
+}
+function comm(pregunta: string): CommunicationRequest {
+	return { pregunta, razón: "limit_extension", informaciónFaltante: "decisión del desarrollador" };
+}
+
 function dec(op: Decision["operación"], rest: Partial<Decision>): Decision {
 	return {
 		operación: op,
 		ajustePlan: rest.ajustePlan ?? null,
 		unidad: rest.unidad ?? null,
-		capacidad: rest.capacidad ?? null,
-		comunicación: rest.comunicación ?? null,
 		motivo: rest.motivo ?? "motivo",
+		feedbackCorrectivo: rest.feedbackCorrectivo ?? null,
+		comunicación: rest.comunicación ?? null,
 		condición: rest.condición ?? null,
 	};
 }
@@ -38,7 +48,7 @@ function capture(): { entries: LogEntry[]; handlers: Pick<AiesEventHandlers, "on
 async function runHappy(): Promise<void> {
 	const state = initState(
 		{ objetivo: "añadir greet() a src/math.ts que devuelva 'hello'", alcance: null, restricciones: null, resultadoEsperado: "greet() exportada y devuelve 'hello'", condicionFinalizacion: "greet() existe, importa y devuelve 'hello'" },
-		{ maxIterations: 12 },
+		{ maxIterations: 12, maxConsecutiveNoProgress: 3 },
 	);
 	const script: Decision[] = [
 		dec("ejecutar una unidad", {
@@ -47,11 +57,11 @@ async function runHappy(): Promise<void> {
 				{ objetivo: "añadir greet()", alcance: null, infoNecesaria: null, resultadoEsperado: "export function greet()", condicionFinalizacion: "greet() añadida", capacidad: "implementer" },
 				{ objetivo: "verificar greet()", alcance: null, infoNecesaria: null, resultadoEsperado: "tsc + runtime ok", condicionFinalizacion: "devuelve 'hello'", capacidad: "verifier" },
 			] },
-			unidad: "u0", capacidad: "explorer", motivo: "tarea Recibida; determinar proceso y obtener información primero",
+			unidad: ref("u0"), motivo: "tarea Recibida; determinar proceso y obtener información primero",
 		}),
-		dec("ejecutar una unidad", { unidad: "u1", capacidad: "implementer", motivo: "info suficiente para implementar" }),
-		dec("ejecutar una unidad", { unidad: "u2", capacidad: "verifier", motivo: "verificar antes de terminar" }),
-		dec("terminar", { condición: "finalización cumplida y verificada", motivo: "unidad verificada, resultado conforme" }),
+		dec("ejecutar una unidad", { unidad: ref("u1"), motivo: "info suficiente para implementar" }),
+		dec("ejecutar una unidad", { unidad: ref("u2"), motivo: "verificar antes de terminar" }),
+		dec("terminar", { condición: term("finalización cumplida y verificada"), motivo: "unidad verificada, resultado conforme" }),
 	];
 	let i = 0;
 	const { entries, handlers } = capture();
@@ -65,7 +75,7 @@ async function runHappy(): Promise<void> {
 		execute: async (_s, decision, _events: WorkerEventSink): Promise<ExecuteOutcome> => {
 			if (decision.operación === "terminar") return { result: { kind: "terminación", text: "completada", unidadId: null, passed: true }, telemetry: TELEM };
 			if (decision.operación === "obtener información") return { result: { kind: "info", text: "info obtenida", unidadId: null, passed: null }, telemetry: TELEM };
-			const unitId = decision.unidad ?? "u?";
+			const unitId = decision.unidad?.tipo === "existente" ? decision.unidad.id : "u?";
 			if (unitId === "u0") return { result: { kind: "unidad", text: "src/math.ts existe, export vacío", unidadId: unitId, passed: true }, telemetry: TELEM };
 			if (unitId === "u1") return { result: { kind: "unidad", text: "greet() añadida", unidadId: unitId, passed: true }, telemetry: TELEM };
 			return { result: { kind: "unidad", text: "tsc ok; greet() => 'hello'", unidadId: unitId, passed: true }, telemetry: TELEM };
@@ -123,7 +133,7 @@ async function runParseFailCap(): Promise<void> {
 }
 
 async function runLimitIntervene(): Promise<void> {
-	const state = initState({ objetivo: "x", alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: "x" }, { maxIterations: 2 });
+	const state = initState({ objetivo: "x", alcance: null, restricciones: null, resultadoEsperado: null, condicionFinalizacion: "x" }, { maxIterations: 2, maxConsecutiveNoProgress: 3 });
 	const { entries, handlers } = capture();
 	const finalState = await runLoop(state, {
 		...handlers,
@@ -154,7 +164,7 @@ async function runDeclaredTermination(): Promise<void> {
 		decide: async () => ({
 			decision: dec("terminar", { ajustePlan: { tipo: "determinar el proceso", unidades: [
 				{ objetivo: "u-objetivo", alcance: null, infoNecesaria: null, resultadoEsperado: "hecho", condicionFinalizacion: "hecho", capacidad: "implementer" },
-			] }, condición: "cumplida — verificado con PASS" }),
+			] }, condición: term("cumplida — verificado con PASS") }),
 			telemetry: TELEM,
 			raw: EMPTY_RAW,
 			parseFail: false,
@@ -171,7 +181,7 @@ async function runDeclaredTermination(): Promise<void> {
 	const entries2 = capture();
 	const finalState2 = await runLoop(state2, {
 		...entries2.handlers,
-		decide: async () => ({ decision: dec("terminar", { condición: "inviable: sin vía viable" }), telemetry: TELEM, raw: EMPTY_RAW, parseFail: false }),
+		decide: async () => ({ decision: dec("terminar", { condición: term("inviable: sin vía viable", "failed") }), telemetry: TELEM, raw: EMPTY_RAW, parseFail: false }),
 		execute: async (_s, _d, _e): Promise<ExecuteOutcome> => ({ result: { kind: "terminación", text: "", unidadId: null, passed: false }, telemetry: TELEM }),
 	});
 	assert.equal(finalState2.taskState, "Fallida", "terminado declarado-inviable → Fallida");
@@ -192,9 +202,9 @@ async function runDeclaredTerminationWithVerifierFail(): Promise<void> {
 			ajustePlan: { tipo: "determinar el proceso", unidades: [
 				{ objetivo: "verificar", alcance: null, infoNecesaria: null, resultadoEsperado: "PASS", condicionFinalizacion: "PASS", capacidad: "verifier" },
 			] },
-			unidad: "u0", capacidad: "verifier", motivo: "verificar antes de terminar",
+			unidad: ref("u0"), motivo: "verificar antes de terminar",
 		}),
-		dec("terminar", { condición: "cumplida — el orquestador declara éxito" }),
+		dec("terminar", { condición: term("cumplida — el orquestador declara éxito") }),
 	];
 	let i = 0;
 	const { entries, handlers } = capture();

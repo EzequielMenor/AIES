@@ -115,6 +115,8 @@ export class StreamRenderer implements AiesEventHandlers {
 	private failedVerifications: string[] = [];
 	/** Flag: el último fallo es retry-safe (se puede reintentar). */
 	private isRetrySafe = false;
+	/** Línea de estado de telemetría pendiente de emisión tras cerrar el worker. */
+	private pendingStatusLine: string | null = null;
 
 	constructor(stream: NodeJS.WritableStream = process.stdout) {
 		this.stream = stream;
@@ -247,7 +249,7 @@ export class StreamRenderer implements AiesEventHandlers {
 		const plan = d.ajustePlan && d.ajustePlan.unidades.length > 0 ? ` · plan: ${d.ajustePlan.unidades.length} unidades` : "";
 		switch (d.operación) {
 			case "ejecutar una unidad":
-				return `Ejecutar ${d.capacidad ?? "unidad"}${d.unidad ? ` (${d.unidad})` : ""}${plan}`;
+				return `Ejecutar unidad${d.unidad ? ` (${d.unidad.tipo === "existente" ? d.unidad.id : `planificada[${d.unidad.indice}]`})` : ""}${plan}`;
 			case "obtener información":
 				return "Obtener información";
 			case "comunicar al desarrollador":
@@ -294,6 +296,13 @@ export class StreamRenderer implements AiesEventHandlers {
 		if (esRedescomposicion) {
 			this.recomposes += 1;
 			this.line(`${amber("▲")} ${amber(`Re-descomponiendo (re-descomposición #${this.recomposes})`)}: ${decision.motivo}`);
+		}
+		if (decision.ajustePlan && decision.ajustePlan.unidades.length > 1) {
+			this.line(`${bright("Plan:")}`);
+			decision.ajustePlan.unidades.forEach((u, idx) => {
+				const branch = idx === decision.ajustePlan!.unidades.length - 1 ? "└─" : "├─";
+				this.line(`  ${cyan(branch)} ${u.objetivo}`);
+			});
 		}
 		this.line(`${green("✓")} Decisión : ${this.describeDecision(decision)}`);
 		this.line(`${"  "}Motivo   : ${decision.motivo}`);
@@ -362,6 +371,10 @@ export class StreamRenderer implements AiesEventHandlers {
 			this.line(`└─ Resultado: ${result.text}`);
 		}
 		this.closeWorker();
+		if (this.pendingStatusLine) {
+			this.line(this.pendingStatusLine);
+			this.pendingStatusLine = null;
+		}
 		this.line("");
 	}
 
@@ -488,7 +501,12 @@ export class StreamRenderer implements AiesEventHandlers {
 				const cost = this.telemKnown ? formatCost(this.costTotal) : "cost n/d";
 				const ctx = this.formatContextPct(this.lastContextPct);
 				this.detachSpinner();
-				this.line(pc.dim(`· iter ${iterN}/${iterMax} · ${tok} tok · ${cost} · ${ctx} · verify ${verifyP}/${verifyQ}`));
+				const statusLine = pc.dim(`· iter ${iterN}/${iterMax} · ${tok} tok · ${cost} · ${ctx} · verify ${verifyP}/${verifyQ}`);
+				if (this.worker) {
+					this.pendingStatusLine = statusLine;
+				} else {
+					this.line(statusLine);
+				}
 				if (obs.decision.operación !== "comunicar al desarrollador" || obs.result.kind !== "comunicación") {
 					return;
 				}
@@ -518,6 +536,10 @@ export class StreamRenderer implements AiesEventHandlers {
 	/** Finaliza el renderer: detiene cualquier spinner vivo y deja la terminal limpia. */
 	finalize(): void {
 		this.detachSpinner();
+		if (this.pendingStatusLine) {
+			this.line(this.pendingStatusLine);
+			this.pendingStatusLine = null;
+		}
 		this.worker = null;
 		this.failedUnits.clear();
 		this.failedVerifications = [];

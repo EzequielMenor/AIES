@@ -26,8 +26,7 @@ const VALID = JSON.stringify({
 	ajustePlan: { tipo: "determinar el proceso", unidades: [
 		{ objetivo: "explorar", alcance: null, infoNecesaria: null, resultadoEsperado: "info", condicionFinalizacion: "ok", capacidad: "explorer" },
 	] },
-	unidad: "u0",
-	capacidad: "explorer",
+	unidad: { tipo: "existente", id: "u0" },
 	motivo: "tarea Recibida; info insuficiente",
 });
 
@@ -76,12 +75,12 @@ async function main(): Promise<void> {
 	parseShould(JSON.stringify({ operación: "comunicar al desarrollador", motivo: "x" }), true, "comunicar sin comunicación");
 
 	parseShould(JSON.stringify({
-		operación: "ejecutar una unidad", unidad: "u0", motivo: "x",
+		operación: "ejecutar una unidad", unidad: { tipo: "existente", id: "u0" }, motivo: "x",
 		ajustePlan: { tipo: "descomponer", unidades: [{ objetivo: "haz X", alcance: null, infoNecesaria: null, resultadoEsperado: "r", condicionFinalizacion: "c", capacidad: "implementer" }] },
 	}), false, "ajustePlan válido (sin código)");
 
 	parseShould(JSON.stringify({
-		operación: "ejecutar una unidad", unidad: "u0", motivo: "x",
+		operación: "ejecutar una unidad", unidad: { tipo: "existente", id: "u0" }, motivo: "x",
 		ajustePlan: { tipo: "descomponer", unidades: [{ objetivo: "```\nfunction greet(){return 'hello'}\n```", alcance: null, infoNecesaria: null, resultadoEsperado: "r", condicionFinalizacion: "c", capacidad: "implementer" }] },
 	}), true, "ajustePlan con code fence → rechazo");
 

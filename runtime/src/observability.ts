@@ -2,7 +2,7 @@
 // Dominio puro. `log.jsonl` es el único artefacto de observabilidad y el dataset de `06-research` (ADR-008).
 // Una línea = un objeto JSON; append-only. Por vuelta: una entrada decisión + una entrada resultado (cuando hay operación).
 
-import type { AjustePlan, Capability, Decision, Operation, OperationResult, ResultKind } from "./core/state.js";
+import type { AjustePlan, Capability, CommunicationRequest, Decision, Operation, OperationResult, ResultKind, TerminationCondition, UnitRef } from "./core/state.js";
 import type { CompactionObservation, ContextUsage, TelemetryUsage, WorkerTelemetry } from "./telemetry/types.js";
 
 export interface DecisionLogEntry {
@@ -11,9 +11,9 @@ export interface DecisionLogEntry {
 	operación: Operation;
 	ajustePlan: AjustePlan | null;
 	motivo: string;
-	unidad: string | null;
+	unidad: UnitRef | null;
 	capacidad: Capability | null;
-	condición: string | null;
+	condición: TerminationCondition | null;
 	parseFail: boolean;
 	/** Telemetría de la vuelta del orquestador (ADR-009/RNF-17: usage por orquestador). Ausente en entradas sintéticas sin vuelta de host. */
 	usage?: TelemetryUsage | null;
@@ -83,11 +83,11 @@ export function decisionEntry(iter: number, decision: Decision, parseFail = fals
 		type: "decision",
 		iter,
 		operación: decision.operación,
-		ajustePlan: decision.ajustePlan,
+		ajustePlan: decision.ajustePlan ?? null,
 		motivo: decision.motivo,
-		unidad: decision.unidad,
-		capacidad: decision.capacidad,
-		condición: decision.condición,
+		unidad: decision.unidad ?? null,
+		capacidad: null,
+		condición: decision.condición ?? null,
 		parseFail,
 		...(telemetry ? telemetryFields(telemetry) : {}),
 	};
