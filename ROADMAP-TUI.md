@@ -8,7 +8,7 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-24 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T6 implementados; T2.3 aplazado; T4 ampliado con 4.6 vocabulario de estados y 4.7 tarjeta de cierre).
+> Última revisión: 2026-08-25 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T4.6+T4.8+T6 implementados; T2.3 aplazado; T4 ampliado con 4.8 árbol de plan adaptativo y desacoplamiento de telemetría de worker).
 
 ---
 
@@ -345,6 +345,13 @@
     ausente → `n/d` explícito (RNF-07/17), nunca `$0`/`0 tok`. En
     no-TTY degenera a una línea resumen (mismo criterio que el resto
     del renderer). Prolonga el footer de T3.1.
+4.8 **Árbol de plan adaptativo y desacoplamiento de telemetría de worker.** ✅ (2026-08-25).
+    - `onDecideSuccess` renderiza el árbol multi-unidad (`Plan:\n ├─ ...\n └─ ...`)
+      cuando el orquestador emite descomposición de 2+ unidades.
+    - La línea de telemetría por iteración (`· iter N/max · ...`) se emite
+      después de cerrar el bloque de worker (`onWorkerFinish`), manteniendo
+      la estructura visual `┌─ ... └─` intacta sin partir el bloque.
+    - Cobertura de tests unitarios agregada en `stream-renderer.test.ts`.
 
 **Criterios de salida:**
 

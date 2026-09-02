@@ -20,6 +20,8 @@ runtime/
 │   ├── intervention.ts       # legacy StopController (mantenido para extension/ @deprecated); el wireado activo vive en cli.ts (ADR-012: ESC parar / Ctrl+C cerrar → pausa reanudable)
 │   ├── limits.ts             # LIMIT_POLICY + limitsFromConfig
 │   ├── observability.ts      # shapes of decision/result/compaction log entries + serializers
+│   ├── string-utils.ts       # generic helpers used by TUI-01 validation (truncate, etc.) + test
+│   ├── utils.ts              # generic helpers (e.g. isValidEmail) + standalone imports
 │   ├── core/                 # domain (no pi): state.ts, loop.ts, events.ts, types.ts, observation.ts
 │   ├── orchestrator/         # ORCHESTRATOR_SYSTEM_PROMPT + createDecide + Zod parse.ts
 │   ├── workers/              # capabilities.ts (allowlists), session-factory.ts, tools.ts, prompts.ts
@@ -133,6 +135,11 @@ The CLI assigns `ts: new Date().toISOString()` at emission time, so wall-clock p
 
 The companion tests live in `runtime/src/ui/stream-renderer.test.ts` (retry-safe marker, populated lists, singular/plural, post-`finalize()` reset). The vocabulary is governed by `ROADMAP-TUI.md` §4.6 (state glyphs) and the closing card by §4.7 (`CompletionCard` / `FailureCard`).
 
+## 5.2 Adaptive plan tree and worker telemetry ordering
+
+- **Adaptive plan tree**: When `onDecideSuccess` receives a plan adjustment with 2+ units (`decision.ajustePlan.unidades.length > 1`), `StreamRenderer` renders a visual plan tree using `Plan:` with branch glyphs (`├─` and `└─`) before starting execution.
+- **Worker block integrity**: The per-iteration dim telemetry line (`· iter N/max · <tok> tok · $<cost> · ...`) is queued and printed *after* `onWorkerFinish` closes the worker block with `└─ Resultado: ...`, keeping the worker output clean and contiguous.
+
 ## 6. Running it
 
 From the [quickstart](quickstart.md):
@@ -156,6 +163,7 @@ pnpm run research:metrics -- .aies/log.jsonl
 - `tests/cost.test.ts` — cost telemetry deltas (cost stays `off` per `ADR-005`).
 - `tests/smoke-e2e.test.ts` — vitest e2e harness around the loop and persistence.
 - `src/cli-repl.test.ts` — contrato del input del REPL (`readPromptLine`): paste multi-línea NO dispara el orquestador hasta que el usuario pulsa Enter; los fragmentos del mensaje NO se filtran como intervención; Ctrl+C rechaza sin enviar contenido parcial.
+- `src/string-utils.test.ts` — utilidades genéricas (e.g. `truncate`) creadas durante TUI-01; incluidas en vitest y en `pnpm run test:cli` si se añaden.
 - `self-check/persistence.js` — state.json + log.jsonl, recovery on corrupt (uses `FileStore`).
 - `self-check/orchestrator.js` — Zod parser against the orchestrator schema.
 - `self-check/compaction.js` — pi → domain mapping for `compaction_start` / `compaction_end` (imports `telemetry/pi-events.ts::mapCompaction`).
@@ -192,7 +200,7 @@ There is no `pnpm run smoke` script anymore — the legacy one was removed. The 
 }
 ```
 
-- Provider and model names are versioned in the repo. Keys come from the pi-coding-agent credential store (`~/.pi/agent/auth.json`, managed via `/login` or `aies login <provider>`, supporting api_key) or as fallback from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`.
+- Provider and model names are versioned in the repo. Keys come from the pi-coding-agent credential store (`~/.pi/agent/auth.json`, managed via `/login` or `aies login <provider>`, supporting api_key and the pi-provided `openai-codex` OAuth flow) or as fallback from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`. The interactive registry lives in `runtime/src/commands.ts`; it powers both `/help` and `/` discovery. Supported plan entries are MiniMax Token Plan (`minimax`, `sk-cp-`) and Alibaba Model Studio Token Plan China (Beijing) (`qwen-token-plan-cn`, `sk-sp-`); the retired Qwen OAuth and a separate Alibaba Coding Plan flow are not exposed.
 - `AIES_CONFIG` env var overrides the config path (used in `06-research/experiments/` for alternate lanes).
 - `AIES_MODEL` env var forces a specific model id for a single run without touching `aies.config.json`.
 - `/pick` (or `aies pick <rol> <provider>/<model-id>`) writes `aies.config.json` atomically (`.bak`+tmp+rename) and re-validates with `loadConfig`. `/models` (or `aies models`) lists the catalog with auth status and current role assignments.

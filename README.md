@@ -13,7 +13,7 @@
 
 **AIES** es un harness y runtime de ingeniería de software que orquesta agentes de IA mediante **descomposición adaptativa de tareas**, **aislamiento estricto de contexto** y **verificación continua**, eliminando el desperdicio de tokens y la burocracia innecesaria.
 
-[¿Qué es AIES?](#-qué-es-aies) • [Problemas que resuelve](#-el-problema-del-agente-único) • [Arquitectura](#-arquitectura-y-bucle-de-decisión) • [Instalación y Uso](#-quickstart) • [Investigación](#-evidencia-empírica) • [Estructura](#-mapa-del-repositorio) • [Apoyo](#-apoyo)
+[¿Qué es AIES?](#-qué-es-aies) • [Problemas que resuelve](#-el-problema-del-agente-único) • [Arquitectura](#-arquitectura-y-bucle-de-decisión) • [Instalación y Uso](#-quickstart) • [Investigación](#-evidencia-empírica) • [Estructura](#-mapa-del-repositorio) • [Contribución y Apoyo](#-contribución-y-apoyo)
 
 </div>
 
@@ -158,9 +158,15 @@ AIES/
 
 ---
 
-## ☕ Apoyo
+## 🤝 Contribución y Apoyo
 
-Si encuentras útil AIES y quieres apoyar su desarrollo independiente, puedes [invitarme a un café en Buy Me a Coffee](https://buymeacoffee.com/wm2jv22vfmx) o en [Ko-fi](https://ko-fi.com/ezequiel_33). ¡Cualquier contribución ayuda enormemente a mantener y evolucionar el proyecto!
+¡Toda ayuda es bienvenida! Hay muchas formas de colaborar con AIES:
+
+* 🛠️ **Código y Funcionalidades:** Corrección de errores, nuevos subagentes o integraciones. Consulta nuestra **[Guía de Contribución (CONTRIBUTING.md)](CONTRIBUTING.md)** para conocer el flujo de trabajo, convenciones y setup local.
+* 🔬 **Investigación Empírica:** Ejecuta o añade nuevos experimentos comparativos en [`06-research/`](06-research/) para seguir contrastando hipótesis con datos reales.
+* 💡 **Issues y Discusiones:** Reporta bugs o propón mejoras abriendo un [Issue](https://github.com/EzequielMenor/AIES/issues).
+* ⭐ **Difusión:** Dale una estrella al repositorio para ayudar a que más desarrolladores conozcan el proyecto.
+* ☕ **Patrocinio:** Si quieres apoyar el desarrollo continuo e independiente, puedes [invitarme a un café en Buy Me a Coffee](https://buymeacoffee.com/wm2jv22vfmx) o en [Ko-fi](https://ko-fi.com/ezequiel_33).
 
 ---
 
