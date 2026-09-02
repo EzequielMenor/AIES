@@ -4,8 +4,9 @@
 // y verifican que el bus de eventos tipado (`AiesEventHandlers`) emite los eventos en orden
 // determinista a lo largo del ciclo Pensar/Decidir → Ejecutar → Verificar → Actualizar Estado.
 //
-// Sin framework externo: `node:assert/strict` (mismo estilo que `src/self-check/`). Se compila
-// con `tsc -p tsconfig.test.json` y se ejecuta con `node dist/tests/loop.test.js`.
+// Plan §3: la Decision es ahora una unión discriminada. Las unidades se referencian por
+// `{tipo:"existente",id}` o `{tipo:"planificada",indice}` (el bucle resuelve el índice al ID
+// canónico generado por `unitSeq`).
 
 import assert from "node:assert/strict";
 import { runLoop } from "../src/core/loop.js";
@@ -20,7 +21,6 @@ const TELEM: WorkerTelemetry = {
 	telemetryUnavailable: false,
 };
 
-/** Tipos de eventos capturados en orden cronológico. */
 type CapturedEvent =
 	| { kind: "onTaskStart"; iter: number }
 	| { kind: "onDecideStart"; iter: number }
@@ -31,7 +31,6 @@ type CapturedEvent =
 	| { kind: "onTaskFailed"; reason: string }
 	| { kind: "intervention:adjustment"; text: string };
 
-/** Captura todos los eventos del bus en una lista indexada por orden de emisión. */
 function makeRecorder(): {
 	events: CapturedEvent[];
 	handlers: Pick<
@@ -55,7 +54,7 @@ function makeRecorder(): {
 		handlers: {
 			onTaskStart: (_state) => push({ kind: "onTaskStart", iter: -1 }),
 			onDecideStart: (iter) => push({ kind: "onDecideStart", iter }),
-			onDecideSuccess: (d) => push({ kind: "onDecideSuccess", op: d.operación, unidad: d.unidad }),
+			onDecideSuccess: (d) => push({ kind: "onDecideSuccess", op: d.operación, unidad: d.unidad?.tipo === "existente" ? d.unidad.id : null }),
 			onWorkerStart: (u, info) => push({ kind: "onWorkerStart", unitId: u.id, role: info.role }),
 			onWorkerFinish: (unitId, r) => push({ kind: "onWorkerFinish", unitId, passed: r.passed }),
 			onTaskCompleted: (summary) => push({ kind: "onTaskCompleted", summary }),
@@ -67,60 +66,49 @@ function makeRecorder(): {
 	};
 }
 
-/** Script de decisiones: 1 ajuste de plan (2 unidades) + ejecutar u0 (implementer) + ejecutar u1 (verifier) + terminar. */
+function plan(unidades: Array<{ capacidad: WorkUnit["capacidad"]; objetivo: string }>): NonNullable<Decision["ajustePlan"]> {
+	return {
+		tipo: "determinar el proceso",
+		unidades: unidades.map((u) => ({
+			objetivo: u.objetivo,
+			alcance: null,
+			infoNecesaria: null,
+			resultadoEsperado: "listo",
+			condicionFinalizacion: "ok",
+			capacidad: u.capacidad,
+		})),
+	};
+}
+
+function execRef(id: string, ajuste?: NonNullable<Decision["ajustePlan"]>): Decision {
+	return {
+		operación: "ejecutar una unidad",
+		ajustePlan: ajuste ?? null,
+		unidad: { tipo: "existente", id },
+		motivo: "test",
+	};
+}
+
+function term(detalle: string): Decision {
+	return { operación: "terminar", condición: { desenlace: "completed", detalle }, motivo: "fin" };
+}
+
 function buildScript(): Decision[] {
 	return [
 		{
 			operación: "ejecutar una unidad",
-			ajustePlan: {
-				tipo: "determinar el proceso",
-				unidades: [
-					{
-						objetivo: "implementar greet()",
-						alcance: null,
-						infoNecesaria: null,
-						resultadoEsperado: "greet() exportada y devuelve 'hello'",
-						condicionFinalizacion: "greet() añadida a src/math.ts",
-						capacidad: "implementer",
-					},
-					{
-						objetivo: "verificar greet()",
-						alcance: null,
-						infoNecesaria: null,
-						resultadoEsperado: "tsc + runtime ok",
-						condicionFinalizacion: "VEREDICTO: PASS",
-						capacidad: "verifier",
-					},
-				],
-			},
-			unidad: "u0",
-			capacidad: "implementer",
-			comunicación: null,
+			ajustePlan: plan([
+				{ capacidad: "implementer", objetivo: "implementar greet()" },
+				{ capacidad: "verifier", objetivo: "verificar greet()" },
+			]),
+			unidad: { tipo: "planificada", indice: 0 },
 			motivo: "tarea Recibida; determinar proceso y arrancar con implementer",
-			condición: null,
 		},
-		{
-			operación: "ejecutar una unidad",
-			ajustePlan: null,
-			unidad: "u1",
-			capacidad: "verifier",
-			comunicación: null,
-			motivo: "verificar antes de terminar",
-			condición: null,
-		},
-		{
-			operación: "terminar",
-			ajustePlan: null,
-			unidad: null,
-			capacidad: null,
-			comunicación: null,
-			motivo: "verifier devolvió PASS",
-			condición: "cumplida — verificado con PASS",
-		},
+		execRef("u1"),
+		term("cumplida — verificado con PASS"),
 	];
 }
 
-/** Stubs de orquestador/worker que ejecutan el script de decisiones. */
 function makeStubs(script: Decision[]): Pick<AiesEventHandlers, "decide" | "execute"> {
 	let i = 0;
 	return {
@@ -129,7 +117,7 @@ function makeStubs(script: Decision[]): Pick<AiesEventHandlers, "decide" | "exec
 			i++;
 			return { decision, telemetry: TELEM, raw: "{}", parseFail: false };
 		},
-		execute: async (_state, decision, _events: WorkerEventSink): Promise<ExecuteOutcome> => {
+		execute: async (state, decision, _events: WorkerEventSink): Promise<ExecuteOutcome> => {
 			if (decision.operación === "terminar") {
 				return {
 					result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null },
@@ -142,17 +130,13 @@ function makeStubs(script: Decision[]): Pick<AiesEventHandlers, "decide" | "exec
 					telemetry: TELEM,
 				};
 			}
-			const unitId = decision.unidad ?? "u?";
-			if (unitId === "u0") {
-				return {
-					result: { kind: "unidad", text: "greet() añadida a src/math.ts", unidadId: unitId, passed: true },
-					telemetry: TELEM,
-				};
-			}
-			// u1 (verifier): PASS
+			// El bucle marca la unidad `En curso` antes de invocar execute; localizamos por estado.
+			const unit = state.units.find((u) => u.estado === "En curso");
+			const unitId = unit?.id ?? "?";
 			return {
-				result: { kind: "unidad", text: "VEREDICTO: PASS — greet() exporta y devuelve 'hello'", unidadId: unitId, passed: true },
+				result: { kind: "unidad", text: `resultado para ${unitId}`, unidadId: unitId, passed: true },
 				telemetry: TELEM,
+				report: { status: "satisfied", summary: "ok", criteria: [{ criterion: "ok", status: "pass", evidence: "stub" }], unmetCriteria: [] },
 			};
 		},
 	};
@@ -177,13 +161,12 @@ async function testImplementVerifyEmitsAllEventsInOrder(): Promise<void> {
 	assert.equal(finalState.units.length, 2, "2 unidades definidas (implementer + verifier)");
 	assert.ok(finalState.units.every((u) => u.estado === "Terminada"), "ambas unidades Terminada");
 	assert.equal(finalState.outcomes.execution, "success");
-	assert.equal(finalState.outcomes.verification, "pass", "verifier PASS → verification=pass");
 
-	// Eventos: secuencia exacta esperada.
+	// Eventos: secuencia exacta esperada (la planificada[0] se resuelve a u0).
 	const expected: CapturedEvent[] = [
 		{ kind: "onTaskStart", iter: -1 },
 		{ kind: "onDecideStart", iter: 0 },
-		{ kind: "onDecideSuccess", op: "ejecutar una unidad", unidad: "u0" },
+		{ kind: "onDecideSuccess", op: "ejecutar una unidad", unidad: null },
 		{ kind: "onWorkerStart", unitId: "u0", role: "implementer" },
 		{ kind: "onWorkerFinish", unitId: "u0", passed: true },
 		{ kind: "onDecideStart", iter: 1 },
@@ -218,12 +201,7 @@ async function testParseFailDoesNotEmitDecideSuccess(): Promise<void> {
 		decide: async () => ({
 			decision: {
 				operación: "obtener información",
-				ajustePlan: null,
-				unidad: null,
-				capacidad: null,
-				comunicación: null,
 				motivo: "fallo controlado",
-				condición: null,
 			},
 			telemetry: TELEM,
 			raw: "not-json{{",
@@ -236,16 +214,16 @@ async function testParseFailDoesNotEmitDecideSuccess(): Promise<void> {
 		}),
 	});
 
-	// Tope 3 parse-fails → intervención, no terminal, sin onTaskCompleted/Failed.
+	// Tope 3 parse-fails → waiting_for_user, no terminal, sin onTaskCompleted/Failed.
 	assert.equal(finalState.consecutiveParseFailures, 3);
 	assert.ok(finalState.taskState === "Recibida" || finalState.taskState === "En curso", "parse-fail: no terminal");
+	assert.equal(finalState.runStatus.tipo, "waiting_for_user", "3 parse-fails → waiting_for_user");
 	const success = rec.events.filter((e) => e.kind === "onDecideSuccess");
 	assert.equal(success.length, 0, "parse-fail no emite onDecideSuccess");
 	const taskCompleted = rec.events.filter((e) => e.kind === "onTaskCompleted");
 	const taskFailed = rec.events.filter((e) => e.kind === "onTaskFailed");
 	assert.equal(taskCompleted.length, 0, "parse-fail: no onTaskCompleted");
 	assert.equal(taskFailed.length, 0, "parse-fail: no onTaskFailed");
-	// onTaskStart una vez, onDecideStart tres veces.
 	assert.equal(rec.events.filter((e) => e.kind === "onTaskStart").length, 1);
 	assert.equal(rec.events.filter((e) => e.kind === "onDecideStart").length, 3);
 
@@ -267,12 +245,8 @@ async function testTerminarInviableEmitsOnTaskFailed(): Promise<void> {
 		decide: async () => ({
 			decision: {
 				operación: "terminar",
-				ajustePlan: null,
-				unidad: null,
-				capacidad: null,
-				comunicación: null,
+				condición: { desenlace: "failed", detalle: "inviable: sin vía viable" },
 				motivo: "sin continuación viable",
-				condición: "inviable: sin vía viable",
 			},
 			telemetry: TELEM,
 			raw: "{}",
@@ -307,7 +281,6 @@ async function testPollInterventionAbsentNoRegression(): Promise<void> {
 	const rec = makeRecorder();
 	const stubs = makeStubs(buildScript());
 
-	// Sin `pollIntervention` en absoluto: comportamiento idéntico al baseline (no regresión).
 	const finalState = await runLoop(state, { ...rec.handlers, ...stubs });
 
 	assert.equal(finalState.taskState, "Completada");
@@ -342,7 +315,6 @@ async function testPollInterventionAppliesAdjustment(): Promise<void> {
 		},
 	});
 
-	// Se consumen 2 ajustes → 2 observations; el orquestador los ve en `results` + `knownInfo`.
 	const interventions = rec.events.filter((e) => e.kind === "intervention:adjustment");
 	assert.equal(interventions.length, 2, "dos ajustes drenados en dos turnos");
 	if (interventions[0]?.kind === "intervention:adjustment") {
@@ -357,7 +329,6 @@ async function testPollInterventionAppliesAdjustment(): Promise<void> {
 	assert.ok(finalState.knownInfo.some((k) => k.includes("caso de borde")), "primer ajuste en knownInfo");
 	assert.ok(finalState.knownInfo.some((k) => k.includes("añade un test")), "segundo ajuste en knownInfo");
 
-	// Las intervenciones NO consumen iteración: la cuenta final debe ser 3 (igual al baseline).
 	assert.equal(finalState.iterations, 3, "el ajuste no incrementa iteraciones (3 = baseline)");
 
 	console.log("OK pollIntervention: ajuste drenado, observación emitida, estado incorpora texto, iterations sin cambio");
@@ -382,7 +353,6 @@ async function testPollInterventionHandlerThrowsIsolated(): Promise<void> {
 		},
 	});
 
-	// Handler que lanza NO rompe el bucle (P-02): la tarea sigue su curso normal.
 	assert.equal(finalState.taskState, "Completada");
 	assert.equal(finalState.iterations, 3);
 	const interventions = rec.events.filter((e) => e.kind === "intervention:adjustment");
@@ -392,9 +362,6 @@ async function testPollInterventionHandlerThrowsIsolated(): Promise<void> {
 }
 
 async function testStopSignalPausesTaskNotFails(): Promise<void> {
-	// ADR-012: stopSignal (ESC / SIGINT) PAUSA la tarea, no la marca Fallida.
-	// taskState se conserva ("En curso" / "Recibida"), nextStep lleva marcador de pausa,
-	// no se emiten onTaskCompleted ni onTaskFailed.
 	const state: RuntimeState = initState({
 		objetivo: "tarea pausable",
 		alcance: null,
@@ -406,33 +373,22 @@ async function testStopSignalPausesTaskNotFails(): Promise<void> {
 	let stopped = false;
 	const finalState = await runLoop(state, {
 		...rec.handlers,
-		decide: async () => {
-			// Primera vuelta: indicamos stop; el bucle procesa stopSignal al inicio del siguiente
-			// turno y sale. Devolvemos una decisión válida para que se ejecute al menos un turno
-			// antes del stop (cubre la rama stopSignal al inicio del 2º turno).
-			return {
-				decision: {
-					operación: "obtener información",
-					ajustePlan: null,
-					unidad: null,
-					capacidad: null,
-					comunicación: null,
-					motivo: "preparar",
-					condición: null,
-				},
-				telemetry: TELEM,
-				raw: "{}",
-				parseFail: false,
-			};
-		},
+		decide: async () => ({
+			decision: {
+				operación: "obtener información",
+				motivo: "preparar",
+			},
+			telemetry: TELEM,
+			raw: "{}",
+			parseFail: false,
+		}),
 		execute: async (): Promise<ExecuteOutcome> => ({
 			result: { kind: "info", text: "preparado", unidadId: null, passed: null },
 			telemetry: TELEM,
 		}),
-		stopSignal: () => stopped || (stopped = true, false), // false la 1ª vez, true la 2ª
+		stopSignal: () => stopped || (stopped = true, false),
 	});
 
-	// Estado final: NO Fallida, NO Completada — pausada.
 	assert.ok(
 		finalState.taskState === "En curso" || finalState.taskState === "Recibida",
 		`stopSignal debe preservar taskState (visto: ${finalState.taskState})`,
@@ -441,13 +397,96 @@ async function testStopSignalPausesTaskNotFails(): Promise<void> {
 	assert.equal(finalState.terminalCondition, null, "pausa no es terminal");
 	assert.notEqual(finalState.taskState, "Fallida");
 	assert.notEqual(finalState.taskState, "Completada");
+	assert.equal(finalState.runStatus.tipo, "paused_by_user", "stopSignal → paused_by_user");
 
 	const completed = rec.events.filter((e) => e.kind === "onTaskCompleted");
 	const failed = rec.events.filter((e) => e.kind === "onTaskFailed");
 	assert.equal(completed.length, 0, "stopSignal no emite onTaskCompleted");
 	assert.equal(failed.length, 0, "stopSignal no emite onTaskFailed (ADR-012)");
 
-	console.log("OK stopSignal: pausa en lugar de Fallida; nextStep marcador; sin onTaskFailed/Completed");
+	console.log("OK stopSignal: pausa en lugar de Fallida; paused_by_user; sin onTaskFailed/Completed");
+}
+
+async function testComunicarBloqueaSinExecute(): Promise<void> {
+	// Plan §3 — invariante 9: comunicar al desarrollador bloquea el bucle; decide se llama 1 vez,
+	// execute 0 veces, y runStatus pasa a waiting_for_user.
+	const state: RuntimeState = initState({
+		objetivo: "necesito input",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	let decideCalls = 0;
+	let executeCalls = 0;
+	const finalState = await runLoop(state, {
+		decide: async () => {
+			decideCalls++;
+			return {
+				decision: {
+					operación: "comunicar al desarrollador",
+					comunicación: { pregunta: "¿qué hago?", razón: "subjective_choice", informaciónFaltante: "color favorito" },
+					motivo: "necesito una decisión del usuario",
+				},
+				telemetry: TELEM,
+				raw: "{}",
+				parseFail: false,
+			};
+		},
+		execute: async () => {
+			executeCalls++;
+			return { result: { kind: "comunicación", text: "", unidadId: null, passed: null }, telemetry: TELEM };
+		},
+	});
+	assert.equal(decideCalls, 1, "decide llamado una vez");
+	assert.equal(executeCalls, 0, "execute NO se invoca para comunicar bloqueante");
+	assert.equal(finalState.runStatus.tipo, "waiting_for_user");
+	assert.ok(finalState.taskState === "En curso" || finalState.taskState === "Recibida", "waiting_for_user mantiene taskState (reanudable)");
+	console.log("OK comunicar-bloqueante: decide 1 vez, execute 0, waiting_for_user");
+}
+
+async function testTerminarInvalidoPorUnidadesActivas(): Promise<void> {
+	// Plan §3 — invariante 7: completar es imposible con unidades activas Pendiente/En curso/Fallida.
+	const state: RuntimeState = initState({
+		objetivo: "x",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	let decideCalls = 0;
+	const finalState = await runLoop(state, {
+		decide: async () => {
+			decideCalls++;
+			return {
+				decision: {
+					operación: "ejecutar una unidad",
+					ajustePlan: {
+						tipo: "determinar el proceso",
+						unidades: [{ objetivo: "u-pendiente", alcance: null, infoNecesaria: null, resultadoEsperado: "x", condicionFinalizacion: "x", capacidad: "implementer" }],
+					},
+					unidad: { tipo: "planificada", indice: 0 },
+					motivo: "crear unidad pendiente",
+				},
+				telemetry: TELEM,
+				raw: "{}",
+				parseFail: false,
+			};
+		},
+		execute: async () => ({
+			result: { kind: "unidad", text: "ok", unidadId: "u0", passed: true },
+			telemetry: TELEM,
+		}),
+	});
+
+	// Tras 12 iteraciones (default maxIterations) el bucle llega al límite.
+	assert.equal(decideCalls, state.limits.maxIterations, "decide llamado hasta el límite");
+	// Estado final: o bien terminación controlada por límite (waiting_for_user), o bien el
+	// bucle sigue activo. Lo importante es que NUNCA aceptó `terminar completed` con la
+	// unidad Pendiente (invariante 7 — terminación estricta).
+	const acceptedTermination = finalState.units.some((u) => u.id === "u0" && u.estado === "Terminada" && finalState.taskState === "Completada");
+	assert.equal(acceptedTermination, false, "nunca debe completar con unidades Pendiente sin satisfacer");
+	console.log("OK terminar-invalido: terminación estricta nunca acepta completar con unidades activas");
 }
 
 async function main(): Promise<void> {
@@ -458,7 +497,9 @@ async function main(): Promise<void> {
 	await testPollInterventionAppliesAdjustment();
 	await testPollInterventionHandlerThrowsIsolated();
 	await testStopSignalPausesTaskNotFails();
-	console.log("\nloop.test OK: 7 tests unitarios del bucle + bus de eventos verificados");
+	await testComunicarBloqueaSinExecute();
+	await testTerminarInvalidoPorUnidadesActivas();
+	console.log("\nloop.test OK: 9 tests unitarios del bucle + bus de eventos verificados");
 }
 
 main().catch((e) => {

@@ -4,29 +4,36 @@
 // orquestador pasa por él. Si el id de unidad es malformado, debe rechazarse aquí — no más
 // adelante en el lookup del estado (eso permitía el bug "U-1 → u0" con iteración desperdiciada).
 //
-// Sin framework externo: `node:assert/strict`. Compila con `tsc -p tsconfig.test.json` y se
-// ejecuta con `node dist-test/tests/parse.test.js`.
+// Plan §3 — invariante 11: el parser rechaza aliases (`ajustarPlan`, `operacion`, etc.) y claves
+// extra. La forma canónica es `{tipo:"existente",id:"u<n>"}` o `{tipo:"planificada",indice}`.
 
 import assert from "node:assert/strict";
 import { parseDecision } from "../src/orchestrator/parse.js";
 
-function decision(unidad: unknown): string {
+function decisionWithExisting(id: string): string {
 	return JSON.stringify({
 		operación: "ejecutar una unidad",
 		ajustePlan: null,
-		unidad,
-		capacidad: "implementer",
-		comunicación: null,
+		unidad: { tipo: "existente", id },
 		motivo: "test",
-		condición: null,
+	});
+}
+
+function decisionWithPlanificada(indice: number): string {
+	return JSON.stringify({
+		operación: "ejecutar una unidad",
+		ajustePlan: null,
+		unidad: { tipo: "planificada", indice },
+		motivo: "test",
 	});
 }
 
 async function testUnidadMalformedIsRejected(): Promise<void> {
+	// IDs no canónicos dentro de UnitRef.existente.
 	const malformedCases = ["U-1", "U1", "u_0", "0", "unit-0", "u01a", "U0", "u-1", "", "u"];
 
 	for (const malformed of malformedCases) {
-		const out = parseDecision(decision(malformed));
+		const out = parseDecision(decisionWithExisting(malformed));
 		assert.equal(
 			out.parseFail,
 			true,
@@ -47,9 +54,9 @@ async function testUnidadWellFormedIsAccepted(): Promise<void> {
 	const wellFormed = ["u0", "u1", "u2", "u42", "u123"];
 
 	for (const id of wellFormed) {
-		const out = parseDecision(decision(id));
+		const out = parseDecision(decisionWithExisting(id));
 		assert.equal(out.parseFail, false, `id válido ${JSON.stringify(id)}: debe aceptarse`);
-		assert.equal(out.decision.unidad, id, `id válido ${JSON.stringify(id)}: se preserva`);
+		assert.deepEqual(out.decision.unidad, { tipo: "existente", id }, `id válido ${JSON.stringify(id)}: se preserva como UnitRef`);
 	}
 
 	console.log(`OK unidad-wellformed: ${wellFormed.length} ids aceptados`);
@@ -61,10 +68,8 @@ async function testUnidadNullIsAccepted(): Promise<void> {
 		operación: "terminar",
 		ajustePlan: null,
 		unidad: null,
-		capacidad: null,
-		comunicación: null,
+		condición: { desenlace: "completed", detalle: "cumplida" },
 		motivo: "test",
-		condición: "cumplida",
 	});
 	const out = parseDecision(json);
 	assert.equal(out.parseFail, false, `terminar admite unidad:null (parseError=${out.parseError ?? ""})`);
@@ -72,11 +77,53 @@ async function testUnidadNullIsAccepted(): Promise<void> {
 	console.log("OK unidad-null: aceptado en operación que no requiere unidad");
 }
 
+async function testPlanificadaIsAccepted(): Promise<void> {
+	const out = parseDecision(decisionWithPlanificada(0));
+	assert.equal(out.parseFail, false);
+	assert.deepEqual(out.decision.unidad, { tipo: "planificada", indice: 0 });
+	console.log("OK planificada: referencia por índice aceptada");
+}
+
+async function testAliasRejection(): Promise<void> {
+	// Plan §3 — invariante 11: aliases como "operacion", "ajuste_plan", etc. se rechazan.
+	const json = JSON.stringify({
+		operacion: "terminar",
+		motivo: "test",
+		condición: { desenlace: "completed", detalle: "x" },
+	});
+	const out = parseDecision(json);
+	assert.equal(out.parseFail, true, "alias 'operacion' debe rechazarse");
+	assert.match(out.parseError!, /schema/);
+	console.log("OK alias: operacion rechazado");
+}
+
+async function testReemplazaValidation(): Promise<void> {
+	// descomponer/determinar rechaza reemplaza no vacío.
+	const json = JSON.stringify({
+		operación: "ejecutar una unidad",
+		ajustePlan: {
+			tipo: "descomponer",
+			reemplaza: ["u0"],
+			unidades: [{ objetivo: "x", resultadoEsperado: "y", condicionFinalizacion: "ok", capacidad: "implementer" }],
+		},
+		unidad: { tipo: "planificada", indice: 0 },
+		motivo: "test",
+	});
+	const out = parseDecision(json);
+	// El ajustePlan.strict() no rechaza reemplaza por sí solo — eso se valida en runtime al aplicar.
+	// El parser sí acepta el schema, pero applyAjustePlan lo defenderá.
+	assert.equal(out.parseFail, false, "schema acepta reemplaza no vacío (runtime lo defenderá)");
+	console.log("OK reemplaza: schema lo acepta; runtime defenderá en applyAjustePlan");
+}
+
 async function main(): Promise<void> {
 	await testUnidadMalformedIsRejected();
 	await testUnidadWellFormedIsAccepted();
 	await testUnidadNullIsAccepted();
-	console.log("\nparse.test OK: contrato de id de unidad (^u\\d+$) verificado");
+	await testPlanificadaIsAccepted();
+	await testAliasRejection();
+	await testReemplazaValidation();
+	console.log("\nparse.test OK: contrato de UnitRef (^u\\d+$) y aliases verificados");
 }
 
 main().catch((e) => {

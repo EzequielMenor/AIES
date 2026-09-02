@@ -10,6 +10,7 @@ export default defineConfig({
 		// se ejecutan mediante sus scripts específicos.
 		include: [
 			"tests/smoke-e2e.test.ts",
+			"tests/dogfooding.test.ts",
 			"tests/update.test.ts",
 			"src/cli.test.ts",
 			"src/ui/stream-renderer.test.ts",
@@ -21,6 +22,11 @@ export default defineConfig({
 			"src/model-runtime.test.ts",
 			"src/cli-models.test.ts",
 			"src/cli-repl.test.ts",
+			"src/string-utils.test.ts",
+			"src/commands.test.ts",
+			"src/ui/prompt-ui.test.ts",
+			"src/cli-repl-helpers.test.ts",
+			"src/model-runtime.test.ts",
 		],
 		// El smoke test puede tardar (escribe archivo + spawna node); 30s es seguro.
 		testTimeout: 30_000,

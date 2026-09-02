@@ -4,8 +4,10 @@
 // TaskTelemetry del evento onTaskCompleted → la UI recibe el coste correcto. Y que, cuando NO
 // hay telemetría fiable, NO se inventa un coste (totalCost/totalTokens = null).
 //
-// Sin framework externo: `node:assert/strict`. Compila con `tsc -p tsconfig.test.json` y se
-// ejecuta con `node dist-test/tests/cost.test.js`.
+// Plan §3 — WorkerReport: el bucle acepta el reporte estructurado del worker para verificar; si
+// el implementer NO emite reporte (legacy), se considera `unsatisfied` y `passed=false` (ya no
+// se marca `passed:true` automático). Por eso este test usa un stub de execute que inyecta un
+// reporte `satisfied` para simular el contrato nuevo.
 
 import assert from "node:assert/strict";
 import { runLoop } from "../src/core/loop.js";
@@ -14,7 +16,6 @@ import type { Decision, RuntimeState } from "../src/core/state.js";
 import { initState } from "../src/core/state.js";
 import type { TelemetryUsage, WorkerTelemetry } from "../src/telemetry/types.js";
 
-/** Construye un WorkerTelemetry con un usage concreto (o null para "no disponible"). */
 function telem(usage: TelemetryUsage | null): WorkerTelemetry {
 	return { usage, contextUsage: null, telemetryUnavailable: usage === null };
 }
@@ -22,11 +23,10 @@ function telem(usage: TelemetryUsage | null): WorkerTelemetry {
 function tokens(input: number, output: number, cacheRead = 0, cacheWrite = 0): TelemetryUsage {
 	return {
 		tokens: { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite },
-		cost: (input + output) / 200_000, // coste determinista = f(tokens), para aserciones estables
+		cost: (input + output) / 200_000,
 	};
 }
 
-/** Script: plan + ejecutar u0 (implementer) + terminar. Devuelve la telemetría deseada por decide/execute. */
 interface ScriptConfig {
 	decideTelem: WorkerTelemetry;
 	executeTelem: WorkerTelemetry;
@@ -36,7 +36,7 @@ function makeDecision(decision: Decision, telemetry: WorkerTelemetry): DecideOut
 	return { decision, telemetry, raw: JSON.stringify(decision), parseFail: false };
 }
 
-function unitDecision(unidad: string, capacidad: "implementer" | "verifier"): Decision {
+function unitPlanificada(): Decision {
 	return {
 		operación: "ejecutar una unidad",
 		ajustePlan: {
@@ -48,28 +48,21 @@ function unitDecision(unidad: string, capacidad: "implementer" | "verifier"): De
 					infoNecesaria: null,
 					resultadoEsperado: "greet() añadida",
 					condicionFinalizacion: "greet() existe",
-					capacidad,
+					capacidad: "implementer",
 				},
 			],
 		},
-		unidad,
-		capacidad,
-		comunicación: null,
+		unidad: { tipo: "planificada", indice: 0 },
 		motivo: "planificar y ejecutar",
-		condición: null,
 	};
 }
 
 function terminateDecision(): Decision {
-	return {
-		operación: "terminar",
-		ajustePlan: null,
-		unidad: null,
-		capacidad: null,
-		comunicación: null,
-		motivo: "unidad terminada",
-		condición: "cumplida",
-	};
+	return { operación: "terminar", condición: { desenlace: "completed", detalle: "cumplida" }, motivo: "unidad terminada" };
+}
+
+function satisfiedReport() {
+	return { status: "satisfied" as const, summary: "ok", criteria: [{ criterion: "greet() añadida", status: "pass" as const, evidence: "tsc ok" }], unmetCriteria: [] };
 }
 
 function makeHandlers(cfg: ScriptConfig): {
@@ -89,21 +82,15 @@ function makeHandlers(cfg: ScriptConfig): {
 			onTaskFailed: (reason) => failedReasons.push(reason),
 			decide: async (): Promise<DecideOutcome> => {
 				decideCalls++;
-				const decision = decideCalls === 1 ? unitDecision("u0", "implementer") : terminateDecision();
+				const decision = decideCalls === 1 ? unitPlanificada() : terminateDecision();
 				return makeDecision(decision, cfg.decideTelem);
 			},
 			execute: async (_state, decision, _events: WorkerEventSink): Promise<ExecuteOutcome> => {
 				executeCalls++;
 				if (decision.operación === "terminar") {
-					return {
-						result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null },
-						telemetry: cfg.executeTelem,
-					};
+					return { result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null }, telemetry: cfg.executeTelem };
 				}
-				return {
-					result: { kind: "unidad", text: "greet() añadida", unidadId: decision.unidad, passed: true },
-					telemetry: cfg.executeTelem,
-				};
+				return { result: { kind: "unidad", text: "greet() añadida", unidadId: "u0", passed: true }, telemetry: cfg.executeTelem, report: satisfiedReport() };
 			},
 		},
 	};
@@ -120,26 +107,26 @@ function baseState(): RuntimeState {
 }
 
 async function testUsageCapturedAndCostSummed(): Promise<void> {
-	// Orquestador y worker reportan usage: el coste/tokens FINALES deben ser la suma de TODAS las vueltas.
-	const d1 = tokens(100, 200); // decide iter0 → cost 300/200000
-	const d2 = tokens(50, 50); // decide iter1 (terminar) → cost 100/200000
-	const e1 = tokens(10, 20); // execute iter0 → cost 30/200000
-	const e2 = tokens(5, 5); // execute iter1 (terminar) → 10/200000
+	const d1 = tokens(100, 200);
+	const d2 = tokens(50, 50);
+	const e1 = tokens(10, 20);
+	const e2 = tokens(5, 5);
 	let decideN = 0;
 	let executeN = 0;
 	const handlers: Pick<AiesEventHandlers, "decide" | "execute"> = {
 		decide: async (): Promise<DecideOutcome> => {
 			decideN++;
-			const decision = decideN === 1 ? unitDecision("u0", "implementer") : terminateDecision();
+			const decision = decideN === 1 ? unitPlanificada() : terminateDecision();
 			return makeDecision(decision, telem(decideN === 1 ? d1 : d2));
 		},
-		execute: async (_s, decision): Promise<ExecuteOutcome> => {
+		execute: async (state, decision): Promise<ExecuteOutcome> => {
 			executeN++;
 			const used = executeN === 1 ? e1 : e2;
 			if (decision.operación === "terminar") {
 				return { result: { kind: "terminación", text: "finalización declarada", unidadId: null, passed: null }, telemetry: telem(used) };
 			}
-			return { result: { kind: "unidad", text: "ok", unidadId: decision.unidad, passed: true }, telemetry: telem(used) };
+			const unit = state.units.find((u) => u.estado === "En curso");
+			return { result: { kind: "unidad", text: "ok", unidadId: unit?.id ?? null, passed: true }, telemetry: telem(used), report: satisfiedReport() };
 		},
 	};
 
@@ -154,23 +141,21 @@ async function testUsageCapturedAndCostSummed(): Promise<void> {
 }
 
 async function testInputOutputTokensPreserved(): Promise<void> {
-	// Sin cache (cacheRead=0, cacheWrite=0): totalTokens debe sumar input+output de cada vuelta.
 	const runs: TelemetryUsage[] = [tokens(1000, 500), tokens(300, 700)];
 	let di = 0;
 	const handlers: Pick<AiesEventHandlers, "decide" | "execute"> = {
 		decide: async (): Promise<DecideOutcome> => {
 			di++;
-			const decision = di === 1 ? unitDecision("u0", "implementer") : terminateDecision();
+			const decision = di === 1 ? unitPlanificada() : terminateDecision();
 			return makeDecision(decision, telem(runs[di - 1]!));
 		},
-		execute: async (_s, decision): Promise<ExecuteOutcome> => {
-			// Sin cache y con worker sin telemetría: sólo el orquestador (decide) aporta tokens,
-			// así totalTokens == input+output de sus vueltas (conservación de componentes).
+		execute: async (state, decision): Promise<ExecuteOutcome> => {
 			const used: TelemetryUsage | null = null;
 			if (decision.operación === "terminar") {
 				return { result: { kind: "terminación", text: "fin", unidadId: null, passed: null }, telemetry: telem(used) };
 			}
-			return { result: { kind: "unidad", text: "ok", unidadId: decision.unidad, passed: true }, telemetry: telem(used) };
+			const unit = state.units.find((u) => u.estado === "En curso");
+			return { result: { kind: "unidad", text: "ok", unidadId: unit?.id ?? null, passed: true }, telemetry: telem(used), report: satisfiedReport() };
 		},
 	};
 	let received: TaskTelemetry | undefined;
@@ -183,7 +168,6 @@ async function testInputOutputTokensPreserved(): Promise<void> {
 }
 
 async function testNoInventedCostWhenUsageUnavailable(): Promise<void> {
-	// Ninguna vuelta reporta usage: totalCost/totalTokens deben ser null (desconocido), NO 0.
 	const cfg: ScriptConfig = { decideTelem: telem(null), executeTelem: telem(null) };
 	const { handlers, completedTelemetry } = makeHandlers(cfg);
 	await runLoop(baseState(), handlers);
@@ -196,26 +180,25 @@ async function testNoInventedCostWhenUsageUnavailable(): Promise<void> {
 }
 
 async function testPartialUsageKeepsKnownCost(): Promise<void> {
-	// Orquestador conocido, worker sin telemetría: el coste conocido no se pierde ni se rellena con 0 falso.
 	const known = tokens(100, 100);
 	let di = 0;
 	const handlers: Pick<AiesEventHandlers, "decide" | "execute" | "onTaskCompleted"> = {
 		decide: async (): Promise<DecideOutcome> => {
 			di++;
-			const decision = di === 1 ? unitDecision("u0", "implementer") : terminateDecision();
-			return makeDecision(decision, telem(known)); // orquestador SIEMPRE reporta
+			const decision = di === 1 ? unitPlanificada() : terminateDecision();
+			return makeDecision(decision, telem(known));
 		},
-		execute: async (_s, decision): Promise<ExecuteOutcome> => {
+		execute: async (state, decision): Promise<ExecuteOutcome> => {
 			if (decision.operación === "terminar") {
 				return { result: { kind: "terminación", text: "fin", unidadId: null, passed: null }, telemetry: telem(null) };
 			}
-			return { result: { kind: "unidad", text: "ok", unidadId: decision.unidad, passed: true }, telemetry: telem(null) };
+			const unit = state.units.find((u) => u.estado === "En curso");
+			return { result: { kind: "unidad", text: "ok", unidadId: unit?.id ?? null, passed: true }, telemetry: telem(null), report: satisfiedReport() };
 		},
 	};
 	let received: TaskTelemetry | undefined;
 	await runLoop(baseState(), { ...handlers, onTaskCompleted: (_s, t) => (received = t) });
 
-	// decide se llama 2 veces (cada una con coste known.cost) → se acumula el orquestador.
 	assert.equal(received!.totalCost, known.cost * 2, "el coste conocido del orquestador se acumula aunque los workers no reporten");
 	assert.equal(received!.totalTokens, known.tokens.total * 2, "tokens del orquestador acumulados");
 	console.log(`OK partial-usage: orquestador conocido (${received!.totalCost}), workers null → coste no nulo ni 0-falso`);
