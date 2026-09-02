@@ -15,11 +15,13 @@ import type { LoopObservation } from "./observation.js";
 import type { LogEntry } from "../observability.js";
 import type {
 	Capability,
+	CommunicationRequest,
 	Decision,
 	OperationResult,
 	ResultKind,
 	RuntimeState,
 	WorkUnit,
+	WorkerReport,
 } from "./state.js";
 import type { WorkerTelemetry } from "../telemetry/types.js";
 
@@ -47,6 +49,11 @@ export interface ExecuteOutcome {
 	/** E-01A: marca experimental de atribución. Si está, metrics.ts atribuye los tokens al
 	 *  orquestador en lugar de al worker. */
 	atribución?: "orquestador" | null;
+	/** Reporte estructurado del worker (plan §3 — worker contract). Opcional; el bucle lo
+	 *  normaliza (unsatisfied si ausente). */
+	report?: WorkerReport | null;
+	/** Texto del error de parseo del reporte (cuando `report` es null por fallo del worker). */
+	reportError?: string | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -170,4 +177,12 @@ export interface AiesEventHandlers {
 	onLoopObservation?: (obs: LoopObservation) => void;
 	/** Texto crudo del orquestador, útil para depuración. */
 	onRaw?: (iter: number, raw: string) => void;
+	/** Checkpoint atómico del estado (plan §4 — paso 8, invariante 3). Si lanza, el bucle
+	 *  aborta la ejecución del worker para ese turno. La persistencia (writeAtomic) debe ser
+	 *  síncrona; el handler puede ser async pero el bucle espera antes de invocar execute. */
+	checkpoint?: (state: RuntimeState, motivo: string) => void | Promise<void>;
+	/** Notificación de espera humana activa (cambio a `RunStatus.waiting_for_user`). La UI/TUI
+	 *  debe mostrar `request.pregunta`/`request.razón` y dejar de invocar el orquestador hasta
+	 *  recibir la respuesta. */
+	onHumanWait?: (request: CommunicationRequest) => void;
 }

@@ -48,8 +48,10 @@ export type LoopObservation =
 	  }
 	| { phase: "intervention:paused"; state: RuntimeState }
 	| { phase: "intervention:adjustment"; state: RuntimeState; text: string }
+	| { phase: "waiting_for_user"; state: RuntimeState }
 	| { phase: "terminated"; state: RuntimeState; reason: string }
-	| { phase: "error:unidad-inexistente"; state: RuntimeState; decision: Decision };
+	| { phase: "error:unidad-inexistente"; state: RuntimeState; decision: Decision }
+	| { phase: "error:unidad-no-pendiente"; state: RuntimeState; decision: Decision };
 
 export type ObservationHook = (obs: LoopObservation) => void;
 
