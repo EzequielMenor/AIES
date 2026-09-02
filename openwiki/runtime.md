@@ -16,19 +16,22 @@ runtime/
 ├── src/
 │   ├── cli.ts                # aies "<tarea>" / aies (REPL) entrypoint (CLI standalone)
 │   ├── cli-persistence.ts    # REPL session persistence
+│   ├── cli-repl-helpers.ts   # helpers del REPL (readPromptLine, banner, slash dispatch) + test
+│   ├── commands.ts           # registry único de /commands (fuente de /help y del completer) + test
 │   ├── config.ts             # Zod-validated aies.config.json loader (AIES_CONFIG env override)
 │   ├── intervention.ts       # legacy StopController (mantenido para extension/ @deprecated); el wireado activo vive en cli.ts (ADR-012: ESC parar / Ctrl+C cerrar → pausa reanudable)
-│   ├── limits.ts             # LIMIT_POLICY + limitsFromConfig
+│   ├── limits.ts             # LIMIT_POLICY + limitsFromConfig (incluye maxConsecutiveNoProgress, ADR-013 §7)
 │   ├── observability.ts      # shapes of decision/result/compaction log entries + serializers
 │   ├── string-utils.ts       # generic helpers used by TUI-01 validation (truncate, etc.) + test
 │   ├── utils.ts              # generic helpers (e.g. isValidEmail) + standalone imports
-│   ├── core/                 # domain (no pi): state.ts, loop.ts, events.ts, types.ts, observation.ts
+│   ├── core/                 # domain (no pi): state.ts, loop.ts, events.ts, types.ts, observation.ts, state-schema.ts (catálogos v2 compartidos)
 │   ├── orchestrator/         # ORCHESTRATOR_SYSTEM_PROMPT + createDecide + Zod parse.ts
 │   ├── workers/              # capabilities.ts (allowlists), session-factory.ts, tools.ts, prompts.ts
 │   ├── persistence/          # file_store.ts + recover.ts (ADR-008)
 │   ├── research/             # metrics.ts (log.jsonl → NFR metrics) + baseline.ts (single-agent runner)
 │   ├── self-check/           # step-3/4/5/11 verifications without pi (loop/persistence/orch/compaction/workers)
 │   ├── telemetry/            # domain types + pi-events.ts (mapeo pi → dominio)
+│   ├── ui/                    # stream-renderer.ts (output), prompt-ui.ts (selector raw /login /model), quiet.ts (silenciadores)
 │   └── extension/            # @deprecated 2026-08-20 — código legacy de la extensión de Pi; se elimina en v2
 ├── dist/                     # tsc output; consumed by the bin and the scripts
 ├── fixtures/smoke-repo/      # tiny ESM repo (AGENTS.md + src/math.js) for the smoke run
@@ -157,12 +160,16 @@ pnpm run research:metrics -- .aies/log.jsonl
 
 `pnpm test` runs the vitest suites (`parse`, `unitid`, `loop`, `cost`, `smoke-e2e`) plus the five self-checks in `runtime/src/self-check/`:
 
-- `tests/parse.test.ts` — Zod parser against the orchestrator schema.
-- `tests/unitid.test.ts` — non-existent unit id is not terminal (re-emit, not `Fallida`).
-- `tests/loop.test.ts` — happy path of MVP-v0-Scope §9, plus C3 (3 parse-failures → intervención) and ADR-005 (limit → intervención, not Fallida).
+- `tests/parse.test.ts` — Zod parser against the orchestrator schema (incluye variantes discriminadas de `Decision` v2).
+- `tests/unitid.test.ts` — non-existent unit id is not terminal (re-emit, not `Fallida`); cubre `UnitRef` planificada/inexistente.
+- `tests/loop.test.ts` — happy path of MVP-v0-Scope §9, plus C3 (3 parse-failures → intervención) and ADR-005 (limit → intervención, not Fallida); invariantes ADR-013 (checkpoint previo al worker, runStatus guard, no-progress).
 - `tests/cost.test.ts` — cost telemetry deltas (cost stays `off` per `ADR-005`).
 - `tests/smoke-e2e.test.ts` — vitest e2e harness around the loop and persistence.
+- `tests/dogfooding.test.ts` — siete recorridos (A–G) con fixtures y dobles deterministas que validan las invariantes de `ADR-013` (intención, contrato, mutación de plan, espera humana, verificación, recuperación, no-progreso).
 - `src/cli-repl.test.ts` — contrato del input del REPL (`readPromptLine`): paste multi-línea NO dispara el orquestador hasta que el usuario pulsa Enter; los fragmentos del mensaje NO se filtran como intervención; Ctrl+C rechaza sin enviar contenido parcial.
+- `src/cli-repl-helpers.test.ts` — `banner`, `setupSlashDiscovery` y dispatch de comandos vía el registry.
+- `src/commands.test.ts` — invariantes del registry (`commands.ts`): unicidad de `name`/alias, idempotencia cross-session, parseo.
+- `src/prompt-ui.test.ts` — selector raw de `PromptUI` (search/select/secret/info) usado por `/login`, `/logout` y `/model`.
 - `src/string-utils.test.ts` — utilidades genéricas (e.g. `truncate`) creadas durante TUI-01; incluidas en vitest y en `pnpm run test:cli` si se añaden.
 - `self-check/persistence.js` — state.json + log.jsonl, recovery on corrupt (uses `FileStore`).
 - `self-check/orchestrator.js` — Zod parser against the orchestrator schema.
@@ -203,7 +210,7 @@ There is no `pnpm run smoke` script anymore — the legacy one was removed. The 
 - Provider and model names are versioned in the repo. Keys come from the pi-coding-agent credential store (`~/.pi/agent/auth.json`, managed via `/login` or `aies login <provider>`, supporting api_key and the pi-provided `openai-codex` OAuth flow) or as fallback from env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) via `ModelRuntime.create()`. The interactive registry lives in `runtime/src/commands.ts`; it powers both `/help` and `/` discovery. Supported plan entries are MiniMax Token Plan (`minimax`, `sk-cp-`) and Alibaba Model Studio Token Plan China (Beijing) (`qwen-token-plan-cn`, `sk-sp-`); the retired Qwen OAuth and a separate Alibaba Coding Plan flow are not exposed.
 - `AIES_CONFIG` env var overrides the config path (used in `06-research/experiments/` for alternate lanes).
 - `AIES_MODEL` env var forces a specific model id for a single run without touching `aies.config.json`.
-- `/pick` (or `aies pick <rol> <provider>/<model-id>`) writes `aies.config.json` atomically (`.bak`+tmp+rename) and re-validates with `loadConfig`. `/models` (or `aies models`) lists the catalog with auth status and current role assignments.
+- `/model` (interactive selector via `runtime/src/ui/prompt-ui.ts`; supports `aies model <query>`) resolves a model across all providers with configured auth using `findModelAcrossProviders` in `runtime/src/model-runtime.ts` (exact id first, then substring, case-insensitive). `/pick` (or `aies pick <rol> <provider>/<model-id>`) writes `aies.config.json` atomically (`.bak`+tmp+rename) and re-validates with `loadConfig`. `/models` (or `aies models`) lists the catalog with auth status and current role assignments.
 - `orchestratorThinkingLevel` is `low` by default (provisional, ADR-007). Calibration in `06-research`.
 - `maxIterations = 12` is the backstop. Cost is `off`; context is `observed-autoCompaction-backstop-iter` (i.e., observed via pi's native compaction and backed by the iteration cap).
 

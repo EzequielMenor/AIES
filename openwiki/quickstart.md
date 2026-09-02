@@ -22,7 +22,7 @@ The repo is a spec + a working v1 runtime, both in the same tree.
 | **Requirements** | `REQ-F-01…27`, `RNF-01…20`, glossary, task model (`Task`, `Work Unit`) | `02-Requirements/` |
 | **Architecture** | Component, runtime, decision, agent, capability, and MVP-v0 scope models | `03-Architecture/` |
 | **Behavior** | Lifecycle of a task | `04-Behavior/` |
-| **Decisions** | ADR-001…ADR-010 (architecture decisions record; `ADR-010` deprecated) | `05-Decisions/` |
+| **Decisions** | ADR-001…ADR-014 (architecture decisions record; `ADR-010` deprecated); the runtime is now at **schema v2** (`STATE_VERSION=2` in `runtime/src/core/state-schema.ts`, per `ADR-013`) | `05-Decisions/` |
 | **Research** | Measurement and validation scaffolding (hypotheses `H-01…H-06`, baselines, experiments) | `06-research/` |
 | **Runtime v1** | The TypeScript implementation of the spec on top of `pi` | `runtime/` |
 | **Product brief** | Top-level one-pager: platform, users, capabilities, brand commitments | `PRODUCT.md` |
@@ -73,7 +73,7 @@ pnpm run research:metrics -- .aies/log.jsonl
 - **[Project overview](../README.md)** — the repo-root `README.md`: the philosophy, the non-goals, the ADRs table, and the recommended reading map for newcomers.
 - **[Principles & non-goals](../01-Concept/Principles.md)** — the 20 architectural principles that bind the spec.
 - **[Non-goals](../01-Concept/Non-Goals.md)** — what AIES explicitly is **not**.
-- **[ADRs](../05-Decisions/)** — the architecture decisions, `ADR-001`…`ADR-010` (the last one is now **Deprecated**, kept as historical record).
+- **[ADRs](../05-Decisions/)** — the architecture decisions, `ADR-001`…`ADR-014`. `ADR-010` is **Deprecated** (kept as historical record); `ADR-013` covers the runtime v1→v2 reliability refactor and `ADR-014` covers the interactive auth + `/`-discovery rework.
 - **[Research scaffolding](../06-research/README.md)** — hypotheses `H-01`…`H-06`, baselines, experiments, metrics per NFR §3.
 
 ## Operational notes

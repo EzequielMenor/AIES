@@ -22,20 +22,24 @@ The runtime carries these as `Task`, `WorkUnit`, `UnitDefinition` in `runtime/sr
 
 ## 2. State
 
-The state is **the only input** to every decision (`P-09`, `REQ-F-14`). It is explicit, versioned, and lives outside the repository so it can be paused and resumed (`ADR-008`). Conceptual shape from `Runtime-Model.md §3.1`, realized in `RuntimeState` (`runtime/src/core/state.ts`):
+The state is **the only input** to every decision (`P-09`, `REQ-F-14`). It is explicit, versioned, and lives outside the repository so it can be paused and resumed (`ADR-008`, `ADR-013`). Conceptual shape from `Runtime-Model.md §3.1`, realized in `RuntimeState` (`runtime/src/core/state.ts`); the shared enums and Zod schemas are the single source of truth in `runtime/src/core/state-schema.ts` (`STATE_VERSION = 2`):
 
 | Field | What it tracks |
 |---|---|
+| `version` | schema version (`STATE_VERSION = 2`); v1 snapshots are migrated on load, unsupported ones are rejected as `corrupt` |
 | `taskState` | `Recibida` → `En curso` → `Completada` \| `Fallida` |
 | `task`, `units`, `knownInfo`, `results` | the task's intent, the plan, accumulated knowledge, results |
 | `iterations`, `unitSeq` | loop progress |
 | `nextStep` | a string the orchestrator leaves for the next iteration |
-| `limits`, `consecutiveParseFailures` | limits backstop and parse-failure accumulator (C3, ADR-005) |
+| `limits` | `maxIterations` (12) + `maxConsecutiveNoProgress` (3) — see §7 and `ADR-013` §7 |
+| `consecutiveNoProgress` | consecutive turns without real progress; bounded by `limits.maxConsecutiveNoProgress` |
+| `runStatus` | operational status orthogonal to `taskState`: `ready` / `paused_by_user` / `waiting_for_user` / `terminal` |
+| `humanWait` | when `runStatus.waiting_for_user`, the persisted `CommunicationRequest` (pregunta/razón/infoFaltante) |
 | `terminalCondition`, `outcomes` | explicit terminal reason + `execution` / `verification` / `scope` |
 
-`outcomes` is the instrumented triple (`Fix 3`): `execution` is the path through the loop; `verification` aggregates per-unit pass/fail; `scope` stays `unknown` until a criterion is defined (no implicit inference).
+`outcomes` is the instrumented triple (`Fix 3`, computed by `computeOutcomes`): `execution` is the path through the loop; `verification` aggregates per-unit pass/fail from structured `WorkerReport`s (see §5 and `ADR-013` §5); `scope` stays `unknown` until a criterion is defined (no implicit inference).
 
-The `TaskState` and `UnitState` enums are the lifecycle vocabulary of `04-Behavior/Lifecycle.md`. The orchestrator moves the task to `En curso` on the first iteration by emitting `ajustePlan.tipo = "determinar el proceso"` (C3).
+The `TaskState` and `UnitState` enums are the lifecycle vocabulary of `04-Behavior/Lifecycle.md`. `UnitState` adds `Sustituida` in v2 — a unit replaced by a re-plan stays observable in the state/log but is excluded from the active plan (`ADR-013` §3, invariante 8). The orchestrator moves the task to `En curso` on the first iteration by emitting `ajustePlan.tipo = "determinar el proceso"` (C3).
 
 ## 3. The decision loop
 
@@ -65,6 +69,10 @@ The implementation lives in `runtime/src/core/loop.ts` (`runLoop`). Its invarian
 - **Iteration cap is a backstop, not a verdict** — when `iterations ≥ maxIterations`, the loop asks for intervention by default (state remains `En curso`, runnable from the REPL). Termination is the controllable fallback (`ADR-005`).
 - **Intervention is an entry** — SIGINT enters as a synthetic result and the task is marked `Fallida` (Runtime §7, `runtime/src/intervention.ts`).
 - **Compaction is observable, not enforced** — `compaction_start` / `compaction_end` from pi are mapped to `log.jsonl` entries; AIES never assumes no-overflow and keeps the iteration backstop (RNF-18/19).
+- **Loop guards on `runStatus`** — the loop refuses to enter if `runStatus !== "ready"` (invariante 9, `ADR-013` §4). `paused_by_user` and `waiting_for_user` are operational states orthogonal to `taskState`; only an external `/resume` (or a user reply that clears the `humanWait`) re-enables the loop.
+- **Atomic checkpoint before each worker** — `runLoop` persists state immediately before invoking a worker; a checkpoint failure aborts the unit before any mutation (`ADR-013` §3).
+- **`comunicar al desarrollador` is blocking** — it sets `runStatus = waiting_for_user` with the `CommunicationRequest` (pregunta/razón/infoFaltante) and does NOT invoke `execute`. The loop only resumes when a new human entry arrives (typically via `/resume` with a guide); it is never used to delegate a fixable error to the user (`ADR-013` §4).
+- **No-progress counter** — `consecutiveNoProgress` tracks turns without real progress (new evidence, unit/strategy change, new cause, criteria reduction). A repeated report or finding does not reset the counter; it is bounded by `limits.maxConsecutiveNoProgress` and produces a controlled termination rather than silent continuation (`ADR-013` §7).
 
 The decision JSON shape (the orchestrator's only output) is locked down by a Zod schema in `runtime/src/orchestrator/parse.ts`. Strict mode (`strict()` on every schema) rejects extra keys — this is the trust boundary (C3): an LLM writes to the loop only through validated JSON.
 
@@ -99,11 +107,13 @@ Verifier must end its turn with a literal line `VEREDICTO: PASS` or `VEREDICTO: 
 
 Resolution: **verification is its own capability**, invoked when the task justifies it. v0 materializes this as the `verifier` capability above. The orchestrator decides whether to delegate a verification unit based on the unit's `condicionFinalizacion` and the results so far (`Decision-Model §5/§6`).
 
+In v2 (per `ADR-013` §5) the implementer and verifier both end their turn with a single JSON `WorkerReport` (`status`, `summary`, `criteria`, `unmetCriteria`) parsed tolerantly by `runtime/src/workers/tools.ts::parseWorkerReport`. A missing or invalid report is **never** inferred as success — the unit stays `unsatisfied` and a contract error is surfaced; the verifier's legacy `VEREDICTO: PASS|FAIL` line is still accepted for back-compat. The orchestrator may also close a unit via deterministic checks (grep, tests, typecheck, build, artifact read) without a verifier round.
+
 ## 6. Re-decomposition
 
-When a unit is too large, mis-specified, or stuck (signals listed in `Task-Model.md §7.2` and `ADR-006`): the orchestrator can emit `ajustePlan.tipo = "re-descomponer"` with a new set of `UnitDefinition`s. The previous unit is replaced; partial accepted results are kept (`P-13`, `RNF-10`).
+When a unit is too large, mis-specified, or stuck (signals listed in `Task-Model.md §7.2` and `ADR-006`): the orchestrator can emit `ajustePlan.tipo = "re-descomponer"` (or `cambiar de estrategia`) with a new set of `UnitDefinition`s and, in v2, an optional `reemplaza: string[]` listing existing unit IDs. `applyAjustePlan` moves those units to `Sustituida` (observable in the state/log but excluded from the active plan) and returns `{ state, createdUnitIds, substitutedIds }` so the orchestrator can refer to the new units by planned index in the same turn (`ADR-013` §3, invariantes 8/13). Partial accepted results are preserved (`P-13`, `RNF-10`).
 
-Re-descomposition is **a facet of the decision**, not a separate action — same `DecideOutcome`, sibling field, applied before the operation of the same turn.
+Re-descomposition is **a facet of the decision**, not a separate action — same `DecideOutcome`, sibling field, applied before the operation of the same turn. The orchestrator can also pass a `feedbackCorrectivo` when executing the new unit, and the loop will route the feedback to the worker as additional context (`ADR-013` §6).
 
 ## 7. Limits
 
@@ -121,12 +131,13 @@ The repertoire when a limit is hit (ADR-005) is: *pedir intervención* (default)
 |---|---|---|
 | Task / Work Unit | `02-Requirements/Task-Model.md` | `runtime/src/core/state.ts` (`Task`, `WorkUnit`, `UnitDefinition`) |
 | Runtime state shape | `03-Architecture/Runtime-Model.md §3.1` | `runtime/src/core/state.ts` (`RuntimeState`) |
-| Decision schema | `03-Architecture/Decision-Model.md §2/§4/§11` | `runtime/src/core/state.ts` (`Decision`), `runtime/src/orchestrator/parse.ts` |
-| Decision loop invariants | `04-Behavior/Lifecycle.md`, ADR-005/C3 | `runtime/src/core/loop.ts` |
+| Decision schema | `03-Architecture/Decision-Model.md §2/§4/§11` | `runtime/src/core/state-schema.ts` (catálogos v2), `runtime/src/core/state.ts` (`Decision`), `runtime/src/orchestrator/parse.ts` |
+| Decision loop invariants | `04-Behavior/Lifecycle.md`, `ADR-005`/C3, `ADR-013` §3/4/7 | `runtime/src/core/loop.ts` |
 | Capabilities | `03-Architecture/Capability-Model.md` | `runtime/src/workers/capabilities.ts`, `runtime/src/workers/tools.ts` |
-| Verifier as capability | `ADR-002` | `runtime/src/workers/prompts.ts::VERIFIER_PROMPT`, `workers/tools.ts::parseVerdict` |
-| Limits policy | `ADR-005` | `runtime/src/limits.ts` |
-| Re-descomposition | `ADR-006` | `runtime/src/core/state.ts::applyAjustePlan` |
+| Verifier as capability | `ADR-002`, `ADR-013` §5 | `runtime/src/workers/prompts.ts::VERIFIER_PROMPT`, `workers/tools.ts::parseVerdict` + `parseWorkerReport` |
+| Limits policy | `ADR-005`, `ADR-013` §7 | `runtime/src/limits.ts` (`maxConsecutiveNoProgress`) |
+| Re-descomposition | `ADR-006`, `ADR-013` §3 | `runtime/src/core/state.ts::applyAjustePlan` (soporta `reemplaza`, devuelve `substitutedIds`) |
+| Interactive auth & commands | `ADR-014` | `runtime/src/commands.ts` (registry), `runtime/src/ui/prompt-ui.ts`, `runtime/src/auth.ts` |
 | Telemetry types | ADR-009 / RNF-07/17 | `runtime/src/telemetry/types.ts` |
 
 See also: [Runtime](runtime.md) for how the v1 wires these, and the [principles](../01-Concept/Principles.md) and [ADRs](../05-Decisions/) for the policy that binds the model.
