@@ -125,10 +125,8 @@ function terminarDecision(): Decision {
 		operación: "terminar",
 		ajustePlan: null,
 		unidad: null,
-		capacidad: null,
-		comunicación: null,
 		motivo: "listo",
-		condición: "cumplida",
+		condición: { desenlace: "completed", detalle: "cumplida" },
 	};
 }
 
@@ -137,10 +135,8 @@ function failTerminarDecision(): Decision {
 		operación: "terminar",
 		ajustePlan: null,
 		unidad: null,
-		capacidad: null,
-		comunicación: null,
 		motivo: "inviable",
-		condición: "inviable: sin vía viable",
+		condición: { desenlace: "failed", detalle: "inviable: sin vía viable" },
 	};
 }
 
@@ -364,7 +360,8 @@ describe("T1 persistencia y /resume", () => {
 	it("resolveResume + runResumeCycle pasa resumeFrom y no resetea iterations a 0", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "aies-cycle-"));
 		const store = new LocalStore(cwd);
-		const fixture = enCursoState(5);
+		// Sin unidades activas: la terminación estricta puede aceptar `terminar completed`.
+		const fixture: RuntimeState = { ...enCursoState(5), units: [] };
 		store.saveState(fixture);
 		const loaded = store.loadState();
 		const resolved = resolveResume(loaded);
@@ -398,7 +395,8 @@ describe("T1 persistencia y /resume", () => {
 	it("runResumeCycle tras pausa por límite avanza si opts.limits.maxIterations es mayor", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "aies-resume-limit-"));
 		const store = new LocalStore(cwd);
-		const paused = { ...enCursoState(1), limits: { maxIterations: 1 } };
+		// Sin unidades activas: la terminación estricta acepta `terminar completed`.
+		const paused: RuntimeState = { ...enCursoState(1), limits: { maxIterations: 1, maxConsecutiveNoProgress: 3 }, units: [] };
 		store.saveState(paused);
 		const resolved = resolveResume(store.loadState());
 		assert.equal(resolved.ok, true);

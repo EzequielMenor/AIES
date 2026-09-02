@@ -40,6 +40,7 @@ import {
 	loginProvider,
 	logoutProvider,
 	PROVIDER_ENV_KEY,
+	supportedLoginProviders,
 } from "./auth.js";
 import { LocalStore } from "./cli-persistence.js";
 import { formatLogTail, parseLogArg } from "./cli-log.js";
@@ -49,6 +50,14 @@ import { runStartup, type StartupReport } from "./integrations/index.js";
 import { addKnownInfo } from "./core/state.js";
 import { formatModelsTable, parseModelsQuery, resolveModelsForListing, searchModels } from "./models-list.js";
 import { runPickCommand } from "./cli-models.js";
+import { bareExitTokens, filterSlashCommands, formatHelpCommands, parseSlashCommand } from "./commands.js";
+import {
+	runLoginFlow,
+	runLogoutFlow,
+	runModelFlow,
+	runSlashPaletteDispatch,
+} from "./cli-repl-helpers.js";
+import { PromptUI } from "./ui/prompt-ui.js";
 
 const nodeRequire = createRequire(import.meta.url);
 import type {
@@ -70,7 +79,7 @@ import {
 import { limitsFromConfig } from "./limits.js";
 import { parseModelRef, ROLES, type ResolvedModel } from "./model-runtime.js";
 import { createDecide } from "./orchestrator/decide.js";
-import { runWorker, type WorkerToolContext } from "./workers/tools.js";
+import { runWorker, toWorkerRunParams, type WorkerToolContext } from "./workers/tools.js";
 import { StreamRenderer, amber, violet } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
 import type { WorkerTelemetry } from "./telemetry/types.js";
@@ -111,20 +120,24 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 	return async (state, decision, events) => {
 		switch (decision.operación) {
 			case "comunicar al desarrollador": {
-				const text = decision.comunicación ?? "";
+				// El bucle intercepta `comunicar al desarrollador` antes de invocar execute (plan §4 —
+				// invariante 9). El caso defensivo en execute sólo se ejecuta si un caller
+				// sobreescribe el loop o un test inyecta execute directamente.
+				const text = decision.comunicación?.pregunta ?? "(sin pregunta)";
 				return {
 					result: { kind: "comunicación", text, unidadId: null, passed: null } satisfies OperationResult,
 					telemetry: NO_TELEM,
 				};
 			}
 			case "terminar": {
-				const cond = decision.condición ?? "";
-				const inviable =
-					/sin (continuación|v([íi])a viable)|no hay (continuación|v([íi])a)|^inviable|irrecuperable/i.test(cond);
+				const cond = decision.condición;
+				const desenlace = cond?.desenlace ?? "completed";
+				const detalle = cond?.detalle ?? "terminación";
+				const inviable = desenlace === "failed";
 				return {
 					result: {
 						kind: "terminación",
-						text: inviable ? cond || "sin continuación viable" : "finalización declarada",
+						text: inviable ? detalle || "sin continuación viable" : "finalización declarada",
 						unidadId: null,
 						passed: inviable ? false : null,
 					} satisfies OperationResult,
@@ -135,7 +148,8 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 				const lastResult = state.results[state.results.length - 1];
 				const contexto = lastResult?.text ?? state.knownInfo.join("; ");
 				const objetivo = decision.motivo || "obtener información relevante para continuar la tarea";
-				const r = await runWorker("explorer", { objetivo, contexto }, wctx, signal, events);
+				const params = toWorkerRunParams("explorer", { objetivo, contexto });
+				const r = await runWorker("explorer", params, wctx, signal, events);
 				if (r.status === "failed") {
 					return {
 						result: { kind: "fallo", text: r.error, unidadId: null, passed: false } satisfies OperationResult,
@@ -145,46 +159,66 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 				return {
 					result: { kind: "info", text: r.text, unidadId: null, passed: null } satisfies OperationResult,
 					telemetry: r.telemetry,
+					report: r.report ?? null,
+					reportError: r.reportError ?? null,
 				};
 			}
 			case "ejecutar una unidad": {
-				const unitId = decision.unidad;
-				const unit = unitId ? state.units.find((u) => u.id === unitId) ?? null : null;
+				// El bucle ya resuelve UnitRef a un ID canónico, marca la unidad `En curso` y la
+				// checkpointea. Aquí recuperamos la unidad para construir el contrato completo:
+				//   - `unitRef.existente`: por id (back-compat con tests/extension que no corren el loop).
+				//   - `unitRef.planificada` o null: buscamos la unidad que el loop acaba de marcar
+				//     `En curso` (una sola a la vez; invariante del bucle).
+				const unitRef = decision.unidad;
+				let unit = null;
+				if (unitRef?.tipo === "existente") {
+					unit = state.units.find((u) => u.id === unitRef.id) ?? null;
+				} else {
+					unit = state.units.find((u) => u.estado === "En curso") ?? null;
+				}
 				if (!unit) {
 					return {
 						result: {
 							kind: "fallo",
-							text: `unidad no encontrada en el estado: ${unitId ?? "(sin unidad)"}`,
-							unidadId: unitId,
+							text: `unidad no encontrada en el estado (ref=${JSON.stringify(unitRef)})`,
+							unidadId: null,
 							passed: false,
 						} satisfies OperationResult,
 						telemetry: NO_TELEM,
 					};
 				}
-				const cap = (decision.capacidad ?? unit.capacidad) as "explorer" | "implementer" | "verifier";
-				if (cap !== "explorer" && cap !== "implementer" && cap !== "verifier") {
-					return {
-						result: { kind: "fallo", text: `capacidad desconocida: ${cap}`, unidadId: unit.id, passed: false } satisfies OperationResult,
-						telemetry: NO_TELEM,
-					};
-				}
-				const r = await runWorker(
-					cap,
-					{ objetivo: unit.objetivo, contexto: state.knownInfo.join("; "), unidad: unit.id },
-					wctx,
-					signal,
-					events,
-				);
+				const cap = unit.capacidad;
+				// Evidencia acotada (plan §3 — invariante 15): no se duplica results/knownInfo;
+				// el worker recibe la infoNecesaria de la unidad y la solicitud original (Task).
+				const evidence = unit.infoNecesaria ?? "";
+				const params = toWorkerRunParams(cap, { objetivo: unit.objetivo, contexto: evidence, unidad: unit.id }, decision.feedbackCorrectivo ?? null);
+				// Reemplazar el Task generado por toWorkerRunParams con el canónico del estado.
+				params.task = state.task;
+				const r = await runWorker(cap, params, wctx, signal, events);
 				if (r.status === "failed") {
 					return {
 						result: { kind: "fallo", text: r.error, unidadId: unit.id, passed: false } satisfies OperationResult,
 						telemetry: r.telemetry,
+						report: r.report ?? null,
+						reportError: r.reportError ?? null,
 					};
 				}
-				const passed = cap === "verifier" ? r.verdict === "PASS" : true;
+				// Verificación: el reporte estructurado es la verdad (invariante 6). Si el implementer
+				// no emite reporte, NO se marca como passed=true automático (plan §3 worker contract).
+				let passed: boolean | null;
+				if (cap === "verifier") {
+					// Verifier legacy (VEREDICTO): compat. Si además hay reporte estructurado, prima.
+					passed = r.report ? r.report.status === "satisfied" : r.verdict === "PASS";
+				} else if (cap === "explorer") {
+					passed = null;
+				} else {
+					passed = r.report?.status === "satisfied" ? true : (r.report ? false : null);
+				}
 				return {
 					result: { kind: "unidad", text: r.text, unidadId: unit.id, passed } satisfies OperationResult,
 					telemetry: r.telemetry,
+					report: r.report ?? null,
+					reportError: r.reportError ?? null,
 				};
 			}
 		}
@@ -317,7 +351,26 @@ export function pad(s: string, width: number = BANNER_BAR.length + 2): string {
 	return s + " ".repeat(spaces);
 }
 
-function banner(out: NodeJS.WritableStream = output): void {
+/**
+ * Banner compacto. Antes era un recuadro box-drawing pesado (`─┌│┐└` con dos líneas de
+ * relleno). Ahora es una línea con provider/modelo + otra con la tecla de ayuda —
+ * coherente con la regla "el stream manda, el chrome es mínimo" del spec.
+ */
+function banner(out: NodeJS.WritableStream = output, ctx?: { runtime: ModelRuntime; model: ResolvedModel | undefined }, store?: LocalStore): void {
+	const provider = ctx?.model?.provider ?? "—";
+	const model = ctx?.model?.id ?? "(no autenticado)";
+	out.write(`AIES · ${provider} / ${model}\n`);
+	const resume = store?.loadState();
+	if (resume && (resume.taskState === "En curso" || resume.taskState === "Recibida")) {
+		const obj = resume.task.objetivo.length > 60 ? `${resume.task.objetivo.slice(0, 57)}…` : resume.task.objetivo;
+		out.write(`reanudar: ${obj}  ·  /resume continúa\n`);
+	} else {
+		out.write("Escribe una tarea  ·  / para comandos\n");
+	}
+}
+
+/** Wrapper retrocompatible — usado en tests históricos (`cli.test.ts`). */
+export function bannerCompat(out: NodeJS.WritableStream = output): void {
 	const bar = BANNER_BAR;
 	const top = `┌${bar}┐`;
 	const bot = `└${bar}┘`;
@@ -328,21 +381,19 @@ function banner(out: NodeJS.WritableStream = output): void {
 
 const HELP_TEXT = [
 	"Comandos disponibles:",
-	"  /help                       — muestra esta ayuda",
+	formatHelpCommands(),
+	"",
+	"Detalles:",
 	"  /resume                     — reanuda la tarea En curso persistida",
 	"  /resume \"<guía>\"            — reanuda inyectando la guía como knownInfo",
 	"  /state                      — vista humana del RuntimeState actual",
 	"  /state --json               — JSON resumido del RuntimeState actual",
 	"  /status                     — estado + telemetría agregada del historial (log.jsonl)",
 	"  /log [n|all]                — tail de log.jsonl (últimas n vueltas; por defecto 20)",
-	"  /auth                       — estado de autenticación por provider",
-	"  /login [proveedor]          — guarda credencial (api_key u oauth) en ~/.pi/agent/auth.json",
-	"  /logout [proveedor]         — borra la credencial persistida",
-	"  /models [@prov] [q]         — lista modelos; @prov cambia de provider, el resto filtra por texto",
+	"  /login                      — abre el selector de proveedor y método",
+	"  /logout                     — abre el selector de proveedor o Todos",
+	"  /model                      — lista modelos de providers autenticados",
 	"  /model <id>                 — usa ese modelo para el resto de esta sesión (no persiste)",
-	"  /pick [<rol> [<ref>]]       — muestra/asigna el modelo por rol (escribe aies.config.json)",
-	"  /clear                      — limpia la pantalla",
-	"  /exit | /quit               — cierra la sesión",
 	"",
 	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
 	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
@@ -394,10 +445,12 @@ export function oneshotOverwriteNotice(state: RuntimeState | null): string | nul
 	return `aies: hay una tarea previa "${state.taskState}" (objetivo: "${state.task.objetivo}"). Esta oneshot la sobreescribirá.`;
 }
 
-export function schemaInvalidNotice(reason: "corrupt" | "schema"): string {
+export function schemaInvalidNotice(reason: "corrupt" | "schema" | "unsupported_version"): string {
 	return reason === "schema"
 		? "aies: state.json con schema antiguo o incompleto; se ignora (no reanudable)."
-		: "aies: state.json corrupto; se ignora (sesión limpia).";
+		: reason === "unsupported_version"
+			? "aies: state.json con versión no soportada; se ignora (no reanudable)."
+			: "aies: state.json corrupto; se ignora (sesión limpia).";
 }
 
 export function replStartupMessages(store: LocalStore): string[] {
@@ -486,7 +539,8 @@ const CLI_HELP_TEXT = [
 
 function clearScreen(): void {
 	// ANSI: ESC[2J (borrar pantalla) + ESC[H (cursor arriba-izquierda).
-	output.write("\x1b[2J\x1b[H");
+	if (input.isTTY && output.isTTY) output.write("\x1b[2J\x1b[H");
+	else output.write("\n");
 }
 
 /**
@@ -529,6 +583,7 @@ export function readPromptLine(
 	rl: readline.Interface,
 	inputStream: NodeJS.ReadableStream,
 	prompt: string,
+	options: { resolveOnLine?: boolean } = {},
 ): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
 		const lines: string[] = [];
@@ -563,7 +618,7 @@ export function readPromptLine(
 		// Acumulamos cada line event. Sólo resolvemos cuando Enter fue pulsado.
 		const onLine = (line: string) => {
 			lines.push(line);
-			if (enterPressed) {
+			if (enterPressed || options.resolveOnLine) {
 				settle(() => {
 					trimTrailingEmpty();
 					resolve(lines.join("\n"));
@@ -586,6 +641,52 @@ export function readPromptLine(
 	});
 }
 
+/** Discovery live bajo el prompt, sin alternate screen ni estado persistido. */
+function setupSlashDiscovery(
+	rl: readline.Interface,
+	inputStream: NodeJS.ReadableStream,
+	out: NodeJS.WritableStream,
+	isIdle: () => boolean,
+): { dispose: () => void } {
+	let visibleLines = 0;
+	let enabled = true;
+	const clearSuggestions = () => {
+		if (visibleLines === 0) return;
+		out.write("\x1b7\x1b[1B\r");
+		for (let index = 0; index < visibleLines; index += 1) {
+			out.write("\x1b[2K");
+			if (index < visibleLines - 1) out.write("\x1b[1B\r");
+		}
+		out.write("\x1b8");
+		visibleLines = 0;
+	};
+	const render = () => {
+		if (!enabled || !isIdle()) return clearSuggestions();
+		const line = rl.line;
+		if (!/^\/[^\s]*$/.test(line) || parseSlashCommand(line)) return clearSuggestions();
+		const suggestions = filterSlashCommands(line);
+		clearSuggestions();
+		if (suggestions.length === 0) return;
+		const lines = suggestions.map((command) => `  /${command.name.padEnd(10)} ${command.description}`);
+		out.write("\x1b7\x1b[1B\r");
+		out.write(`${lines.join("\n")}\n`);
+		out.write("\x1b8");
+		visibleLines = lines.length;
+	};
+	const onKeypress = () => {
+		// readline actualiza `rl.line` justo después del evento keypress.
+		setImmediate(render);
+	};
+	inputStream.on("keypress", onKeypress);
+	return {
+		dispose: () => {
+			enabled = false;
+			inputStream.removeListener("keypress", onKeypress);
+			clearSuggestions();
+		},
+	};
+}
+
 /** Wrapper local de defaultConfigPath (re-export para los comandos REPL/oneshot). */
 function defaultConfigPathLocal(): string {
 	return defaultConfigPath();
@@ -597,6 +698,28 @@ async function runPickOneshot(rest: string[]): Promise<number> {
 	const configPath = defaultConfigPathLocal();
 	await runPickCommand(null, runtime, cfg, configPath, rest.join(" ").trim());
 	return 0;
+}
+
+export function canonicalLoginProvider(providerId: string): string {
+	const normalized = providerId.toLowerCase();
+	if (normalized === "openai" || normalized === "chatgpt") return "openai-codex";
+	if (normalized === "qwen" || normalized === "alibaba" || normalized === "modelstudio" || normalized === "qwen-token-plan") return "qwen-token-plan-cn";
+	return normalized;
+}
+
+function formatAuthenticatedModels(runtime: ModelRuntime, activeModel: ResolvedModel | undefined): string {
+	const lines = [`aies: provider=${activeModel?.provider ?? "(ninguno)"} modelo=${activeModel?.id ?? "(ninguno)"} — ${activeModel ? "ok" : "sin modelo autenticado"}.`, "", "Modelos utilizables:"];
+	let count = 0;
+	for (const provider of runtime.getProviders()) {
+		if (!runtime.hasConfiguredAuth(provider.id)) continue;
+		const models = runtime.getModels(provider.id);
+		if (models.length === 0) continue;
+		lines.push(`  ${provider.name ?? provider.id}`);
+		for (const model of models) lines.push(`    ${model.id}${model.id === activeModel?.id && model.provider === activeModel?.provider ? "  ✓ activo" : ""}`);
+		count += models.length;
+	}
+	if (count === 0) lines.push("  (ningún provider autenticado; ejecuta /login)");
+	return lines.join("\n");
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -702,8 +825,10 @@ async function tryRunAuthSubcommand(argv: string[]): Promise<boolean> {
 			process.exit(2);
 		}
 		const runtime = await getModelRuntime();
-		const result = await loginProvider(runtime, providerId, output);
-		output.write(result.ok ? `✓ ${result.providerId}: autenticado (persiste en ~/.pi/agent/auth.json).\n` : `✗ ${result.providerId}: ${result.error}\n`);
+		const target = canonicalLoginProvider(providerId);
+		const option = supportedLoginProviders(runtime).find((candidate) => candidate.providerId === target);
+		const result = await loginProvider(runtime, target, output, undefined, option?.authType ?? "api_key", option?.keyPrefix);
+		output.write(result.ok ? `✓ ${result.providerId}: autenticado (credential store de pi).\n` : `✗ ${result.providerId}: ${result.error}\n`);
 		process.exit(result.ok ? 0 : 1);
 	}
 
@@ -714,7 +839,7 @@ async function tryRunAuthSubcommand(argv: string[]): Promise<boolean> {
 			process.exit(2);
 		}
 		const runtime = await getModelRuntime();
-		const result = await logoutProvider(runtime, providerId);
+		const result = await logoutProvider(runtime, canonicalLoginProvider(providerId));
 		output.write(result.ok ? `✓ ${result.providerId}: sesión cerrada.\n` : `✗ ${result.providerId}: ${result.error}\n`);
 		process.exit(result.ok ? 0 : 1);
 	}
@@ -914,7 +1039,8 @@ async function runRepl(ctx: {
 	cfg: Config;
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
-	banner();
+	const prompt = new PromptUI({ streams: { input, output }, prompt: "❯ " });
+	banner(output, { runtime: ctx.runtime, model: ctx.model }, store);
 	for (const msg of replStartupMessages(store)) output.write(`${msg}\n`);
 	let currentState: RuntimeState | null = store.loadState();
 	// /model la cambia para el resto de esta sesión — no toca aies.config.json, así que no hay
@@ -922,12 +1048,8 @@ async function runRepl(ctx: {
 	let activeModel = ctx.model;
 	const updateStatus = await waitForUpdateNotice(ctx.updatePromise);
 	const updateNotice = formatUpdateNotice(updateStatus ?? { kind: "skipped" });
-	if (updateNotice) output.write(`\n${updateNotice}\n`);
+	if (updateNotice) prompt.info(`\n${updateNotice}`);
 
-	const rl = readline.createInterface({ input, output, terminal: true });
-	// ADR-012 — explícito pese a que `terminal:true` ya emite keypress; si el proceso se ejecuta
-	// sin TTY (pipe), `input.isTTY` es false y los keypress no se entregarán — fallback documentado.
-	emitKeypressEvents(input);
 	let runInProgress = false;
 	let activeAbort: AbortController | null = null;
 	// T2.1 — cola de intervención acumulada mientras corre un run.
@@ -950,7 +1072,7 @@ async function runRepl(ctx: {
 		} else if (!runInProgress) {
 			// Sin run en curso: SIGINT cierra el REPL directamente.
 			exitAfterCycle = true;
-			rl.close();
+			prompt.info("(Ctrl+C — envía otra para salir)");
 		}
 	};
 	process.on("SIGINT", onSigint);
@@ -958,108 +1080,102 @@ async function runRepl(ctx: {
 	// Cierre limpio del REPL con /exit o EOF.
 	const close = () => {
 		process.off("SIGINT", onSigint);
-		rl.close();
 	};
 
 	try {
 		while (true) {
-			let line: string;
+			let raw: string;
 			try {
-				// readPromptLine preserva saltos de línea de un paste y sólo resuelve
-				// cuando el usuario pulsa Enter explícitamente. `rl.question()`
-				// resolvería en el primer \n del input (incluyendo \n embebidos en
-				// un paste), así que sin el wrapper el orquestador arrancaba sobre
-				// un fragmento y el resto del paste acababa como intervención.
-				line = await readPromptLine(rl, input, "❯ ");
+				raw = await prompt.readLine();
 			} catch {
-				// readline aborted (Ctrl+D / cierre del stream por SIGINT).
+				// EOF (Ctrl+D) o stream cerrado.
 				break;
 			}
-			const input0 = line.trim();
+			const input0 = raw.trim();
 			if (!input0) continue;
 			// Tras cada comando atendido: el próximo SIGINT empieza una ráfaga nueva.
 			sigintCount = 0;
 
+			// ── FASE 9: ningún control command acaba persistido como Task. ──
+			if (bareExitTokens().includes(input0)) break;
+			if (input0 === "/exit" || input0 === "/quit") break;
+
+			const parsed = parseSlashCommand(input0);
+
+			// Comando slash vacío o parcialmente coincidiente: command palette interactivo.
+			if (input0 === "/" || (input0.startsWith("/") && !parsed)) {
+				const dispatched = await runSlashPaletteDispatch({
+					ctx,
+					prompt,
+					store,
+					input0,
+					setActiveModel: (m) => {
+						activeModel = m;
+					},
+					onExit: () => {
+						exitAfterCycle = true;
+					},
+				});
+				if (dispatched.kind === "exit") break;
+				continue;
+			}
+
 			if (input0 === "/help") {
-				output.write(`${helpText()}\n`);
+				prompt.info(helpText());
 				continue;
 			}
 			if (input0 === "/clear") {
 				clearScreen();
 				continue;
 			}
-			if (input0 === "/exit" || input0 === "/quit") {
-				break;
-			}
 			if (input0 === "/state" || input0.startsWith("/state ")) {
 				const snapshot = currentState ?? store.loadState();
-				output.write(formatStateOutput(input0, snapshot));
+				prompt.info(formatStateOutput(input0, snapshot));
 				continue;
 			}
 			if (input0 === "/status") {
 				const snapshot = currentState ?? store.loadState();
-				output.write(`${formatStatus(snapshot, store.readLogIndexed())}\n`);
+				prompt.info(`${formatAuthenticatedModels(ctx.runtime, activeModel)}\n\n${formatStatus(snapshot, store.readLogIndexed())}`);
 				continue;
 			}
 			if (input0 === "/log" || input0.startsWith("/log ")) {
 				const arg = input0.slice("/log".length).trim();
-				output.write(`${formatLogTail(store.readLogIndexed(), parseLogArg(arg))}\n`);
+				prompt.info(formatLogTail(store.readLogIndexed(), parseLogArg(arg)));
 				continue;
 			}
 			if (input0 === "/auth") {
-				for (const line of formatAuthStatusLines(ctx.runtime)) output.write(`${line}\n`);
+				for (const line of formatAuthStatusLines(ctx.runtime)) prompt.info(line);
 				continue;
 			}
 			if (input0 === "/login" || input0.startsWith("/login ")) {
-				const providerId = input0.slice("/login".length).trim() || ctx.cfg.provider;
-				const result = await loginProvider(ctx.runtime, providerId, output);
-				output.write(
-					result.ok
-						? `✓ ${result.providerId}: autenticado (persiste en ~/.pi/agent/auth.json).\n`
-						: `✗ ${result.providerId}: ${result.error}\n`,
-				);
+				const r = await runLoginFlow(ctx, prompt, input0);
+				if (r?.kind === "activated") activeModel = r.activeModel ?? activeModel;
 				continue;
 			}
 			if (input0 === "/logout" || input0.startsWith("/logout ")) {
-				const providerId = input0.slice("/logout".length).trim() || ctx.cfg.provider;
-				const result = await logoutProvider(ctx.runtime, providerId);
-				output.write(result.ok ? `✓ ${result.providerId}: sesión cerrada.\n` : `✗ ${result.providerId}: ${result.error}\n`);
-				continue;
-			}
-			if (input0 === "/models" || input0.startsWith("/models ")) {
-				const arg = input0.slice("/models".length).trim();
-				const { providerId, query } = parseModelsQuery(arg, ctx.cfg.provider);
-				const all = resolveModelsForListing(ctx.runtime, providerId);
-				const filtered = searchModels(all, query);
-				output.write(`Modelos — ${providerId}${query ? ` · "${query}"` : ""} (${filtered.length}/${all.length})\n`);
-				output.write(`${formatModelsTable(filtered)}\n`);
+				const r = await runLogoutFlow(ctx, prompt, input0);
+				if (r?.kind === "deactivated") activeModel = undefined;
 				continue;
 			}
 			if (input0 === "/model" || input0.startsWith("/model ")) {
-				const modelId = input0.slice("/model".length).trim();
-				if (!modelId) {
-					output.write(`aies: modelo activo = ${activeModel?.id ?? "(por defecto del host)"}. Uso: /model <id>\n`);
-					continue;
-				}
-				const found = ctx.runtime.getModel(ctx.cfg.provider, modelId);
-				if (!found) {
-					output.write(
-						`aies: modelo "${modelId}" no encontrado para provider "${ctx.cfg.provider}". Usa /models para ver los disponibles.\n`,
-					);
-					continue;
-				}
-				activeModel = found;
-				output.write(`✓ modelo activo para esta sesión: ${found.id} (no se guarda — edita aies.config.json para hacerlo permanente).\n`);
+				const r = await runModelFlow(ctx, prompt, input0, activeModel);
+				if (r?.kind === "selected") activeModel = r.model;
+				continue;
+			}
+			if (input0 === "/models" || input0.startsWith("/models ")) {
+				// Fase 8 — /models es alias de /model (selector interactivo con filtro).
+				const r = await runModelFlow(ctx, prompt, "/model", activeModel);
+				if (r?.kind === "selected") activeModel = r.model;
 				continue;
 			}
 			if (input0 === "/resume" || input0.startsWith("/resume ")) {
 				const guide = parseResumeGuide(input0);
 				const resolved = resolveResume(currentState ?? store.loadState());
 				if (!resolved.ok) {
-					output.write(`${resolved.message}\n`);
+					prompt.info(resolved.message);
 					continue;
 				}
-				const result = await runTrackedReplCycle(output, rl, interventionQueue, input, {
+				const result = await runTrackedReplCycle(prompt, interventionQueue, {
 					mark: (running, abort) => {
 						runInProgress = running;
 						activeAbort = abort;
@@ -1083,14 +1199,19 @@ async function runRepl(ctx: {
 			if (input0 === "/pick" || input0.startsWith("/pick ")) {
 				const cfg = loadConfig();
 				const configPath = defaultConfigPathLocal();
-				await runPickCommand(rl, ctx.runtime, cfg, configPath, input0.slice("/pick".length).trim());
+				const pickRl = prompt.createReadline();
+				try {
+					await runPickCommand(pickRl, ctx.runtime, cfg, configPath, input0.slice("/pick".length).trim());
+				} finally {
+					pickRl.close();
+				}
 				continue;
 			}
 
 			// Nueva tarea sobre el proyecto (manteniendo persistencia).
 			const task = taskFromArg(input0);
 			const before = currentState;
-			const result = await runTrackedReplCycle(output, rl, interventionQueue, input, {
+			const result = await runTrackedReplCycle(prompt, interventionQueue, {
 				mark: (running, abort) => {
 					runInProgress = running;
 					activeAbort = abort;
@@ -1134,10 +1255,8 @@ function drainInterventionQueue(queue: string[]): InterventionAdjustment | null 
 
 /** Abort/error handling compartido entre tarea nueva y `/resume` (sin acoplar a readline). */
 async function runTrackedReplCycle(
-	out: NodeJS.WritableStream,
-	rl: readline.Interface,
+	prompt: PromptUI,
 	interventionQueue: string[],
-	inputStream: NodeJS.ReadableStream,
 	opts: {
 		mark: (running: boolean, abort: AbortController | null) => void;
 		run: (signal: AbortSignal) => Promise<RunCycleResult>;
@@ -1145,8 +1264,10 @@ async function runTrackedReplCycle(
 ): Promise<RunCycleResult | undefined> {
 	const abort = new AbortController();
 	opts.mark(true, abort);
-	// T2.1 — el listener SOLO vive durante el run; se retira en `finally` para no filtrar
-	// entradas al próximo `rl.question()`.
+	// T2.1 — el readline efímero sólo vive durante el run; se cierra en `finally` para no
+	// filtrar entradas al próximo `prompt.readLine()` del REPL.
+	const rl = prompt.createReadline();
+	const out = process.stdout;
 	const onInterventionLine = (raw: string) => {
 		const text = raw.trim();
 		if (!text) return;
@@ -1158,15 +1279,17 @@ async function runTrackedReplCycle(
 		out.write(`${violet("⚑ tú (intervención):")} ${text} — se aplicará en la siguiente decisión.\n`);
 	};
 	rl.on("line", onInterventionLine);
-	// ADR-012 — ESC durante el run = parar la tarea y volver al prompt (sin cerrar el REPL).
-	// Se instala sobre `inputStream` (no sobre `rl`) porque las teclas llegan antes de que readline
-	// las consuma para la edición de línea — los listeners son aditivos.
+	// ADR-012 — ESC durante el run = parar la tarea y volver al prompt.
+	// Sólo aplica en TTY (en pipe no llegan keypress).
 	const onKeypress = (_ch: string | undefined, key: Key | undefined) => {
-		if (key?.name === "escape") {
-			abort.abort(new Error("ESC"));
-		}
+		if (key?.name === "escape") abort.abort(new Error("ESC"));
 	};
-	inputStream.on("keypress", onKeypress);
+	let keypressTarget: NodeJS.ReadStream | null = null;
+	if (prompt.isTTY) {
+		keypressTarget = prompt.streams().input as NodeJS.ReadStream;
+		emitKeypressEvents(keypressTarget);
+		keypressTarget.on("keypress", onKeypress);
+	}
 	try {
 		out.write(`${pc.dim("(escribe para intervenir · ESC para parar · Ctrl+C para salir)")}\n`);
 		const result = await opts.run(abort.signal);
@@ -1185,7 +1308,8 @@ async function runTrackedReplCycle(
 		return undefined;
 	} finally {
 		rl.removeListener("line", onInterventionLine);
-		inputStream.removeListener("keypress", onKeypress);
+		if (keypressTarget) keypressTarget.removeListener("keypress", onKeypress);
+		rl.close();
 		opts.mark(false, null);
 	}
 }

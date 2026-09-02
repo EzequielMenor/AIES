@@ -1,17 +1,18 @@
 // src/cli-persistence.ts — store local en .aies/ (cwd-relative) para el CLI.
 //
-// Wrapper minimal sobre fs para state.json (snapshot) + log.jsonl (append-only).
-// ADR-008: el log es append-only; lineas corruptas se descartan en lectura. state.json
-// se escribe con rename atómico para evitar estados a medio escribir.
+// Plan §3 — invariante 3: toda mutación se checkpointa antes de tocar el proyecto. El store
+// expone `checkpoint(state, motivo)` que escribe state.json atómicamente; el bucle llama a este
+// checkpoint en `markUnitEnCurso` y tras cada ejecución de worker.
 //
-// Diferencia con FileStore (src/persistence/file_store.ts): éste vive en cwd/.aies/ (lo que
-// espera el prompt del CLI). FileStore vive en <agentDir>/aies/<hash(cwd)>/ y es lo que usa
-// la extensión Pi cuando AIES corre dentro de una sesión Pi.
+// Migración: snapshots v1 (sin `version`) se migran a v2 añadiendo `version`, `runStatus`,
+// `consecutiveNoProgress` y `humanWait` con defaults seguros. Snapshots incompatibles se
+// rechazan como `corrupt` (no se reanuda un estado a medias).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { serializeEntry, type LogEntry } from "./observability.js";
 import type { RuntimeState } from "./core/state.js";
+import { STATE_VERSION, LegacyStateV1Schema } from "./core/state-schema.js";
 
 export interface PersistPaths {
 	dir: string;
@@ -55,6 +56,26 @@ function isPersistedLogEntry(value: unknown): value is LogEntry {
 	return false;
 }
 
+/** Migración v1→v2. Acepta snapshots sin `version`/`runStatus`/`consecutiveNoProgress` y los
+ *  completa con defaults seguros. */
+function migrateV1ToV2(raw: unknown): RuntimeState | null {
+	const parsed = LegacyStateV1Schema.safeParse(raw);
+	if (!parsed.success) return null;
+	const v1 = parsed.data;
+	const taskState = v1.taskState === "Recibida" || v1.taskState === "En curso" || v1.taskState === "Completada" || v1.taskState === "Fallida" ? v1.taskState : "En curso";
+	const limits = v1.limits ?? { maxIterations: 12 };
+	return {
+		...v1,
+		version: STATE_VERSION,
+		taskState,
+		limits: { ...limits, maxConsecutiveNoProgress: 3 },
+		consecutiveParseFailures: v1.consecutiveParseFailures ?? 0,
+		consecutiveNoProgress: 0,
+		runStatus: { tipo: "ready" },
+		humanWait: null,
+	} as RuntimeState;
+}
+
 /** Campos mínimos para reanudar un snapshot de disco (schema antiguo → no reanudable). */
 export function hasResumableShape(value: unknown): value is RuntimeState {
 	if (value === null || typeof value !== "object") return false;
@@ -70,7 +91,7 @@ export function hasResumableShape(value: unknown): value is RuntimeState {
 export type LoadStateResult =
 	| { kind: "ok"; state: RuntimeState }
 	| { kind: "absent" }
-	| { kind: "invalid"; reason: "corrupt" | "schema" };
+	| { kind: "invalid"; reason: "corrupt" | "schema" | "unsupported_version" };
 
 export class LocalStore {
 	private readonly paths: PersistPaths;
@@ -84,16 +105,42 @@ export class LocalStore {
 		mkdirSync(this.paths.dir, { recursive: true });
 		writeAtomic(this.paths.stateFile, JSON.stringify(state, null, 2));
 	}
+	/** Plan §4 — paso 8: checkpoint atómico. Si lanza, el bucle aborta el turno. */
+	checkpoint(state: RuntimeState, _motivo: string): void {
+		this.saveState(state);
+	}
 	loadStateResult(): LoadStateResult {
 		if (!existsSync(this.paths.stateFile)) return { kind: "absent" };
+		let text: string;
 		try {
-			const text = readFileSync(this.paths.stateFile, "utf8");
-			const parsed: unknown = JSON.parse(text);
-			if (!hasResumableShape(parsed)) return { kind: "invalid", reason: "schema" };
-			return { kind: "ok", state: parsed };
+			text = readFileSync(this.paths.stateFile, "utf8");
 		} catch {
 			return { kind: "invalid", reason: "corrupt" };
 		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			return { kind: "invalid", reason: "corrupt" };
+		}
+		if (!hasResumableShape(parsed)) return { kind: "invalid", reason: "schema" };
+		// Snapshot v2 canónico (con `version`).
+		const record = parsed as unknown as Record<string, unknown>;
+		if (record.version === STATE_VERSION) {
+			return { kind: "ok", state: parsed as RuntimeState };
+		}
+		// Snapshot v1 (sin `version`): migración. Si falla, no se reanuda.
+		const migrated = migrateV1ToV2(parsed);
+		if (migrated) {
+			// Re-persistimos como v2 para que los siguientes arranques lean v2 directo.
+			try {
+				this.saveState(migrated);
+			} catch {
+				/* best-effort; el caller aún recibe el estado migrado en memoria */
+			}
+			return { kind: "ok", state: migrated };
+		}
+		return { kind: "invalid", reason: "unsupported_version" };
 	}
 	loadState(): RuntimeState | null {
 		const loaded = this.loadStateResult();
@@ -104,11 +151,6 @@ export class LocalStore {
 		appendFileSync(this.paths.logFile, serializeEntry(entry) + "\n", "utf8");
 	}
 
-	/**
-	 * Lee el log devolviendo cada entrada con su nº de línea física 1-based en el fichero
-	 * (incluidos huecos de líneas corruptas/vacías que se descartan: ADR-008 §5). Permite
-	 * a `/status` citar rangos `log#X–Y` que no se desplazan por corrupción parcial.
-	 */
 	readLogIndexed(): Array<{ line: number; entry: LogEntry }> {
 		if (!existsSync(this.paths.logFile)) return [];
 		const fd = openSync(this.paths.logFile, "r");
@@ -140,7 +182,6 @@ export class LocalStore {
 		}
 	}
 
-	/** Wrapper sin offsets, para consumidores que sólo necesitan las entradas. */
 	readLog(): LogEntry[] {
 		return this.readLogIndexed().map((x) => x.entry);
 	}

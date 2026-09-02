@@ -132,6 +132,8 @@ export function describeOperación(op: DecisionLogEntry["operación"]): string {
 			return "comunicar";
 		case "terminar":
 			return "terminar";
+		default:
+			return String(op);
 	}
 }
 
@@ -153,6 +155,12 @@ export function describeResultKind(kind: ResultLogEntry["kind"]): string {
 			return "parse_error";
 		case "intervención":
 			return "intervención";
+		case "human_response":
+			return "human_response";
+		case "no_progress":
+			return "no_progress";
+		default:
+			return String(kind);
 	}
 }
 

@@ -191,6 +191,16 @@ describe("readPromptLine — pulsar Enter resuelve UNA vez con el contenido comp
 	});
 });
 
+describe("readPromptLine — non-TTY es determinista", () => {
+	it("resuelve una línea de pipe con LF, sin exigir CR de terminal", async () => {
+		const h = makeHarness();
+		const promise = readPromptLine(h.rl, h.input, "❯ ", { resolveOnLine: true });
+		h.input.write("/\n");
+		assert.equal(await settle(promise, 500), "/");
+		h.rl.close();
+	});
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 6. Fragmentos del mensaje NO aparecen como `line` events durante el run.
 // ──────────────────────────────────────────────────────────────────────────────
