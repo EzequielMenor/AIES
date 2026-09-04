@@ -74,7 +74,9 @@ The implementation lives in `runtime/src/core/loop.ts` (`runLoop`). Its invarian
 - **`comunicar al desarrollador` is blocking** — it sets `runStatus = waiting_for_user` with the `CommunicationRequest` (pregunta/razón/infoFaltante) and does NOT invoke `execute`. The loop only resumes when a new human entry arrives (typically via `/resume` with a guide); it is never used to delegate a fixable error to the user (`ADR-013` §4).
 - **No-progress counter** — `consecutiveNoProgress` tracks turns without real progress (new evidence, unit/strategy change, new cause, criteria reduction). A repeated report or finding does not reset the counter; it is bounded by `limits.maxConsecutiveNoProgress` and produces a controlled termination rather than silent continuation (`ADR-013` §7).
 
-The decision JSON shape (the orchestrator's only output) is locked down by a Zod schema in `runtime/src/orchestrator/parse.ts`. Strict mode (`strict()` on every schema) rejects extra keys — this is the trust boundary (C3): an LLM writes to the loop only through validated JSON.
+The decision JSON shape (the orchestrator's only output) is locked down by a Zod schema in `runtime/src/orchestrator/parse.ts`. Strict mode (`strict()` on every schema) rejects extra keys — this is the trust boundary (C3): an LLM writes to the loop only through validated JSON. The `comunicación` and `condición` blocks are `nullable()` as well as `optional()` (`runtime/src/core/state-schema.ts`): modelos fieles al contrato del prompt — que pide las claves SIEMPRE con `null` en las variantes que no las usan — antes fallaban el parseo en cada turno. Per-variant validity sigue garantizada por `semanticCheck` en `parse.ts`.
+
+`WorkerInfo.model` (y el campo `modelo` en `log.jsonl`) llevan la etiqueta `provider/model-id` real del rol que ejecutó: la resolución corre por `resolveWorkerModel` (un `resolveRoleModels` por capability) en `runtime/src/core/loop.ts`; ausente ⇒ `"unknown"` (comportamiento previo, retro-compatible con tests).
 
 ## 4. Capabilities vs. agents
 
@@ -109,6 +111,8 @@ Resolution: **verification is its own capability**, invoked when the task justif
 
 In v2 (per `ADR-013` §5) the implementer and verifier both end their turn with a single JSON `WorkerReport` (`status`, `summary`, `criteria`, `unmetCriteria`) parsed tolerantly by `runtime/src/workers/tools.ts::parseWorkerReport`. A missing or invalid report is **never** inferred as success — the unit stays `unsatisfied` and a contract error is surfaced; the verifier's legacy `VEREDICTO: PASS|FAIL` line is still accepted for back-compat. The orchestrator may also close a unit via deterministic checks (grep, tests, typecheck, build, artifact read) without a verifier round.
 
+In v0.4 (`runtime/src/verification/engine.ts`) the deterministic surface is the **default** verification, not a fallback: the verifier LLM only runs after `runProjectChecks` on the project's own scripts (typecheck/tests/lint) returns either `allPassed=true` or `empty=true`. The implementer is followed by an automatic, bounded repair loop (`verification.maxRepairAttempts`, default 3) — each failed check feeds the exact failure output back as `feedbackCorrectivo`. Invariants: no success is ever invented, no fake flags are injected into runners (`CI=1` is the only environment addition), and the repair bound is the only place the loop gives up. See [runtime §5.3](runtime.md#53-deterministic-verification-pipeline-runtimesrcverificationenginets) for the engine contract and the wire-up.
+
 ## 6. Re-decomposition
 
 When a unit is too large, mis-specified, or stuck (signals listed in `Task-Model.md §7.2` and `ADR-006`): the orchestrator can emit `ajustePlan.tipo = "re-descomponer"` (or `cambiar de estrategia`) with a new set of `UnitDefinition`s and, in v2, an optional `reemplaza: string[]` listing existing unit IDs. `applyAjustePlan` moves those units to `Sustituida` (observable in the state/log but excluded from the active plan) and returns `{ state, createdUnitIds, substitutedIds }` so the orchestrator can refer to the new units by planned index in the same turn (`ADR-013` §3, invariantes 8/13). Partial accepted results are preserved (`P-13`, `RNF-10`).
@@ -137,6 +141,8 @@ The repertoire when a limit is hit (ADR-005) is: *pedir intervención* (default)
 | Verifier as capability | `ADR-002`, `ADR-013` §5 | `runtime/src/workers/prompts.ts::VERIFIER_PROMPT`, `workers/tools.ts::parseVerdict` + `parseWorkerReport` |
 | Limits policy | `ADR-005`, `ADR-013` §7 | `runtime/src/limits.ts` (`maxConsecutiveNoProgress`) |
 | Re-descomposition | `ADR-006`, `ADR-013` §3 | `runtime/src/core/state.ts::applyAjustePlan` (soporta `reemplaza`, devuelve `substitutedIds`) |
+| Verification policy | `ADR-002`, `ADR-013` §5 | `runtime/src/config.ts::VerificationPolicy` + `verificationFromConfig`, `runtime/src/verification/engine.ts` (`discoverChecks`, `runProjectChecks`), `runtime/src/cli.ts::buildExecute` (verifier-deterministic-first + implementer repair loop) |
+| Model-per-role resolution | `ADR-014` | `runtime/src/model-runtime.ts::resolveRoleModels` (estricto, `RoleModelFailure` accionable), `runtime/src/cli.ts::resolveModels` |
 | Interactive auth & commands | `ADR-014` | `runtime/src/commands.ts` (registry), `runtime/src/ui/prompt-ui.ts`, `runtime/src/auth.ts` |
 | Telemetry types | ADR-009 / RNF-07/17 | `runtime/src/telemetry/types.ts` |
 

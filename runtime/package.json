@@ -1,51 +1,51 @@
 {
-  "name": "@aies/core",
-  "version": "0.3.0",
-  "private": true,
-  "description": "AIES standalone runtime: bucle de orquestación + workers efímeros sobre pi-coding-agent.",
-  "type": "module",
-  "main": "dist/cli.js",
-  "bin": {
-    "aies": "./dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "aies.config.json",
-    "README.md"
-  ],
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "scripts": {
-    "build": "tsc",
-    "build:tests": "tsc -p tsconfig.test.json",
-    "typecheck": "tsc --noEmit; tsc -p tsconfig.test.json --noEmit",
-    "start": "tsx src/cli.ts",
-    "test:loop": "tsc -p tsconfig.test.json && node dist-test/tests/loop.test.js",
-    "test:unitid": "tsc -p tsconfig.test.json && node dist-test/tests/unitid.test.js",
-    "test:cost": "tsc -p tsconfig.test.json && node dist-test/tests/cost.test.js",
-    "test:parse": "tsc -p tsconfig.test.json && node dist-test/tests/parse.test.js",
+	"name": "@aies/core",
+	"version": "0.4.0",
+	"private": true,
+	"description": "AIES standalone runtime: bucle de orquestación + workers efímeros sobre pi-coding-agent.",
+	"type": "module",
+	"main": "dist/cli.js",
+	"bin": {
+		"aies": "./dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"aies.config.json",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"build": "tsc",
+		"build:tests": "tsc -p tsconfig.test.json",
+		"typecheck": "tsc --noEmit; tsc -p tsconfig.test.json --noEmit",
+		"start": "tsx src/cli.ts",
+		"test:loop": "tsc -p tsconfig.test.json && node dist-test/tests/loop.test.js",
+		"test:unitid": "tsc -p tsconfig.test.json && node dist-test/tests/unitid.test.js",
+		"test:cost": "tsc -p tsconfig.test.json && node dist-test/tests/cost.test.js",
+		"test:parse": "tsc -p tsconfig.test.json && node dist-test/tests/parse.test.js",
 		"test:e2e": "vitest run tests/smoke-e2e.test.ts tests/dogfooding.test.ts tests/verification.test.ts tests/recovery.test.ts",
-    "test:update": "vitest run tests/update.test.ts",
-    "test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts src/ui/prompt-ui.test.ts src/cli-status.test.ts src/cli-log.test.ts src/integrations/integrations.test.ts src/auth.test.ts src/commands.test.ts src/models-list.test.ts src/model-runtime.test.ts src/cli-models.test.ts src/cli-repl-helpers.test.ts src/cli-repl.test.ts src/workers/tools.test.ts",
-    "test:persist": "node dist/self-check/persistence.js",
-    "test:orch": "node dist/self-check/orchestrator.js",
-    "test:compaction": "node dist/self-check/compaction.js",
-    "test:workers": "node dist/self-check/workers.js",
-    "test": "pnpm test:parse && pnpm test:unitid && pnpm test:loop && pnpm test:cost && pnpm test:e2e && pnpm test:update && pnpm test:cli",
-    "research:metrics": "node dist/research/metrics.js",
-    "research:baseline": "node dist/research/baseline.js"
-  },
-  "dependencies": {
-    "@earendil-works/pi-coding-agent": "~0.84.2",
-    "picocolors": "^1.1.1",
-    "typebox": "1.3.7",
-    "zod": "^3"
-  },
-  "devDependencies": {
-    "@types/node": "^22",
-    "tsx": "^4.23.12",
-    "typescript": "^5",
-    "vitest": "^4.1.11"
-  }
+		"test:update": "vitest run tests/update.test.ts",
+		"test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts src/ui/prompt-ui.test.ts src/cli-status.test.ts src/cli-log.test.ts src/integrations/integrations.test.ts src/auth.test.ts src/commands.test.ts src/models-list.test.ts src/model-runtime.test.ts src/cli-models.test.ts src/cli-repl-helpers.test.ts src/cli-repl.test.ts src/workers/tools.test.ts",
+		"test:persist": "node dist/self-check/persistence.js",
+		"test:orch": "node dist/self-check/orchestrator.js",
+		"test:compaction": "node dist/self-check/compaction.js",
+		"test:workers": "node dist/self-check/workers.js",
+		"test": "pnpm test:parse && pnpm test:unitid && pnpm test:loop && pnpm test:cost && pnpm test:e2e && pnpm test:update && pnpm test:cli",
+		"research:metrics": "node dist/research/metrics.js",
+		"research:baseline": "node dist/research/baseline.js"
+	},
+	"dependencies": {
+		"@earendil-works/pi-coding-agent": "~0.84.2",
+		"picocolors": "^1.1.1",
+		"typebox": "1.3.7",
+		"zod": "^3"
+	},
+	"devDependencies": {
+		"@types/node": "^22",
+		"tsx": "^4.23.12",
+		"typescript": "^5",
+		"vitest": "^4.1.11"
+	}
 }
