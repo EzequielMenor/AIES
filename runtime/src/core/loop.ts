@@ -20,6 +20,7 @@ import type { WorkerTelemetry, TelemetryUsage } from "../telemetry/types.js";
 import {
 	type AjustePlanOutcome,
 	type CommunicationRequest,
+	type Capability,
 	type Decision,
 	type OperationResult,
 	type Outcomes,
@@ -83,6 +84,18 @@ function buildWorkerSink(handlers: AiesEventHandlers, unitId: string): WorkerEve
 	if (handlers.onVerificationResult) {
 		const cb = handlers.onVerificationResult;
 		sink.onVerificationResult = (verdict, output) => safeCallback(() => cb(unitId, verdict, output));
+	}
+	if (handlers.onDeterministicCheckStart) {
+		const cb = handlers.onDeterministicCheckStart;
+		sink.onDeterministicCheckStart = (name, command) => safeCallback(() => cb(unitId, name, command));
+	}
+	if (handlers.onDeterministicCheckResult) {
+		const cb = handlers.onDeterministicCheckResult;
+		sink.onDeterministicCheckResult = (name, command, passed, failure) => safeCallback(() => cb(unitId, name, command, passed, failure));
+	}
+	if (handlers.onRepairAttempt) {
+		const cb = handlers.onRepairAttempt;
+		sink.onRepairAttempt = (attempt, max) => safeCallback(() => cb(unitId, attempt, max));
 	}
 	return sink;
 }
@@ -440,7 +453,7 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 			raw: turn.raw,
 			telemetry: turn.telemetry,
 		});
-		emitLog(decisionEntry(state.iterations, turn.decision, false, turn.telemetry));
+		emitLog(decisionEntry(state.iterations, turn.decision, false, turn.telemetry, handlers.resolveWorkerModel?.("orchestrator") ?? null));
 		emit(handlers, "onDecideSuccess", () => handlers.onDecideSuccess?.(turn.decision));
 
 		// Comunicación bloqueante: persistir waiting_for_user y salir del loop sin execute
@@ -486,7 +499,7 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 			}
 			const workerInfo: WorkerInfo = {
 				role: workerUnit.capacidad,
-				model: "unknown",
+				model: handlers.resolveWorkerModel?.(workerUnit.capacidad) ?? "unknown",
 			};
 			emit(handlers, "onWorkerStart", () => handlers.onWorkerStart?.(workerUnit!, workerInfo));
 		}
@@ -529,7 +542,22 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 			telemetry: out.telemetry,
 			atribución: out.atribución ?? null,
 		});
-		emitLog(resultEntry(state.iterations, out.result, out.telemetry, null, out.atribución ?? null));
+		emitLog(
+			resultEntry(
+				state.iterations,
+				out.result,
+				out.telemetry,
+				null,
+				out.atribución ?? null,
+				// Atribución del modelo según el rol que realmente corrió: unidad canónica si la
+				// hubo; explorer en `obtener información`; null para comunicar/terminar (sin worker).
+				workerUnit
+					? handlers.resolveWorkerModel?.(workerUnit.capacidad) ?? null
+					: turn.decision.operación === "obtener información"
+						? handlers.resolveWorkerModel?.("explorer") ?? null
+						: null,
+			),
+		);
 
 		if (turn.decision.operación === "ejecutar una unidad" && workerUnit) {
 			workerReports.push({ unitId: workerUnit.id, report: report ?? normalizeReport(null, "reporte ausente", out.result.passed) });

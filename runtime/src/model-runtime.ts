@@ -69,3 +69,160 @@ export function findModelAcrossProviders(
 	}
 	return fallback;
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Resolución estricta de modelo por rol (MVP: model-per-role real).
+//
+// Reglas (autoridad superior al plan):
+//   - Un rol con elección EXPLÍCITA (models.<rol> en config, o AIES_MODEL) que no exista,
+//     no esté en el catálogo o carezca de autenticación → ERROR ACCIONABLE. Nunca fallback
+//     silencioso.
+//   - Los defaults sólo se usan cuando el rol NO tiene elección explícita:
+//     política de default = modelo del orchestrator (ref → resolución, no instancia) y,
+//     si el orchestrator tampoco tiene ref, undefined (default del runtime de pi).
+// ──────────────────────────────────────────────────────────────────────────────
+
+export type RoleModels = Record<Role, ResolvedModel | undefined>;
+
+export type RoleModelFailureReason = "invalid_ref" | "unknown_provider" | "model_not_found" | "no_auth";
+
+export interface RoleModelFailure {
+	role: Role;
+	ref: string;
+	provider: string;
+	modelId: string;
+	reason: RoleModelFailureReason;
+	/** Mensaje accionable: indica rol, provider y modelo + qué hacer. */
+	message: string;
+}
+
+export interface RoleModelResolution {
+	models: RoleModels;
+	failures: RoleModelFailure[];
+	/** Ref canónica usada por rol (para banner//status): la explícita o la heredada del default. */
+	refs: Record<Role, string | undefined>;
+}
+
+export interface RoleResolutionConfig {
+	provider: string;
+	models: Partial<Record<Role, string>>;
+}
+
+interface SingleResolution {
+	model?: ResolvedModel;
+	failure?: RoleModelFailure;
+}
+
+function resolveOne(
+	role: Role,
+	ref: string,
+	runtime: AiesModelRuntimeLike,
+	defaultProvider: string,
+	envHint?: (provider: string) => string | undefined,
+): SingleResolution {
+	let parsed: ModelRef;
+	try {
+		parsed = parseModelRef(ref, defaultProvider);
+	} catch (e) {
+		return {
+			failure: {
+				role,
+				ref,
+				provider: defaultProvider,
+				modelId: ref,
+				reason: "invalid_ref",
+				message: `rol "${role}": referencia de modelo inválida "${ref}" — usa "provider/model-id" (${e instanceof Error ? e.message : String(e)}).`,
+			},
+		};
+	}
+	const knownProvider = runtime.getProviders().some((p) => p.id === parsed.provider);
+	if (!knownProvider) {
+		return {
+			failure: {
+				role,
+				ref,
+				provider: parsed.provider,
+				modelId: parsed.modelId,
+				reason: "unknown_provider",
+				message: `rol "${role}" usa "${ref}": provider "${parsed.provider}" no existe en este runtime. Comprueba providers con "aies auth" y modelos con "/models".`,
+			},
+		};
+	}
+	if (!runtime.hasConfiguredAuth(parsed.provider)) {
+		const env = envHint?.(parsed.provider);
+		return {
+			failure: {
+				role,
+				ref,
+				provider: parsed.provider,
+				modelId: parsed.modelId,
+				reason: "no_auth",
+				message: `rol "${role}" usa "${ref}": el provider "${parsed.provider}" no está autenticado. Ejecuta "aies login ${parsed.provider}"${env ? ` o exporta ${env}` : ""}.`,
+			},
+		};
+	}
+	const model = runtime.getModel(parsed.provider, parsed.modelId);
+	if (!model) {
+		return {
+			failure: {
+				role,
+				ref,
+				provider: parsed.provider,
+				modelId: parsed.modelId,
+				reason: "model_not_found",
+				message: `rol "${role}" usa "${ref}": el modelo "${parsed.modelId}" no existe en el catálogo de "${parsed.provider}". Lista disponibles con "/models @${parsed.provider}" y reasigna con "/model ${role} <provider/model-id>".`,
+			},
+		};
+	}
+	return { model };
+}
+
+/**
+ * Resuelve los cuatro roles contra el catálogo real del runtime. NO lanza: devuelve fallos
+ * acumulados para que el CLI los muestre todos a la vez y salga con un error accionable.
+ *
+ * `overrideRef` (AIES_MODEL) cuenta como elección explícita para TODOS los roles.
+ */
+export function resolveRoleModels(
+	runtime: AiesModelRuntimeLike,
+	cfg: RoleResolutionConfig,
+	opts: { overrideRef?: string | undefined; envHint?: (provider: string) => string | undefined } = {},
+): RoleModelResolution {
+	const models = {} as RoleModels;
+	const refs = {} as Record<Role, string | undefined>;
+	const failures: RoleModelFailure[] = [];
+
+	// 1) Orchestrator primero: es la política de default para roles sin elección explícita.
+	const orchestratorRef = opts.overrideRef ?? cfg.models.orchestrator;
+	let orchestrator: ResolvedModel | undefined;
+	if (orchestratorRef) {
+		const r = resolveOne("orchestrator", orchestratorRef, runtime, cfg.provider, opts.envHint);
+		if (r.failure) failures.push(r.failure);
+		orchestrator = r.model;
+	}
+	models.orchestrator = orchestrator;
+	refs.orchestrator = orchestratorRef;
+
+	// 2) Roles de workers: ref explícita → estricta; sin ref → default policy (orchestrator).
+	for (const role of ROLES) {
+		if (role === "orchestrator") continue;
+		const ref = opts.overrideRef ?? cfg.models[role];
+		if (!ref) {
+			// Sin elección explícita → hereda el orchestrator resuelto (undefined = default de pi).
+			models[role] = orchestrator;
+			refs[role] = orchestratorRef;
+			continue;
+		}
+		const r = resolveOne(role, ref, runtime, cfg.provider, opts.envHint);
+		if (r.failure) failures.push(r.failure);
+		models[role] = r.model;
+		refs[role] = ref;
+	}
+	return { models, failures, refs };
+}
+
+/** Etiqueta legible `provider/model-id` de un rol resuelto (o undefined si usa default de pi). */
+export function roleModelLabel(model: ResolvedModel | undefined): string | undefined {
+	if (!model) return undefined;
+	return `${model.provider}/${model.id}`;
+}

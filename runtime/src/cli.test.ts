@@ -24,6 +24,7 @@ import {
 	runResumeCycle,
 	summarizeOneshotResult,
 	summarizeState,
+	stripRunPrefix,
 } from "./cli.js";
 import { LocalStore } from "./cli-persistence.js";
 import type { DecideOutcome, ExecuteOutcome } from "./core/events.js";
@@ -679,5 +680,23 @@ describe("formatStateHuman y /state", () => {
 		assert.equal(parsed.taskState, "En curso");
 		assert.equal(parsed.iterations, 2);
 		assert.deepEqual(parsed, summarizeState(s));
+	});
+});
+
+describe("stripRunPrefix — routing `aies run` (headless MVP DoD)", () => {
+	it("detecta el prefijo run y devuelve el resto como tarea", () => {
+		assert.deepEqual(stripRunPrefix(["run", "corrige", "tests"]), { headless: true, rest: ["corrige", "tests"] });
+	});
+
+	it("sin prefijo run NO consume el primer token", () => {
+		assert.deepEqual(stripRunPrefix(["corrige", "run", "x"]), { headless: false, rest: ["corrige", "run", "x"] });
+	});
+
+	it("`aies run` solo → rest vacío (el caller decide stdin/uso)", () => {
+		assert.deepEqual(stripRunPrefix(["run"]), { headless: true, rest: [] });
+	});
+
+	it("argv vacío → no headless", () => {
+		assert.deepEqual(stripRunPrefix([]), { headless: false, rest: [] });
 	});
 });

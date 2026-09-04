@@ -103,6 +103,11 @@ export interface WorkerEventSink {
 	onWorkerToolResult?: (tool: string, result: string, isError: boolean) => void;
 	onVerificationStart?: (command: string) => void;
 	onVerificationResult?: (verdict: "PASS" | "FAIL", output: string) => void;
+	/** Verificación determinista (checks reales del proyecto): una línea por comando, sin LLM. */
+	onDeterministicCheckStart?: (name: string, command: string) => void;
+	onDeterministicCheckResult?: (name: string, command: string, passed: boolean, failure: string) => void;
+	/** Ciclo de reparación automática del implementer tras un fallo determinista. */
+	onRepairAttempt?: (attempt: number, maxAttempts: number) => void;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -145,6 +150,10 @@ export interface AiesEventHandlers {
 	onDecideSuccess?: (decision: OrchestratorDecision) => void;
 	/** Antes de ejecutar una unidad (no se emite para `obtener información` / `comunicar`). */
 	onWorkerStart?: (unit: WorkUnit, workerInfo: WorkerInfo) => void;
+	/** Resuelve la etiqueta `provider/model` real del rol (model-per-role). El bucle la usa para
+	 *  poblar `WorkerInfo.model`, el campo `modelo` de log.jsonl (turno de orquestador incluido)
+	 *  y así dejar prueba del modelo con que ejecutó cada rol. Ausente ⇒ "unknown" (comportamiento previo). */
+	resolveWorkerModel?: (role: "orchestrator" | Capability) => string | undefined;
 	/** Cuando el worker invoca una tool durante la ejecución de la unidad. */
 	onWorkerToolCall?: (unitId: string, tool: string, args: Record<string, unknown>) => void;
 	/** Cuando el worker recibe el resultado de una tool. */
@@ -155,6 +164,12 @@ export interface AiesEventHandlers {
 	onVerificationStart?: (unitId: string, command: string) => void;
 	/** Cuando el worker verifier emite su veredicto final. */
 	onVerificationResult?: (unitId: string, verdict: "PASS" | "FAIL", output: string) => void;
+	/** Verificación determinista (sin LLM): inicio de un check del proyecto. */
+	onDeterministicCheckStart?: (unitId: string, name: string, command: string) => void;
+	/** Verificación determinista: resultado de un check (failure = salida relevante si falla). */
+	onDeterministicCheckResult?: (unitId: string, name: string, command: string, passed: boolean, failure: string) => void;
+	/** Inicio de un ciclo de reparación automática del implementer (attempt 1-based). */
+	onRepairAttempt?: (unitId: string, attempt: number, maxAttempts: number) => void;
 	/** Cuando la tarea alcanza `Completada`. */
 	onTaskCompleted?: (summary: string, telemetry: TaskTelemetry) => void;
 	/** Cuando la tarea alcanza `Fallida` (inviabilidad / terminación controlada por límite). La

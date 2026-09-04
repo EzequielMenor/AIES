@@ -49,7 +49,7 @@ import { defaultConfigPath, loadConfig, type Config } from "./config.js";
 import { runStartup, type StartupReport } from "./integrations/index.js";
 import { addKnownInfo } from "./core/state.js";
 import { formatModelsTable, parseModelsQuery, resolveModelsForListing, searchModels } from "./models-list.js";
-import { runPickCommand } from "./cli-models.js";
+import { runModelsCommand, runPickCommand } from "./cli-models.js";
 import { bareExitTokens, filterSlashCommands, formatHelpCommands, parseSlashCommand } from "./commands.js";
 import {
 	runLoginFlow,
@@ -74,12 +74,27 @@ import {
 	type OperationResult,
 	type RuntimeState,
 	type Task,
+	type WorkerReport,
 	initState,
 } from "./core/state.js";
+import { DEFAULT_VERIFICATION, verificationFromConfig, type VerificationPolicy } from "./config.js";
 import { limitsFromConfig } from "./limits.js";
-import { parseModelRef, ROLES, type ResolvedModel } from "./model-runtime.js";
+import {
+	ROLES,
+	isRole,
+	resolveRoleModels,
+	roleModelLabel,
+	type ResolvedModel,
+	type Role,
+	type RoleModels,
+} from "./model-runtime.js";
 import { createDecide } from "./orchestrator/decide.js";
-import { runWorker, toWorkerRunParams, type WorkerToolContext } from "./workers/tools.js";
+import { runWorker, toWorkerRunParams, type WorkerRunParams, type WorkerToolContext } from "./workers/tools.js";
+import {
+	formatCheckCommand,
+	runProjectChecks,
+	type ProjectChecksReport,
+} from "./verification/engine.js";
 import { StreamRenderer, amber, violet } from "./ui/stream-renderer.js";
 import { serializeEntry, type LogEntry } from "./observability.js";
 import type { WorkerTelemetry } from "./telemetry/types.js";
@@ -110,13 +125,59 @@ function taskFromArg(taskArg: string): Task {
 	};
 }
 
-type ExecuteFn = (
+export type ExecuteFn = (
 	state: RuntimeState,
 	decision: Decision,
 	events: WorkerEventSink,
 ) => Promise<ExecuteOutcome>;
 
-function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined): ExecuteFn {
+/** Suma la telemetría de varias invocaciones de worker en un mismo turno (execute puede
+ *  re-invocar al implementer en los ciclos de reparación). `null` = aún no conocida. */
+function mergeTelemetry(a: WorkerTelemetry, b: WorkerTelemetry): WorkerTelemetry {
+	if (!a.usage) return b;
+	if (!b.usage) return a;
+	return {
+		usage: {
+			tokens: {
+				input: a.usage.tokens.input + b.usage.tokens.input,
+				output: a.usage.tokens.output + b.usage.tokens.output,
+				cacheRead: a.usage.tokens.cacheRead + b.usage.tokens.cacheRead,
+				cacheWrite: a.usage.tokens.cacheWrite + b.usage.tokens.cacheWrite,
+				total: a.usage.tokens.total + b.usage.tokens.total,
+			},
+			cost: a.usage.cost + b.usage.cost,
+		},
+		contextUsage: b.contextUsage ?? a.contextUsage,
+		telemetryUnavailable: false,
+	};
+}
+
+/** Evidencia de los checks deterministas como criterios del reporte estructurado. */
+function gateCriteria(gate: ProjectChecksReport): WorkerReport["criteria"] {
+	return gate.results.map((res) => ({
+		criterion: `check determinista: ${res.command}`,
+		status: res.status === "pass" ? ("pass" as const) : ("fail" as const),
+		evidence: res.status === "pass" ? "exit 0" : res.failure.slice(0, 300) || `status ${res.status}`,
+	}));
+}
+
+/** Fusiona el reporte del worker con la evidencia determinista (invariante 6: sin éxito inventado). */
+function augmentReport(report: WorkerReport | null, gate: ProjectChecksReport): WorkerReport | null {
+	if (!report) return report;
+	const criteria = [...report.criteria, ...gateCriteria(gate)];
+	const unmet = [...report.unmetCriteria, ...gate.results.filter((r) => r.status !== "pass").map((r) => `check determinista "${r.name}" (${r.status})`)];
+	const status: WorkerReport["status"] = gate.allPassed ? report.status : "unsatisfied";
+	return { status, summary: report.summary, criteria, unmetCriteria: unmet };
+}
+
+function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined, verification: VerificationPolicy): ExecuteFn {
+	/** Corrección clave: correr checks sin flags inventados y reusar los mismos eventos. */
+	const runGate = (events: WorkerEventSink) =>
+		runProjectChecks(wctx.cwd, {
+			timeoutMs: verification.checkTimeoutMs,
+			onStart: (c) => events.onDeterministicCheckStart?.(c.name, formatCheckCommand(c)),
+			onDone: (res) => events.onDeterministicCheckResult?.(res.name, res.command, res.status === "pass", res.failure),
+		});
 	return async (state, decision, events) => {
 		switch (decision.operación) {
 			case "comunicar al desarrollador": {
@@ -194,11 +255,60 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 				const params = toWorkerRunParams(cap, { objetivo: unit.objetivo, contexto: evidence, unidad: unit.id }, decision.feedbackCorrectivo ?? null);
 				// Reemplazar el Task generado por toWorkerRunParams con el canónico del estado.
 				params.task = state.task;
+
+				let telemetryTotal: WorkerTelemetry = NO_TELEM;
+				const absorb = (t: WorkerTelemetry): void => {
+					telemetryTotal = mergeTelemetry(telemetryTotal, t);
+				};
+
+				// ── Deterministic-first para el verifier: los checks reales del proyecto se
+				// ejecutan ANTES de gastar tokens del verifier LLM. Si fallan, el orquestador
+				// recibe la salida exacta sin LLM; si pasan y no quedan criterios semánticos,
+				// la unidad cierra con cero overhead de verificador.
+				let gateBeforeVerifier: ProjectChecksReport | null = null;
+				if (cap === "verifier" && verification.deterministic) {
+					const gate = await runGate(events);
+					if (!gate.empty && !gate.blocked) {
+						gateBeforeVerifier = gate;
+						if (!gate.allPassed) {
+							const report: WorkerReport = {
+								status: "unsatisfied",
+								summary: `verificación determinista fallida (${gate.results.filter((r) => r.status !== "pass").map((r) => r.name).join(", ")})`,
+								criteria: gateCriteria(gate),
+								unmetCriteria: gate.results.filter((r) => r.status !== "pass").map((r) => r.name),
+							};
+							return {
+								result: { kind: "unidad", text: `${report.summary}\n\n${gate.failureContext}`, unidadId: unit.id, passed: false } satisfies OperationResult,
+								telemetry: telemetryTotal,
+								report,
+								reportError: null,
+							};
+						}
+						if ((unit.criteriosAceptacion?.length ?? 0) === 0) {
+							const report: WorkerReport = {
+								status: "satisfied",
+								summary: `verificación determinista: ${gate.results.map((r) => r.name).join(", ")} en exit 0`,
+								criteria: gateCriteria(gate),
+								unmetCriteria: [],
+							};
+							return {
+								result: { kind: "unidad", text: report.summary, unidadId: unit.id, passed: true } satisfies OperationResult,
+								telemetry: telemetryTotal,
+								report,
+								reportError: null,
+							};
+						}
+						// Los checks pasaron; quedan criterios semánticos → verifier LLM con evidencia.
+						params.evidenciaPrevia = [params.evidenciaPrevia, `checks deterministas ya en exit 0: ${gate.results.map((r) => r.command).join(", ")}`].filter(Boolean).join("\n");
+					}
+				}
+
 				const r = await runWorker(cap, params, wctx, signal, events);
+				absorb(r.telemetry);
 				if (r.status === "failed") {
 					return {
 						result: { kind: "fallo", text: r.error, unidadId: unit.id, passed: false } satisfies OperationResult,
-						telemetry: r.telemetry,
+						telemetry: telemetryTotal,
 						report: r.report ?? null,
 						reportError: r.reportError ?? null,
 					};
@@ -214,11 +324,70 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 				} else {
 					passed = r.report?.status === "satisfied" ? true : (r.report ? false : null);
 				}
+				let report: WorkerReport | null = r.report ?? null;
+				const reportError: string | null = r.reportError ?? null;
+				let text = r.text;
+
+				// ── El ciclo completo del MVP: implement → deterministic verify → failure
+				// capture → focused repair → verify again. Sólo para implementers con reporte
+				// (explorer no muta el repo; verifier ya gateó arriba).
+				if (cap === "implementer" && verification.deterministic && passed !== false) {
+					let gate = await runGate(events);
+					while (!gate.empty && !gate.blocked && !gate.allPassed) {
+						let attempt = 0;
+						let lastFailure = gate.failureContext;
+						while (!gate.allPassed && attempt < verification.maxRepairAttempts) {
+							attempt += 1;
+							events.onRepairAttempt?.(attempt, verification.maxRepairAttempts);
+							const fixParams: WorkerRunParams = {
+								...params,
+								feedbackCorrectivo: [
+									params.feedbackCorrectivo,
+									`La verificación determinista del proyecto FALLÓ (intento de reparación ${attempt}/${verification.maxRepairAttempts}). Corrige SOLO lo necesario para que pasen los checks, sin ampliar el alcance. Salida exacta:\n\n${lastFailure}`,
+								].filter(Boolean).join("\n\n"),
+							};
+							const fr = await runWorker("implementer", fixParams, wctx, signal, events);
+							absorb(fr.telemetry);
+							if (fr.status === "failed") {
+								return {
+									result: { kind: "fallo", text: `reparación abortada (intento ${attempt}/${verification.maxRepairAttempts}): ${fr.error}\n\n${lastFailure}`, unidadId: unit.id, passed: false } satisfies OperationResult,
+									telemetry: telemetryTotal,
+									report: fr.report ?? report,
+									reportError: fr.reportError ?? reportError,
+								};
+							}
+							text = fr.text;
+							report = fr.report ?? report;
+							passed = fr.report ? fr.report.status === "satisfied" : passed;
+							gate = await runGate(events);
+							lastFailure = gate.failureContext;
+							if (gate.blocked) break;
+						}
+						break;
+					}
+					if (!gate.empty && !gate.blocked) {
+						if (gate.allPassed) {
+							report = augmentReport(report, gate) ?? report;
+							// El gate determinista también puede DESCOLGAR el passed=true cuando
+							// el worker no emitió reporte: aquí NO lo inventamos; null se conserva
+							// y el bucle pedirá verifier/replan (invariante 6).
+						} else {
+							passed = false;
+							report = augmentReport(report, gate) ?? report;
+							text = `${text}\n\n# verificación determinista tras ${verification.maxRepairAttempts} reparaciones:\n${gate.failureContext}`;
+						}
+					}
+				}
+
+				if (cap === "verifier" && gateBeforeVerifier && passed === true) {
+					report = augmentReport(report, gateBeforeVerifier) ?? report;
+				}
+
 				return {
-					result: { kind: "unidad", text: r.text, unidadId: unit.id, passed } satisfies OperationResult,
-					telemetry: r.telemetry,
-					report: r.report ?? null,
-					reportError: r.reportError ?? null,
+					result: { kind: "unidad", text, unidadId: unit.id, passed } satisfies OperationResult,
+					telemetry: telemetryTotal,
+					report,
+					reportError,
 				};
 			}
 		}
@@ -227,7 +396,14 @@ function buildExecute(wctx: WorkerToolContext, signal: AbortSignal | undefined):
 
 export interface RunCycleOptions {
 	cwd: string;
+	/** Modelo del orquestador (fallback para todos los roles si no se pasa `roleModels`).
+	 *  Los tests inyectan aquí un único modelo; el CLI real rellena `roleModels` por rol. */
 	model: ResolvedModel | undefined;
+	/** Modelos resueltos por rol (model-per-role real). Si está, cada worker ejecuta con el suyo. */
+	roleModels?: RoleModels | undefined;
+	/** Runtime de modelos compartido (catálogo+credenciales) — se propaga a todas las sesiones.
+	 *  Necesario para mezclar providers por rol sin recargar catálogos por worker. */
+	modelRuntime?: ModelRuntime | undefined;
 	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
 	limits: Limits;
 	signal: AbortSignal | undefined;
@@ -237,6 +413,8 @@ export interface RunCycleOptions {
 	executeOverride?: ExecuteFn | undefined;
 	/** Snapshot persistido a reanudar. El caller debe pasar `task = resumeFrom.task`. */
 	resumeFrom?: RuntimeState | undefined;
+	/** Política de verificación determinista + reparación (default: DEFAULT_VERIFICATION). */
+	verification?: VerificationPolicy | undefined;
 	/** T2.1 — canal opcional de ajuste en caliente. Si está, el bucle lo consulta cada turno. */
 	pollIntervention?: (() => InterventionAdjustment | null) | undefined;
 	/** T2.2 — guía del desarrollador inyectada al reanudar (se añade a `knownInfo`). */
@@ -271,23 +449,34 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		const note = `guía del desarrollador al reanudar: ${opts.resumeGuide}`;
 		initial = { ...initial, knownInfo: [...initial.knownInfo, note] };
 	}
+	const orchestratorModel = opts.roleModels?.orchestrator ?? opts.model;
 	const wctx: WorkerToolContext = {
 		cwd: opts.cwd,
-		model: opts.model,
+		// `model` = fallback (orquestador); `models` = modelos por capability resueltos del config.
+		model: orchestratorModel,
+		models: opts.roleModels
+			? {
+					explorer: opts.roleModels.explorer,
+					implementer: opts.roleModels.implementer,
+					verifier: opts.roleModels.verifier,
+				}
+			: undefined,
 		thinkingLevel: opts.thinkingLevel,
 		customTools: startup.customTools,
 		integrationBits: startup.toolNames,
+		modelRuntime: opts.modelRuntime,
 	};
 	const decideCtx = {
 		cwd: opts.cwd,
-		model: opts.model,
+		model: orchestratorModel,
 		thinkingLevel: opts.thinkingLevel,
 		signal: opts.signal,
+		modelRuntime: opts.modelRuntime,
 	};
 	const renderer = opts.renderer ?? new StreamRenderer(output);
 	const decide: (state: RuntimeState) => Promise<DecideOutcome> =
 		opts.decideOverride ?? createDecide(decideCtx);
-	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal);
+	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal, opts.verification ?? DEFAULT_VERIFICATION);
 
 	const handlers: AiesEventHandlers = StreamRenderer.merge(renderer, { decide, execute });
 	const rendererOnLogEntry = handlers.onLogEntry?.bind(renderer);
@@ -300,6 +489,9 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		}
 	};
 	handlers.stopSignal = () => Boolean(opts.signal?.aborted);
+	// model-per-role real: propaga la etiqueta provider/model de cada rol al WorkerInfo para
+	// que renderer y log.jsonl reflejen el modelo con que ejecuta cada worker.
+	handlers.resolveWorkerModel = (role) => roleModelLabel(opts.roleModels?.[role] ?? orchestratorModel);
 	if (opts.pollIntervention) handlers.pollIntervention = opts.pollIntervention;
 
 	const before = Date.now();
@@ -351,15 +543,29 @@ export function pad(s: string, width: number = BANNER_BAR.length + 2): string {
 	return s + " ".repeat(spaces);
 }
 
+/** Etiquetas cortas por rol para el banner (una línea por asignación). */
+const ROLE_SHORT: Record<Role, string> = { orchestrator: "orq", explorer: "exp", implementer: "imp", verifier: "ver" };
+
 /**
- * Banner compacto. Antes era un recuadro box-drawing pesado (`─┌│┐└` con dos líneas de
- * relleno). Ahora es una línea con provider/modelo + otra con la tecla de ayuda —
- * coherente con la regla "el stream manda, el chrome es mínimo" del spec.
+ * Banner compacto. Una línea con los modelos por rol realmente resueltos (model-per-role
+ * visible desde el arranque) + otra con la tecla de ayuda — coherente con la regla "el stream
+ * manda, el chrome es mínimo" del spec.
  */
-function banner(out: NodeJS.WritableStream = output, ctx?: { runtime: ModelRuntime; model: ResolvedModel | undefined }, store?: LocalStore): void {
-	const provider = ctx?.model?.provider ?? "—";
-	const model = ctx?.model?.id ?? "(no autenticado)";
-	out.write(`AIES · ${provider} / ${model}\n`);
+function banner(out: NodeJS.WritableStream = output, roleModels?: Partial<RoleModels>, store?: LocalStore, degraded = false): void {
+	if (degraded) {
+		// Hubo fallos explícitos de resolución: no fingir "default" — los errores ya se
+		// imprimieron arriba y las tareas están bloqueadas hasta corregirlos.
+		out.write(`AIES · ${amber("modelos: ✗ sin resolver — corrige con /model o /login (ver errores arriba)")}\n`);
+	} else {
+		const parts = ROLES.map((role: Role) => {
+			const label = roleModelLabel(roleModels?.[role]) ?? "default";
+			return `${ROLE_SHORT[role]} ${label}`;
+		});
+		// Si los cuatro roles comparten modelo, compactar en una sola etiqueta.
+		const unique = new Set(parts.map((p) => p.split(" ").slice(1).join(" ")));
+		const modelsLine = unique.size === 1 ? `Modelos: ${[...unique][0]}` : `Modelos: ${parts.join(" · ")}`;
+		out.write(`AIES · ${modelsLine}\n`);
+	}
 	const resume = store?.loadState();
 	if (resume && (resume.taskState === "En curso" || resume.taskState === "Recibida")) {
 		const obj = resume.task.objetivo.length > 60 ? `${resume.task.objetivo.slice(0, 57)}…` : resume.task.objetivo;
@@ -392,15 +598,18 @@ const HELP_TEXT = [
 	"  /log [n|all]                — tail de log.jsonl (últimas n vueltas; por defecto 20)",
 	"  /login                      — abre el selector de proveedor y método",
 	"  /logout                     — abre el selector de proveedor o Todos",
-	"  /model                      — lista modelos de providers autenticados",
-	"  /model <id>                 — usa ese modelo para el resto de esta sesión (no persiste)",
+	"  /model                      — tabla de asignaciones por rol (orchestrator/explorer/implementer/verifier)",
+	"  /model <rol>                — elegir modelo para ese rol (buscador con auth; persiste)",
+	"  /model <rol> <prov/modelo>  — asignación directa y persistente en aies.config.json",
+	"  /model <query>              — cambio sólo de sesión (sin persistir) para el orquestador",
+	"  /models                     — catálogo de modelos disponibles por provider (auth y roles asignados)",
 	"",
 	" Cualquier otro texto se ejecuta como una nueva tarea sobre el proyecto.",
 	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
 	" ESC la pausa (sigue en /resume); Ctrl+C la pausa y cierra la sesión",
 	" (un 2º Ctrl+C fuerza salida inmediata).",
 	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
-	" provider/modelo por defecto: aies.config.json (usar /pick para hacerlo permanente).",
+	" provider/modelo por rol: aies.config.json (usa /model <rol> [ref] para cambiarlo).",
 ].join("\n");
 
 function helpText(): string {
@@ -522,6 +731,8 @@ const CLI_HELP_TEXT = [
 	"Uso: aies [opción] | aies \"<tarea>\"",
 	"",
 	"  aies \"<tarea>\"             ejecuta una tarea y termina",
+	"  aies run \"<tarea>\"         modo headless explícito (mismos códigos de salida; admite",
+	"                             tarea por stdin: cat tarea.txt | aies run)",
 	"  aies \"<tarea>\" --json      igual, pero stdout es una sola línea de JSON (scripts/pipes)",
 	"  aies                         inicia el REPL interactivo",
 	"  aies auth                    estado de autenticación por provider",
@@ -541,6 +752,30 @@ function clearScreen(): void {
 	// ANSI: ESC[2J (borrar pantalla) + ESC[H (cursor arriba-izquierda).
 	if (input.isTTY && output.isTTY) output.write("\x1b[2J\x1b[H");
 	else output.write("\n");
+}
+
+/** Lee stdin sólo si viene pipeado (no TTY). `aies run` sin tarea acepta el prompt por stdin. */
+function readPipedStdin(): Promise<string | null> {
+	if (input.isTTY) return Promise.resolve(null);
+	return new Promise((resolve) => {
+		let buf = "";
+		input.setEncoding("utf8");
+		input.on("data", (chunk: string) => {
+			buf += chunk;
+		});
+		input.on("end", () => resolve(buf.trim() ? buf.trim() : null));
+		input.on("error", () => resolve(null));
+		if (typeof input.resume === "function") input.resume();
+	});
+}
+
+/**
+ * Routing del prefijo `run`: `aies run "<tarea>"` es un oneshot headless explícito.
+ * Pura y exportada para tests — el resto del dispatch de main() no cambia.
+ */
+export function stripRunPrefix(argv: string[]): { headless: boolean; rest: string[] } {
+	if (argv.length > 0 && argv[0] === "run") return { headless: true, rest: argv.slice(1) };
+	return { headless: false, rest: argv };
 }
 
 /**
@@ -733,36 +968,41 @@ export interface CliOptions {
 }
 
 /**
- * Resuelve provider+id de aies.config.json (o AIES_MODEL como override puntual) contra el
- * catálogo real de `runtime`.
+ * Resolución model-per-role REAL y estricta (correcciones al plan — autoridad superior).
  *
- * Antes esta función era un stub que siempre devolvía undefined — aies.config.json's
- * `provider`/`models` no tenían ningún efecto; el host resolvía silenciosamente su propio
- * modelo por defecto sin importar lo que dijera el config. Ese comportamiento se descubrió
- * al construir /login y /models: sin esta función real ninguna de las dos podía demostrarse
- * (¿de qué sirve iniciar sesión en un provider si el config nunca lo llegaba a usar?).
+ * Reglas:
+ *   - Cada rol (`orchestrator`, `explorer`, `implementer`, `verifier`) resuelve su propio
+ *     `provider/model-id` contra el catálogo del runtime. No se reutiliza el modelo del
+ *     orquestador en los workers salvo cuando el rol NO tiene elección explícita.
+ *   - Un modelo EXPLÍCITAMENTE configurado que no existe / provider desconocido / sin auth
+ *     produce un fallo ACCIONABLE (rol + provider + modelo + qué hacer). NO hay fallback
+ *     silencioso.
+ *   - `AIES_MODEL` cuenta como elección explícita para todos los roles (override puntual).
  *
- * getModel() sólo busca el id en el catálogo — NO valida credenciales; la autenticación se
- * resuelve más tarde, en la primera llamada real al modelo (mismo diseño no-bloqueante que
- * preflight()).
+ * `cfg` es opcional por tolerancia a tests; si falta, todo cae al default del runtime.
  */
-async function resolveModel(
+function resolveModels(
 	runtime: ModelRuntime,
-	cfg: Config,
+	cfg: Config | undefined,
 	overrideId: string | undefined,
 	out: NodeJS.WritableStream,
-): Promise<ResolvedModel | undefined> {
-	const modelId = overrideId ?? cfg.models.orchestrator;
-	if (!modelId) return undefined;
-	const found = runtime.getModel(cfg.provider, modelId);
-	if (!found) {
-		out.write(
-			`${amber("▲")} aies: modelo "${modelId}" no encontrado para provider "${cfg.provider}" — el runtime usará su modelo por defecto. Usa /models para ver los disponibles.\n`,
-		);
-		return undefined;
+): { roleModels: RoleModels; ok: boolean } {
+	const effectiveCfg: Config = cfg ?? { provider: "anthropic", models: {}, orchestratorThinkingLevel: "low" };
+	const resolution = resolveRoleModels(runtime, effectiveCfg, {
+		overrideRef: overrideId,
+		envHint: (provider) => PROVIDER_ENV_KEY[provider],
+	});
+	for (const failure of resolution.failures) {
+		out.write(`${amber("✗")} aies: ${failure.message}\n`);
 	}
-	return found;
+	return { roleModels: resolution.models, ok: resolution.failures.length === 0 };
 }
+
+/** Etiqueta compacta `rol → provider/model` para banner/status (roles sin modelo → "default"). */
+export function formatRoleModelLabels(roleModels: RoleModels): string {
+	return ROLES.map((role: Role) => `${role} ${roleModelLabel(roleModels[role]) ?? "default"}`).join(" · ");
+}
+
 
 const UPDATE_NOTICE_TIMEOUT_MS = 3500;
 
@@ -872,7 +1112,7 @@ async function main(): Promise<void> {
 	// Sólo lo consume el camino oneshot; en los demás simplemente desaparece del argv.
 	const rawArgv = process.argv.slice(2);
 	const jsonMode = rawArgv.includes("--json");
-	const argv = jsonMode ? rawArgv.filter((a) => a !== "--json") : rawArgv;
+	let argv = jsonMode ? rawArgv.filter((a) => a !== "--json") : rawArgv;
 	if (argv.length >= 1 && argv[0] === "update" && argv.length === 1) {
 		process.exit(await runUpdate());
 	}
@@ -893,8 +1133,27 @@ async function main(): Promise<void> {
 	if (argv.length >= 1 && ["auth", "login", "logout", "models"].includes(argv[0]!)) {
 		await tryRunAuthSubcommand(argv);
 	}
+
+	// `aies run "<tarea>"` — oneshot headless explícito (DoD MVP: modo CI/script). Reutiliza el
+	// camino oneshot existente (ya emite activity lines vía StreamRenderer y sale 0/1 vía
+	// oneshotExitCode); NO duplica la ejecución en un módulo aparte (corrección: zero speculative
+	// architecture). Acepta tarea por argv o por stdin pipeada (`cat task.txt | aies run`).
+	let runRequested = false;
+	if (argv.length >= 1 && argv[0] === "run") {
+		runRequested = true;
+		argv = argv.slice(1);
+		if (argv.length === 0) {
+			const piped = await readPipedStdin();
+			if (piped) argv = [piped];
+		}
+		if (argv.join(" ").trim().length === 0) {
+			output.write('Uso: aies run "<tarea>"   (o bien:  cat tarea.txt | aies run)\n');
+			process.exit(2);
+		}
+	}
+
 	const taskArg = argv.length > 0 ? argv.join(" ").trim() : null;
-	const repl = taskArg === null || taskArg.length === 0;
+	const repl = !runRequested && (taskArg === null || taskArg.length === 0);
 	const cwd = process.cwd();
 
 	// json: nada de lo previo a la ejecución (config rota, preflight, auth, modelo no
@@ -914,17 +1173,32 @@ async function main(): Promise<void> {
 	const updatePromise = checkForUpdate();
 	const thinkingLevel = cfg.orchestratorThinkingLevel;
 	const runtime = await getModelRuntime();
-	const model = await resolveModel(runtime, cfg, process.env.AIES_MODEL, diagOut);
-	preflight(cfg, diagOut);
+
+	// model-per-role real y estricto. `AIES_MODEL`OverrideActúa como elección explícita para todos.
+	const { roleModels, ok: modelsOk } = resolveModels(runtime, cfg, process.env.AIES_MODEL, diagOut);
+	const model = roleModels.orchestrator;
 	authReadinessNotice(runtime, cfg, diagOut);
 
+	if (!modelsOk) {
+		// Corrección #3: sin fallback silencioso ante modelos explícitamente configurados pero
+		// imposibles de resolver. Oneshot sale ya; el REPL sigue arrancando para poder /login o
+		// /model, pero bloqueará la ejecución de tareas hasta que se resuelvan (ver replRunTask).
+		if (!repl) {
+			diagOut.write("aies: no se puede ejecutar con los modelos configurados. Corrige aies.config.json, /model o la autenticación.\n");
+			process.exit(2);
+		}
+	}
+
 	if (repl) {
-		await runRepl({ cwd, limits, model, thinkingLevel, updatePromise, runtime, cfg });
+		await runRepl({ cwd, limits, model, roleModels, modelsOk, thinkingLevel, updatePromise, runtime, cfg });
 	} else {
 		const exitCode = await runOneshot(taskArg!, {
 			cwd,
 			limits,
 			model,
+			roleModels,
+			modelRuntime: runtime,
+			verification: verificationFromConfig(cfg),
 			thinkingLevel,
 			updatePromise,
 			json: jsonMode,
@@ -956,6 +1230,12 @@ export async function runOneshot(
 		cwd: string;
 		limits: Limits;
 		model: ResolvedModel | undefined;
+		/** Modelos por rol (model-per-role real). Si está, cada worker usa el suyo. */
+		roleModels?: RoleModels | undefined;
+		/** Runtime de modelos compartido (catálogo + credenciales). */
+		modelRuntime?: ModelRuntime | undefined;
+		/** Política de verificación determinista + reparación. */
+		verification?: VerificationPolicy | undefined;
 		thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
 		updatePromise?: Promise<UpdateStatus> | undefined;
 		store?: LocalStore | undefined;
@@ -1002,6 +1282,9 @@ export async function runOneshot(
 	const result = await runCycle(task, {
 		cwd: ctx.cwd,
 		model: ctx.model,
+		roleModels: ctx.roleModels,
+		modelRuntime: ctx.modelRuntime,
+		verification: ctx.verification,
 		thinkingLevel: ctx.thinkingLevel,
 		limits: ctx.limits,
 		signal: ctx.signal ?? controller.signal,
@@ -1033,6 +1316,8 @@ async function runRepl(ctx: {
 	cwd: string;
 	limits: Limits;
 	model: ResolvedModel | undefined;
+	roleModels?: RoleModels | undefined;
+	modelsOk?: boolean | undefined;
 	thinkingLevel: "off" | "low" | "medium" | "high" | undefined;
 	updatePromise: Promise<UpdateStatus>;
 	runtime: ModelRuntime;
@@ -1040,15 +1325,26 @@ async function runRepl(ctx: {
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
 	const prompt = new PromptUI({ streams: { input, output }, prompt: "❯ " });
-	banner(output, { runtime: ctx.runtime, model: ctx.model }, store);
+	// Modelo por rol mutable durante la sesión. `orchestrator` actúa como override de sesión no
+	// persistente (equivale al antiguo `activeModel`); los demás roles se re-resuelven al
+	// reasignar con /model (que SÍ persiste en aies.config.json).
+	const roleModels: RoleModels = { ...(ctx.roleModels ?? { orchestrator: ctx.model, explorer: ctx.model, implementer: ctx.model, verifier: ctx.model }) };
+	banner(output, roleModels, store, ctx.modelsOk === false);
 	for (const msg of replStartupMessages(store)) output.write(`${msg}\n`);
 	let currentState: RuntimeState | null = store.loadState();
-	// /model la cambia para el resto de esta sesión — no toca aies.config.json, así que no hay
-	// que preocuparse por dejar el repo con cambios sin querer.
-	let activeModel = ctx.model;
+	// cfg vigente en memoria — se recarga tras /model para reflejar las asignaciones persistidas.
+	let activeCfg = ctx.cfg;
 	const updateStatus = await waitForUpdateNotice(ctx.updatePromise);
 	const updateNotice = formatUpdateNotice(updateStatus ?? { kind: "skipped" });
 	if (updateNotice) prompt.info(`\n${updateNotice}`);
+
+	/** Re-resuelve los roles desde el config vigente. `ok=false` ⇒ hay fallos explícitos ya
+	 *  impresos en `out`; los modelos previamente válidos se conservan intactos. */
+	const applyRoleResolution = (): boolean => {
+		const r = resolveModels(ctx.runtime, activeCfg, process.env.AIES_MODEL, output);
+		if (r.ok) Object.assign(roleModels, r.roleModels);
+		return r.ok;
+	};
 
 	let runInProgress = false;
 	let activeAbort: AbortController | null = null;
@@ -1110,7 +1406,7 @@ async function runRepl(ctx: {
 					store,
 					input0,
 					setActiveModel: (m) => {
-						activeModel = m;
+						roleModels.orchestrator = m ?? undefined;
 					},
 					onExit: () => {
 						exitAfterCycle = true;
@@ -1135,7 +1431,7 @@ async function runRepl(ctx: {
 			}
 			if (input0 === "/status") {
 				const snapshot = currentState ?? store.loadState();
-				prompt.info(`${formatAuthenticatedModels(ctx.runtime, activeModel)}\n\n${formatStatus(snapshot, store.readLogIndexed())}`);
+				prompt.info(`Modelos por rol: ${formatRoleModelLabels(roleModels)}\n\n${formatStatus(snapshot, store.readLogIndexed())}`);
 				continue;
 			}
 			if (input0 === "/log" || input0.startsWith("/log ")) {
@@ -1148,24 +1444,47 @@ async function runRepl(ctx: {
 				continue;
 			}
 			if (input0 === "/login" || input0.startsWith("/login ")) {
-				const r = await runLoginFlow(ctx, prompt, input0);
-				if (r?.kind === "activated") activeModel = r.activeModel ?? activeModel;
+				await runLoginFlow(ctx, prompt, input0);
+				// La autenticación nueva puede desbloquear roles explícitos que antes fallaban.
+				applyRoleResolution();
 				continue;
 			}
 			if (input0 === "/logout" || input0.startsWith("/logout ")) {
-				const r = await runLogoutFlow(ctx, prompt, input0);
-				if (r?.kind === "deactivated") activeModel = undefined;
+				await runLogoutFlow(ctx, prompt, input0);
+				applyRoleResolution();
 				continue;
 			}
 			if (input0 === "/model" || input0.startsWith("/model ")) {
-				const r = await runModelFlow(ctx, prompt, input0, activeModel);
-				if (r?.kind === "selected") activeModel = r.model;
+				// /model gestiona asignaciones por rol (persisten en aies.config.json):
+				//   /model                → tabla de asignaciones actuales
+				//   /model <rol>          → selector interactivo para ese rol
+				//   /model <rol> <ref>    → asignación directa
+				//   /model <query>        → cambio de sesión NO persistente sólo para el orquestador
+				const arg = input0.slice("/model".length).trim();
+				const first = arg.length > 0 ? arg.split(/\s+/)[0]!.toLowerCase() : "";
+				if (!arg || isRole(first)) {
+					const pickRl = prompt.createReadline();
+					try {
+						await runPickCommand(pickRl, ctx.runtime, activeCfg, defaultConfigPathLocal(), arg);
+					} finally {
+						pickRl.close();
+					}
+					try {
+						activeCfg = loadConfig();
+					} catch {
+						/* config ilegible: mantener el anterior en memoria */
+					}
+					applyRoleResolution();
+					continue;
+				}
+				const r = await runModelFlow(ctx, prompt, input0, roleModels.orchestrator);
+				if (r?.kind === "selected") roleModels.orchestrator = r.model;
 				continue;
 			}
 			if (input0 === "/models" || input0.startsWith("/models ")) {
-				// Fase 8 — /models es alias de /model (selector interactivo con filtro).
-				const r = await runModelFlow(ctx, prompt, "/model", activeModel);
-				if (r?.kind === "selected") activeModel = r.model;
+				// /models = CATÁLOGO (listado de modelos disponibles por provider con auth y roles
+				// asignados). Los cambios de asignación van en /model.
+				prompt.info(runModelsCommand(ctx.runtime, activeCfg));
 				continue;
 			}
 			if (input0 === "/resume" || input0.startsWith("/resume ")) {
@@ -1173,6 +1492,10 @@ async function runRepl(ctx: {
 				const resolved = resolveResume(currentState ?? store.loadState());
 				if (!resolved.ok) {
 					prompt.info(resolved.message);
+					continue;
+				}
+				if (!applyRoleResolution()) {
+					prompt.info("aies: tarea no reanudada — los modelos configurados no son resolubles; corrige con /model o /login.");
 					continue;
 				}
 				const result = await runTrackedReplCycle(prompt, interventionQueue, {
@@ -1183,7 +1506,10 @@ async function runRepl(ctx: {
 					run: (signal) =>
 						runResumeCycle(resolved.state, {
 							cwd: ctx.cwd,
-							model: activeModel,
+							model: roleModels.orchestrator,
+							roleModels: { ...roleModels },
+							modelRuntime: ctx.runtime,
+							verification: verificationFromConfig(activeCfg),
 							thinkingLevel: ctx.thinkingLevel,
 							limits: ctx.limits,
 							signal,
@@ -1197,18 +1523,27 @@ async function runRepl(ctx: {
 				continue;
 			}
 			if (input0 === "/pick" || input0.startsWith("/pick ")) {
-				const cfg = loadConfig();
 				const configPath = defaultConfigPathLocal();
 				const pickRl = prompt.createReadline();
 				try {
-					await runPickCommand(pickRl, ctx.runtime, cfg, configPath, input0.slice("/pick".length).trim());
+					await runPickCommand(pickRl, ctx.runtime, activeCfg, configPath, input0.slice("/pick".length).trim());
 				} finally {
 					pickRl.close();
 				}
+				try {
+					activeCfg = loadConfig();
+				} catch {
+					/* mantener anterior */
+				}
+				applyRoleResolution();
 				continue;
 			}
 
 			// Nueva tarea sobre el proyecto (manteniendo persistencia).
+			if (!applyRoleResolution()) {
+				prompt.info("aies: tarea no ejecutada — los modelos configurados no son resolubles; corrige con /model o /login.");
+				continue;
+			}
 			const task = taskFromArg(input0);
 			const before = currentState;
 			const result = await runTrackedReplCycle(prompt, interventionQueue, {
@@ -1219,7 +1554,10 @@ async function runRepl(ctx: {
 				run: (signal) =>
 					runCycle(task, {
 						cwd: ctx.cwd,
-						model: activeModel,
+						model: roleModels.orchestrator,
+						roleModels: { ...roleModels },
+						modelRuntime: ctx.runtime,
+						verification: verificationFromConfig(activeCfg),
 						thinkingLevel: ctx.thinkingLevel,
 						limits: ctx.limits,
 						signal,

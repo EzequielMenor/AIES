@@ -350,7 +350,7 @@ describe("StreamRenderer TTY", () => {
 		assert.doesNotMatch(plain, /obtener información/);
 	});
 
-	it("spinner decidiendo → decisión sin \\r residual en las líneas fijas", () => {
+	it("spinner decidiendo → sin \\r residual y SIN volcar la deliberación por defecto", () => {
 		const stream = captureStream(true);
 		renderer = new StreamRenderer(stream);
 		renderer.onDecideStart(0);
@@ -359,9 +359,21 @@ describe("StreamRenderer TTY", () => {
 		// En TTY el spinner se borra con \\r; lo que queda visible es lo posterior al último CR.
 		const visual = plain.replace(/[^\n]*\r/g, "");
 		assert.match(plain, /Orquestador decidiendo/);
-		assert.match(visual, /Decisión : Obtener información/);
+		// Corrección UX: la deliberación del orquestador ya NO ensucia el scrollback.
+		assert.doesNotMatch(visual, /Decisión :/);
+		assert.doesNotMatch(visual, /Motivo   :/);
 		assert.doesNotMatch(visual, /Orquestador decidiendo/);
 		assert.equal(visual.includes("\r"), false);
+	});
+
+	it("con verbose, la decisión sí se muestra como antes", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream, { verbose: true });
+		renderer.onDecideStart(0);
+		renderer.onDecideSuccess(infoDecision());
+		const plain = stream.plain();
+		const visual = plain.replace(/[^\n]*\r/g, "");
+		assert.match(visual, /Decisión : Obtener información/);
 	});
 
 	it("finalize() con spinner activo limpia el overlay y no deja el timer vivo", () => {
@@ -492,7 +504,7 @@ describe("StreamRenderer pipe (no-TTY)", () => {
 	let renderer: StreamRenderer | undefined;
 	afterEach(() => renderer?.finalize());
 
-	it("no emite secuencias \\r de spinner", () => {
+	it("no emite secuencias \\r de spinner y omite la deliberación por defecto", () => {
 		const stream = captureStream(false);
 		renderer = new StreamRenderer(stream);
 		renderer.onDecideStart(0);
@@ -500,7 +512,8 @@ describe("StreamRenderer pipe (no-TTY)", () => {
 		renderer.finalize();
 		assert.equal(stream.text().includes("\r"), false);
 		assert.match(stream.plain(), /Orquestador decidiendo/);
-		assert.match(stream.plain(), /Decisión/);
+		// Por defecto NO se vuelca "Decisión :" en pipe; queda sólo para verbose.
+		assert.doesNotMatch(stream.plain(), /Decisión :/);
 	});
 
 	it("parse-fail y límite siguen siendo líneas completas", () => {

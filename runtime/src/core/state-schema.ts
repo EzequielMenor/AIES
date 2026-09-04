@@ -115,6 +115,10 @@ export const DecisionSchema = z
 		ajustePlan: z.union([AjustePlanSchema, z.null()]).optional(),
 		unidad: z.union([UnitRefSchema, z.null()]).optional(),
 		feedbackCorrectivo: z.union([z.string().max(2000), z.null()]).optional(),
+		// `null` explícito ≡ ausente: el prompt del orquestador pide las claves SIEMPRE con
+		// null en las variantes que no las usan; sin `z.null()` en el union, modelos fieles
+		// al contrato (p. ej. MiniMax M2.7) fallaban el parseo en cada turno (dogfooding
+		// 2026-09-04). La validez por variante la sigue garantizando `semanticCheck` (parse.ts).
 		comunicación: z
 			.object({
 				pregunta: z.string().min(1).max(2000),
@@ -122,6 +126,7 @@ export const DecisionSchema = z
 				informaciónFaltante: z.string().min(1).max(2000),
 			})
 			.strict()
+			.nullable()
 			.optional(),
 		condición: z
 			.object({
@@ -129,6 +134,7 @@ export const DecisionSchema = z
 				detalle: z.string().min(1).max(2000),
 			})
 			.strict()
+			.nullable()
 			.optional(),
 	})
 	.strict();

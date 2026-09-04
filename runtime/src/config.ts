@@ -5,6 +5,22 @@ import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 
+/** Política de verificación determinista + reparación acotada (fuera del state machine). */
+export interface VerificationPolicy {
+	/** Ejecutar checks deterministas del proyecto tras el implementer antes de gastar verifier LLM. */
+	deterministic: boolean;
+	/** Máximo de ciclos de reparación focalizada del implementer ante fallo determinista. */
+	maxRepairAttempts: number;
+	/** Timeout duro por check (ms). Los comandos scriptados no siempre saben que deben parar. */
+	checkTimeoutMs: number;
+}
+
+export const DEFAULT_VERIFICATION: VerificationPolicy = {
+	deterministic: true,
+	maxRepairAttempts: 3,
+	checkTimeoutMs: 30_000,
+};
+
 const ConfigSchema = z
 	.object({
 		provider: z.string().min(1).default("anthropic"),
@@ -18,14 +34,37 @@ const ConfigSchema = z
 			.partial(),
 		orchestratorThinkingLevel: z.enum(["off", "low", "medium", "high"]).default("low"),
 		limits: z.object({ maxIterations: z.number().int().positive() }).partial().optional(),
-	})
-	.strict();
+		// strict:false (omitido) — claves de schema vecinas (p. ej. `repair.*` antiguas) en un
+		// config versionado NO deben reventar el arranque; zod las descarta en silencio.
+		repair: z
+			.object({
+				deterministic: z.boolean().optional(),
+				maxRepairAttempts: z.number().int().min(0).max(10).optional(),
+				checkTimeoutMs: z.number().int().positive().max(600_000).optional(),
+			})
+			.partial()
+			.optional(),
+	});
 
 export interface Config {
 	provider: string;
 	models: Partial<Record<"orchestrator" | "explorer" | "implementer" | "verifier", string>>;
 	orchestratorThinkingLevel: "off" | "low" | "medium" | "high";
 	limits?: { maxIterations?: number | undefined };
+	repair?: {
+		deterministic?: boolean | undefined;
+		maxRepairAttempts?: number | undefined;
+		checkTimeoutMs?: number | undefined;
+	} | undefined;
+}
+
+/** Traduce el bloque `repair` del config a la política usada por `buildExecute`. */
+export function verificationFromConfig(cfg: { repair?: Config["repair"] } | undefined): VerificationPolicy {
+	return {
+		deterministic: cfg?.repair?.deterministic ?? DEFAULT_VERIFICATION.deterministic,
+		maxRepairAttempts: cfg?.repair?.maxRepairAttempts ?? DEFAULT_VERIFICATION.maxRepairAttempts,
+		checkTimeoutMs: cfg?.repair?.checkTimeoutMs ?? DEFAULT_VERIFICATION.checkTimeoutMs,
+	};
 }
 
 /** Resuelve la ruta de aies.config.json (AIES_CONFIG env override, o raíz del paquete). */

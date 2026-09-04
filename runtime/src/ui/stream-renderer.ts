@@ -93,6 +93,9 @@ interface OpenWorker {
 export class StreamRenderer implements AiesEventHandlers {
 	private readonly stream: NodeJS.WritableStream;
 	private readonly tty: boolean;
+	/** AIES_VERBOSE=1 reactiva el detalle interno (Decisión/Motivo por turno) para depuración.
+	 *  Por defecto NO se vuelca la deliberación del orquestador al scrollback. */
+	private readonly verbose: boolean;
 	private spinner: ActiveSpinner | null = null;
 	private worker: OpenWorker | null = null;
 	/** Re-cuento de re-descomposiciones (para compactar avisos ámbar). */
@@ -118,9 +121,10 @@ export class StreamRenderer implements AiesEventHandlers {
 	/** Línea de estado de telemetría pendiente de emisión tras cerrar el worker. */
 	private pendingStatusLine: string | null = null;
 
-	constructor(stream: NodeJS.WritableStream = process.stdout) {
+	constructor(stream: NodeJS.WritableStream = process.stdout, options: { verbose?: boolean } = {}) {
 		this.stream = stream;
 		this.tty = Boolean("isTTY" in stream && stream.isTTY);
+		this.verbose = options.verbose ?? process.env.AIES_VERBOSE === "1";
 	}
 
 	// ------------------------------------------------------------------ utilidades
@@ -211,6 +215,12 @@ export class StreamRenderer implements AiesEventHandlers {
 	private branch(prefix: string, body: string): void {
 		const lines = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 		lines.forEach((ln, i) => this.line(i === 0 ? `${prefix}${ln}` : `│     ${ln}`));
+	}
+
+	/** Resumen de una línea para el scrollback: primera línea con contenido, recortada. */
+	private summarize(text: string, max = 140): string {
+		const line = text.replace(/\s+/g, " ").trim();
+		return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
 	}
 
 	private formatElapsed(startTs: number, endTs: number): string {
@@ -304,9 +314,14 @@ export class StreamRenderer implements AiesEventHandlers {
 				this.line(`  ${cyan(branch)} ${u.objetivo}`);
 			});
 		}
-		this.line(`${green("✓")} Decisión : ${this.describeDecision(decision)}`);
-		this.line(`${"  "}Motivo   : ${decision.motivo}`);
-		this.line("");
+		// La deliberación del orquestador NO va al scrollback por defecto: era el ruido
+		// principal del v1 ("Decisión: … Motivo: …" cada turno). Con AIES_VERBOSE=1 se recupera.
+		// El plan multi-unidad y las re-descomposiciones (señales reales) SÍ se muestran siempre.
+		if (this.verbose) {
+			this.line(`${green("✓")} Decisión : ${this.describeDecision(decision)}`);
+			this.line(`${"  "}Motivo   : ${decision.motivo}`);
+			this.line("");
+		}
 	}
 
 	onWorkerStart(unit: WorkUnit, workerInfo: WorkerInfo): void {
@@ -338,6 +353,33 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.spin("│  ", cyan(command));
 	}
 
+	/** Verificación determinista (sin LLM): un comando real del proyecto, pintado como el resto
+	 *  de líneas de actividad. `● Verificando` reutiliza la cabecera del bloque si no hay worker. */
+	onDeterministicCheckStart(unitId: string, name: string, command: string): void {
+		if (!this.worker) {
+			// El gate determinista puede correr antes/encima sin bloque de worker (p. ej. verifier
+			// puro determinista). Abrir cabecera para mantener el árbol coherente.
+			this.worker = { id: unitId, esVerificacion: true };
+			this.line(`┌─ ${cyan("●")} ${bright("Verifying")} (${cyan(unitId)})`);
+		}
+		this.verificationCommand = command;
+		this.spin("│  ", `${cyan(name)} ${pc.dim(command)}`);
+	}
+
+	onDeterministicCheckResult(unitId: string, name: string, command: string, passed: boolean, failure: string): void {
+		this.verificationCommand = null;
+		const mark = passed ? green("✓") : red("✗");
+		this.settle(`│  ${mark} ${cyan(name)} ${pc.dim(`(${command})`)}`);
+		if (!passed) {
+			if (failure) this.branch("│  ", failure.split("\n").slice(0, 8).join("\n"));
+		}
+	}
+
+	onRepairAttempt(unitId: string, attempt: number, maxAttempts: number): void {
+		this.detachSpinner();
+		this.line(`${"  "}${amber("● Reparando")} ${pc.dim(`(intento ${attempt}/${maxAttempts})`)} — realimentando al implementer con el fallo exacto`);
+	}
+
 	onVerificationResult(unitId: string, verdict: "PASS" | "FAIL", output: string): void {
 		if (!this.worker) return;
 		if (this.verificationCommand) {
@@ -363,12 +405,15 @@ export class StreamRenderer implements AiesEventHandlers {
 		if (result.passed === false) {
 			this.failedUnits.set(unitId, result.text);
 		}
+		// La unidad puede traer un reporte JSON multilínea (veracidad para el orquestador, no
+		// para la terminal). Resumen a una línea salvo verbose.
+		const visible = this.verbose ? result.text : this.summarize(result.text);
 		if (this.worker.esVerificacion) {
-			this.branch("│  ", `${cyan("└─")} Salida: ${result.text}`);
+			this.branch("│  ", `${cyan("└─")} Salida: ${visible}`);
 			const color = result.passed === true ? green : result.passed === false ? red : cyan;
-			this.line(result.passed === null ? `└─ Resultado: ${result.text}` : `└─ ${color(`VEREDICTO: ${result.passed ? "PASS" : "FAIL"}`)}`);
+			this.line(result.passed === null ? `└─ Resultado: ${visible}` : `└─ ${color(`VEREDICTO: ${result.passed ? "PASS" : "FAIL"}`)}`);
 		} else {
-			this.line(`└─ Resultado: ${result.text}`);
+			this.line(`└─ Resultado: ${visible}`);
 		}
 		this.closeWorker();
 		if (this.pendingStatusLine) {
@@ -461,7 +506,15 @@ export class StreamRenderer implements AiesEventHandlers {
 			}
 			case "error:unidad-inexistente": {
 				this.detachSpinner();
-				const id = obs.decision.unidad ?? "";
+				const ref = obs.decision.unidad;
+				const id =
+					typeof ref === "string"
+						? ref
+						: ref && typeof ref === "object"
+							? (ref as { tipo?: string; id?: string; indice?: number }).tipo === "existente"
+								? String((ref as { id?: string }).id ?? "")
+								: `planificada[${(ref as { indice?: number }).indice ?? "?"}]`
+							: "";
 				this.line(
 					`${amber("▲")} Unidad inexistente: el orquestador referenció "${id}". No se ejecuta ninguna unidad distinta.`,
 				);

@@ -20,6 +20,9 @@ export interface DecisionLogEntry {
 	contextUsage?: ContextUsage | null;
 	telemetryUnavailable?: boolean;
 	telemetryReason?: string | null;
+	/** Modelo con el que ejecutó el orquestador en esta vuelta (`provider/model-id`). Opcional:
+	 *  ausente en tests y en entradas sintéticas. Prueba de model-per-role en el log. */
+	modelo?: string | null;
 	/** Marca temporal (ISO) al emitir; instrumentación de tiempo de AIES-core (NFR §3, 06-research). Opcional: ausente en tests. */
 	ts?: string;
 }
@@ -39,6 +42,9 @@ export interface ResultLogEntry {
 	 * de esta entrada al orquestador (sesión local efímera, sin frontera de delegación). Ausente
 	 * en modo normal. */
 	atribución?: "orquestador" | null;
+	/** Modelo con que ejecutó el worker de esta unidad (`provider/model-id`). Prueba de
+	 *  model-per-role en el log. Opcional: ausente en callers antiguos. */
+	modelo?: string | null;
 	/** Marca temporal (ISO) al emitir; instrumentación de tiempo de AIES-core (NFR §3, 06-research). Opcional: ausente en tests. */
 	ts?: string;
 }
@@ -78,7 +84,7 @@ function telemetryFields(telemetry: WorkerTelemetry): Pick<DecisionLogEntry, "us
 	};
 }
 
-export function decisionEntry(iter: number, decision: Decision, parseFail = false, telemetry?: WorkerTelemetry): DecisionLogEntry {
+export function decisionEntry(iter: number, decision: Decision, parseFail = false, telemetry?: WorkerTelemetry, modelo?: string | null): DecisionLogEntry {
 	return {
 		type: "decision",
 		iter,
@@ -90,6 +96,7 @@ export function decisionEntry(iter: number, decision: Decision, parseFail = fals
 		condición: decision.condición ?? null,
 		parseFail,
 		...(telemetry ? telemetryFields(telemetry) : {}),
+		...(modelo ? { modelo } : {}),
 	};
 }
 
@@ -99,10 +106,11 @@ export function resultEntry(
 	telemetry: WorkerTelemetry,
 	límiteAlcanzado: string | null = null,
 	atribución: "orquestador" | null = null,
+	modelo?: string | null,
 ): ResultLogEntry {
 	return {
 		type: "resultado",
-		iter,
+		iter: iter,
 		resultado: result.text,
 		kind: result.kind,
 		unidadId: result.unidadId,
@@ -112,6 +120,7 @@ export function resultEntry(
 		telemetryReason: telemetry.reason ?? null,
 		límite_alcanzado: límiteAlcanzado,
 		atribución,
+		...(modelo ? { modelo } : {}),
 	};
 }
 

@@ -77,6 +77,39 @@ async function testUnidadNullIsAccepted(): Promise<void> {
 	console.log("OK unidad-null: aceptado en operación que no requiere unidad");
 }
 
+async function testExplicitNullsAccepted(): Promise<void> {
+	// Dogfooding 2026-09-04: M2.7 emits the full field set with null for the variants it
+	// doesn't use. `comunicación/condición: null` must parse (≡ absent); semantics still
+	// enforced per-variant by semanticCheck.
+	const json = JSON.stringify({
+		operación: "obtener información",
+		ajustePlan: null,
+		unidad: null,
+		feedbackCorrectivo: null,
+		comunicación: null,
+		condición: null,
+		motivo: "inspeccionar repo",
+	});
+	const out = parseDecision(json);
+	assert.equal(out.parseFail, false, `nulls explícitos deben parsear (parseError=${out.parseError ?? ""})`);
+	assert.equal(out.decision.comunicación, null);
+	assert.equal(out.decision.condición, null);
+
+	// Pero comunicar SIN comunicación (null aquí ya vale ausente... ) — la variante requiere objeto:
+	const comunicarNull = JSON.stringify({
+		operación: "comunicar al desarrollador",
+		ajustePlan: null,
+		unidad: null,
+		comunicación: null,
+		condición: null,
+		motivo: "pregunta",
+	});
+	const out2 = parseDecision(comunicarNull);
+	assert.equal(out2.parseFail, true, "comunicar con comunicación:null debe fallar semántica");
+	assert.match(out2.parseError ?? "", /comunicación/);
+	console.log("OK nulls-explícitos: aceptados donde ≡ ausente, rechazados cuando la variante exige objeto");
+}
+
 async function testPlanificadaIsAccepted(): Promise<void> {
 	const out = parseDecision(decisionWithPlanificada(0));
 	assert.equal(out.parseFail, false);
@@ -120,6 +153,7 @@ async function main(): Promise<void> {
 	await testUnidadMalformedIsRejected();
 	await testUnidadWellFormedIsAccepted();
 	await testUnidadNullIsAccepted();
+	await testExplicitNullsAccepted();
 	await testPlanificadaIsAccepted();
 	await testAliasRejection();
 	await testReemplazaValidation();

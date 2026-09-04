@@ -21,8 +21,11 @@ import type { Task, WorkUnit, WorkerReport } from "../core/state.js";
 
 export interface WorkerToolContext {
 	cwd: string;
-	/** Modelo por capacidad — undefined = usa modelo por defecto de pi. */
+	/** Modelo del orchestrator — fallback cuando `models` no trae entrada para la capability.
+	 *  undefined = usa modelo por defecto de pi. */
 	model: ResolvedModel | undefined;
+	/** Modelos resueltos por capability (model-per-role real). undefined por clave = `model`. */
+	models?: Partial<Record<"explorer" | "implementer" | "verifier", ResolvedModel | undefined>> | undefined;
 	/** thinking level opcional por capability. */
 	thinkingLevel?: "off" | "low" | "medium" | "high" | undefined;
 	/** Tools AIES-side registradas según disponibilidad del `cwd` (ADR-011). */
@@ -158,7 +161,9 @@ export async function runWorker(
 ): Promise<WorkerRunOutcome & { report?: WorkerReport | null; reportError?: string | null }> {
 	const deps: WorkerSessionDeps = {
 		cwd: ctx.cwd,
-		model: ctx.model,
+		// Model-per-role real: usa el modelo resuelto para esta capability; cae al del
+		// orchestrator sólo si no hay asignación explícita (política de default definida).
+		model: ctx.models?.[capability] ?? ctx.model,
 		capability,
 		thinkingLevel: ctx.thinkingLevel,
 		customTools: ctx.customTools,
