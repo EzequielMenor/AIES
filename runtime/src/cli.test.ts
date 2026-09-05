@@ -700,3 +700,77 @@ describe("stripRunPrefix — routing `aies run` (headless MVP DoD)", () => {
 		assert.deepEqual(stripRunPrefix([]), { headless: false, rest: [] });
 	});
 });
+
+// ── Tool trace (v0.5 Caja de cristal): runCycle → log.jsonl ─────────────────────
+
+describe("Tool trace — registro por runCycle", () => {
+	it("vuelca entradas `tool` emparejadas (args, target, archivos, resumen, error) al appendLog", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "aies-trace-run-"));
+		const store = new LocalStore(cwd);
+		let turn = 0;
+		const fixture = enCursoState(0);
+		await runCycle(fixture.task, {
+			cwd,
+			resumeFrom: fixture,
+			model: undefined,
+			thinkingLevel: undefined,
+			limits: { maxIterations: 12 },
+			signal: undefined,
+			store,
+			renderer: silentRenderer(),
+			decideOverride: async (): Promise<DecideOutcome> => {
+				turn += 1;
+				if (turn === 1) {
+					return {
+						decision: {
+							operación: "ejecutar una unidad",
+							ajustePlan: null,
+							unidad: { tipo: "existente", id: "u1" },
+							capacidad: "implementer",
+							comunicación: null,
+							motivo: "implementar",
+							condición: null,
+						},
+						telemetry: TELEM,
+						raw: "{}",
+						parseFail: false,
+					};
+				}
+				return decideTerminar(terminarDecision())();
+			},
+			executeOverride: async (_s, _d, events): Promise<ExecuteOutcome> => {
+				events.onWorkerToolCall?.("read", { path: "src/a.ts" });
+				events.onWorkerToolResult?.("read", "1\n2\n3", false);
+				events.onWorkerToolCall?.("bash", { command: "pnpm tsc" });
+				events.onWorkerToolResult?.("bash", "boom", true);
+				return { result: { kind: "unidad", text: '{"resumen":"hecho","cumple":true}', unidadId: "u1", passed: true }, telemetry: TELEM };
+			},
+			startup: {
+				availability: { codegraph: "missing", projectmem: "missing", cwd: "/tmp" },
+				codegraphInit: { status: "skipped", message: "test" },
+				memoryBriefing: null,
+				briefing: ["HERRAMIENTAS: sin integraciones."],
+				customTools: [],
+				toolNames: { code_explore: false, mem_read: false, mem_log: false },
+			},
+		});
+		const tools = store.readLog().filter((e): e is import("./observability.js").ToolTraceLogEntry => e.type === "tool");
+		assert.equal(tools.length, 2);
+		assert.deepEqual(tools[0], {
+			...tools[0],
+			type: "tool",
+			unidadId: "u1",
+			capacidad: "implementer",
+			herramienta: "read",
+			target: "src/a.ts",
+			archivos_leidos: ["src/a.ts"],
+			archivos_modificados: [],
+			resumen: "3 líneas",
+			error: false,
+		});
+		assert.equal(tools[1]!.herramienta, "bash");
+		assert.equal(tools[1]!.target, "pnpm tsc");
+		assert.equal(tools[1]!.error, true);
+		assert.equal(tools[1]!.iter, tools[0]!.iter);
+	});
+});

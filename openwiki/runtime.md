@@ -122,11 +122,12 @@ Two stores coexist for the two surfaces (CLI active, extension legacy):
 
 ## 5. Observability (`log.jsonl`)
 
-Defined in `runtime/src/observability.ts`. Three entry shapes:
+Defined in `runtime/src/observability.ts`. Four entry shapes:
 
 - **`type: "decision"`** — one per turn of the loop; carries `operación`, `ajustePlan`, `motivo`, optional `unidad`, `capacidad`, `comunicación`, `condición`, `parseFail`, the orchestrator's turn telemetry (`usage` / `contextUsage` / `telemetryUnavailable` / `telemetryReason`) and the model-per-role label (`modelo: "provider/model-id"` cuando `resolveWorkerModel` lo conoce, ausente en tests/entradas sintéticas). Optional `ts` (ISO).
 - **`type: "resultado"`** — one per executed operation; carries `resultado` text, `kind` (`info | unidad | comunicación | terminación | fallo | límite | parse_error`), `unidadId`, telemetry, optional `límite_alcanzado`, optional `modelo` (etiqueta del worker que ejecutó la unidad: orchestrator en `obtener información`, capability de la unidad en `ejecutar una unidad`, ausente en comunicar/terminar), y opcional `atribución`. (`atribución` was an E-01A experimental field; the flag is gone in the current CLI.)
 - **`type: "compaction"`** — `compaction_start`/`compaction_end` events from pi, with `tokensBefore`/`estimatedTokensAfter`/`willRetry` and the reason. These are not loop turns; they leave a footprint for `RNF-18/19` and `H-01`.
+- **`type: "tool"`** — Tool trace (v0.5 *Caja de cristal*): one per completed worker tool-execution, paired call↔result by `runtime/src/core/tool-trace.ts` (`createToolTraceRecorder`, wired in `cli.ts::runCycle`). Carries `herramienta`, `args` relevantes (payloads textuales resumidos como `<N líneas>`, nunca volcados), `target`, `archivos_leidos`/`archivos_modificados`, `resumen` de una línea del resultado, `error`, más `iter`/`unidadId`/`capacidad` para correlación con la vuelta. The main view only shows the `✓/✗ tool target · resumen` line from the renderer; full inspection is `/trace [unidad]`. Metrics extractors ignore this type (filtered by `decision|resultado|compaction`).
 
 The CLI assigns `ts: new Date().toISOString()` at emission time, so wall-clock per turn is computable from the log alone. `modelo` (cuando está) deja huella del modelo real con que corrió cada rol — útil para auditoría de model-per-role y para el extractor de métricas de `06-research`.
 

@@ -500,6 +500,47 @@ describe("StreamRenderer TTY", () => {
 	});
 });
 
+describe("StreamRenderer — tool trace (resumen limpio en vista principal)", () => {
+	let renderer: StreamRenderer | undefined;
+	afterEach(() => {
+		renderer?.finalize();
+	});
+
+	it("onWorkerToolResult fija ✓ con herramienta, target y resumen de una línea", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "explorer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerToolCall("u1", "read", { path: "src/a.ts", offset: 1 });
+		renderer.onWorkerToolResult("u1", "read", "l1\nl2\nl3", false);
+		const plain = stream.plain();
+		assert.match(plain, /✓\s+read\s+src\/a\.ts\s+· 3 líneas/);
+		// Detalle interno NO satura el scrollback: el contenido crudo del resultado no se pinta.
+		assert.doesNotMatch(plain, /l1\nl2\nl3/);
+	});
+
+	it("onWorkerToolResult en error pinta ✗ · error y branch con el mensaje, sin volcar todo", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "verifier", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerToolCall("u1", "bash", { command: "pnpm tsc" });
+		renderer.onWorkerToolResult("u1", "bash", "Error TS2345: bad\nstack\nmore\nlines\nhere", true);
+		const plain = stream.plain();
+		assert.match(plain, /✗\s+bash\s+pnpm tsc\s+· error/);
+		assert.match(plain, /Error TS2345: bad/);
+		// sólo 3 líneas del error al branch: el resto queda en log.jsonl (`/trace`)
+		assert.doesNotMatch(plain, /here/);
+	});
+
+	it("edit sin camino usa target del arg y resume aplicado", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u1", objetivo: "test", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerToolCall("u1", "edit", { path: "src/b.ts", new_text: "x\ny\nz" });
+		renderer.onWorkerToolResult("u1", "edit", "ok", false);
+		assert.match(stream.plain(), /✓\s+edit\s+src\/b\.ts\s+· aplicado/);
+	});
+});
+
 describe("StreamRenderer pipe (no-TTY)", () => {
 	let renderer: StreamRenderer | undefined;
 	afterEach(() => renderer?.finalize());
