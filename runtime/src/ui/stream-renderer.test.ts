@@ -328,6 +328,71 @@ describe("StreamRenderer TTY", () => {
 		assert.doesNotMatch(plain, /▲ Orquestador/);
 	});
 
+	it("T4.9: comunicación con fences markdown se limpia — sin ``` literales, código con borde", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream);
+		const texto = [
+			"El fichero relevante es:",
+			"",
+			"```ts",
+			"export const PROFILE = {",
+			"  name: 'Arnau',",
+			"}",
+			"```",
+		].join("\n");
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision: comunicarDecision(texto),
+			result: { kind: "comunicación", text: texto, unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		const plain = stream.plain();
+		assert.doesNotMatch(plain, /```/);
+		assert.match(plain, /El fichero relevante es:/);
+		assert.match(plain, /ts/);
+		assert.match(plain, /│ export const PROFILE = \{/);
+		assert.match(plain, /│ {3}name: 'Arnau',/);
+	});
+
+	it("T4.9: obtener información en verbose formatea fences; sin verbose los strippea al resumir", () => {
+		const texto = ["Usa JWT, ver:", "```ts", "const x = 1;", "```"].join("\n");
+		const decision = infoDecision();
+
+		const verboseStream = captureStream(true);
+		const verboseRenderer = new StreamRenderer(verboseStream, { verbose: true });
+		verboseRenderer.onLoopObservation({ phase: "execution:start", state: sampleState(), decision });
+		verboseRenderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision,
+			result: { kind: "info", text: texto, unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		const verbosePlain = verboseStream.plain();
+		assert.doesNotMatch(verbosePlain, /```/);
+		assert.match(verbosePlain, /│ const x = 1;/);
+		verboseRenderer.finalize();
+
+		const plainStream = captureStream(true);
+		const plainRenderer = new StreamRenderer(plainStream);
+		plainRenderer.onLoopObservation({ phase: "execution:start", state: sampleState(), decision });
+		plainRenderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision,
+			result: { kind: "info", text: texto, unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		const summarized = plainStream.plain();
+		assert.doesNotMatch(summarized, /```/);
+		assert.match(summarized, /Usa JWT, ver: const x = 1;/);
+		plainRenderer.finalize();
+	});
+
 	it("compaction start/end y no-op en LogEntry que no es compaction", () => {
 		const stream = captureStream(true);
 		renderer = new StreamRenderer(stream);
@@ -358,12 +423,105 @@ describe("StreamRenderer TTY", () => {
 		const plain = stream.plain();
 		// En TTY el spinner se borra con \\r; lo que queda visible es lo posterior al último CR.
 		const visual = plain.replace(/[^\n]*\r/g, "");
-		assert.match(plain, /Orquestador decidiendo/);
+		assert.match(plain, /Orquestador (pensando|decidiendo|evaluando|sopesando)/);
 		// Corrección UX: la deliberación del orquestador ya NO ensucia el scrollback.
 		assert.doesNotMatch(visual, /Decisión :/);
 		assert.doesNotMatch(visual, /Motivo   :/);
-		assert.doesNotMatch(visual, /Orquestador decidiendo/);
+		assert.doesNotMatch(visual, /Orquestador (pensando|decidiendo|evaluando|sopesando)/);
 		assert.equal(visual.includes("\r"), false);
+	});
+
+	it("T4.9: los verbos del orquestador rotan de forma determinista en llamadas sucesivas", () => {
+		const stream = captureStream(false); // pipe: cada pintado es línea completa
+		renderer = new StreamRenderer(stream);
+		renderer.onDecideStart(0);
+		renderer.onDecideStart(1);
+		renderer.onDecideStart(2);
+		renderer.onDecideStart(3);
+		renderer.onDecideStart(4); // 5ª llamada: vuelve a rotar (pool de 4 verbos)
+		const lines = stream.plain().trim().split("\n");
+		assert.match(lines[0]!, /Orquestador pensando…/);
+		assert.match(lines[1]!, /Orquestador decidiendo…/);
+		assert.match(lines[2]!, /Orquestador evaluando…/);
+		assert.match(lines[3]!, /Orquestador sopesando…/);
+		assert.match(lines[4]!, /Orquestador pensando…/);
+	});
+
+	it("T4.9: onWorkerStart llena el hueco antes de la primera tool call, con una segunda línea de verbo", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "explorar", capacidad: "explorer", estado: "En curso" }, { model: "test" });
+		const lines = stream.plain().trim().split("\n");
+		assert.match(lines[0]!, /Explorer/);
+		assert.match(lines[1]!, /Explorando…|Mapeando…|Rastreando…|Inspeccionando…/);
+	});
+
+	it("T4.9: onWorkerToolCall pinta el target real en una segunda línea (dim)", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "implementar", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerToolCall("u0", "read", { path: "src/auth.ts" });
+		const plain = stream.plain();
+		assert.match(plain, /read/);
+		assert.match(plain, /src\/auth\.ts/);
+		// La línea del target es la última antes de settle (no colapsada en la misma línea que "read").
+		const lines = plain.trim().split("\n");
+		const readLine = lines.findIndex((l) => /read/.test(l) && !/✓|✗/.test(l));
+		assert.ok(readLine >= 0);
+		assert.match(lines[readLine + 1] ?? "", /src\/auth\.ts/);
+	});
+
+	it("T4.9: onWorkerToolResult vuelve a llenar el hueco hasta la siguiente tool call", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "implementar", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerToolCall("u0", "bash", { command: "ls" });
+		renderer.onWorkerToolResult("u0", "bash", "ok", false);
+		const plain = stream.plain();
+		const afterToolResult = plain.split("✓")[1] ?? "";
+		assert.match(afterToolResult, /Editando…|Cocinando…|Tejiendo…|Puliendo…/);
+	});
+
+	it("T4.9: el hueco 'pensando' del worker no sobrevive a onWorkerFinish", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "implementar", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u0", { kind: "unidad", text: "listo", unidadId: "u0", passed: true });
+		const plain = stream.plain();
+		const lastLine = plain.trim().split("\n").at(-1)!;
+		assert.match(lastLine, /Resultado: listo/);
+	});
+
+	it("T4.9: 'obtener información' abre un bloque visible (antes: silencio total) y muestra el hallazgo", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		const decision = infoDecision();
+		renderer.onLoopObservation({ phase: "execution:start", state: sampleState(), decision });
+		let plain = stream.plain();
+		assert.match(plain, /Explorer/);
+		assert.match(plain, /Explorando…|Mapeando…|Rastreando…|Inspeccionando…/);
+		renderer.onLoopObservation({
+			phase: "execution:resolved",
+			state: sampleState(),
+			decision,
+			result: { kind: "info", text: "el módulo de auth usa JWT en middleware.ts", unidadId: null, passed: null },
+			telemetry: TELEM,
+			atribución: null,
+		});
+		plain = stream.plain();
+		assert.match(plain, /Resultado: el módulo de auth usa JWT en middleware\.ts/);
+	});
+
+	it("T4.9: 'obtener información' con tool calls reales las muestra (antes: emptyWorkerSink las descartaba)", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		const decision = infoDecision();
+		renderer.onLoopObservation({ phase: "execution:start", state: sampleState(), decision });
+		renderer.onWorkerToolCall("info", "grep", { pattern: "JWT" });
+		renderer.onWorkerToolResult("info", "grep", "3 matches", false);
+		const plain = stream.plain();
+		assert.match(plain, /grep/);
+		assert.match(plain, /JWT/);
 	});
 
 	it("con verbose, la decisión sí se muestra como antes", () => {
@@ -511,7 +669,7 @@ describe("StreamRenderer pipe (no-TTY)", () => {
 		renderer.onDecideSuccess(infoDecision());
 		renderer.finalize();
 		assert.equal(stream.text().includes("\r"), false);
-		assert.match(stream.plain(), /Orquestador decidiendo/);
+		assert.match(stream.plain(), /Orquestador (pensando|decidiendo|evaluando|sopesando)/);
 		// Por defecto NO se vuelca "Decisión :" en pipe; queda sólo para verbose.
 		assert.doesNotMatch(stream.plain(), /Decisión :/);
 	});

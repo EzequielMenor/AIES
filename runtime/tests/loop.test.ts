@@ -445,6 +445,54 @@ async function testComunicarBloqueaSinExecute(): Promise<void> {
 	console.log("OK comunicar-bloqueante: decide 1 vez, execute 0, waiting_for_user");
 }
 
+async function testObtenerInformacionPropagaEventosDeTool(): Promise<void> {
+	// T4.9 — `obtener información` no tiene WorkUnit, así que el bucle usaba emptyWorkerSink():
+	// las tool calls de Explorer (grep/read reales) nunca llegaban a onWorkerToolCall/Result, y
+	// la TUI no tenía forma de mostrarlas. Verifica que ahora SÍ se propagan.
+	const state: RuntimeState = initState({
+		objetivo: "investigar el módulo de auth",
+		alcance: null,
+		restricciones: null,
+		resultadoEsperado: null,
+		condicionFinalizacion: "x",
+	});
+	const toolCalls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+	const toolResults: Array<{ tool: string; result: string; isError: boolean }> = [];
+	let calls = 0;
+	await runLoop(state, {
+		onWorkerToolCall: (_unitId, tool, args) => toolCalls.push({ tool, args }),
+		onWorkerToolResult: (_unitId, tool, result, isError) => toolResults.push({ tool, result, isError }),
+		decide: async () => {
+			calls += 1;
+			if (calls === 1) {
+				return {
+					decision: { operación: "obtener información", motivo: "investigar" },
+					telemetry: TELEM,
+					raw: "{}",
+					parseFail: false,
+				};
+			}
+			return {
+				decision: { operación: "terminar", condición: { desenlace: "completed", detalle: "listo" }, motivo: "fin" },
+				telemetry: TELEM,
+				raw: "{}",
+				parseFail: false,
+			};
+		},
+		execute: async (_state, decision, events): Promise<ExecuteOutcome> => {
+			if (decision.operación === "obtener información") {
+				events.onWorkerToolCall?.("grep", { pattern: "JWT" });
+				events.onWorkerToolResult?.("grep", "3 matches", false);
+				return { result: { kind: "info", text: "usa JWT", unidadId: null, passed: null }, telemetry: TELEM };
+			}
+			return { result: { kind: "terminación", text: "listo", unidadId: null, passed: null }, telemetry: TELEM };
+		},
+	});
+	assert.deepEqual(toolCalls, [{ tool: "grep", args: { pattern: "JWT" } }]);
+	assert.deepEqual(toolResults, [{ tool: "grep", result: "3 matches", isError: false }]);
+	console.log("OK obtener-información-sink: tool calls/resultados llegan a los handlers (antes: emptyWorkerSink los descartaba)");
+}
+
 async function testTerminarInvalidoPorUnidadesActivas(): Promise<void> {
 	// Plan §3 — invariante 7: completar es imposible con unidades activas Pendiente/En curso/Fallida.
 	const state: RuntimeState = initState({
@@ -499,7 +547,8 @@ async function main(): Promise<void> {
 	await testStopSignalPausesTaskNotFails();
 	await testComunicarBloqueaSinExecute();
 	await testTerminarInvalidoPorUnidadesActivas();
-	console.log("\nloop.test OK: 9 tests unitarios del bucle + bus de eventos verificados");
+	await testObtenerInformacionPropagaEventosDeTool();
+	console.log("\nloop.test OK: 10 tests unitarios del bucle + bus de eventos verificados");
 }
 
 main().catch((e) => {
