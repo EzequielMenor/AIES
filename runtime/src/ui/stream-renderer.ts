@@ -34,7 +34,7 @@ import type {
 	WorkerInfo,
 } from "../core/events.js";
 import type { LoopObservation } from "../core/observation.js";
-import type { Decision, RuntimeState, WorkUnit } from "../core/state.js";
+import type { Capability, Decision, RuntimeState, WorkUnit } from "../core/state.js";
 import type { LogEntry } from "../observability.js";
 
 // ── Paleta ANSI truecolor (hex exactos de las reglas de UX) ─────────────────
@@ -88,7 +88,23 @@ interface ActiveSpinner {
 interface OpenWorker {
 	id: string;
 	esVerificacion: boolean;
+	/** T4.6 — rol real del worker, para elegir el verbo del spinner "pensando". */
+	capacidad: Capability;
 }
+
+/**
+ * T4.6 — vocabulario informal de "pensando" por rol (estilo Claude Code: un verbo lúdico
+ * animado + detalle real cuando lo hay, todo en una línea). Rota de forma determinista
+ * (contador de instancia, no random) para que los tests puedan predecir el verbo exacto.
+ */
+const THINKING_VERBS: Record<Capability, readonly string[]> = {
+	explorer: ["Explorando", "Mapeando", "Rastreando", "Inspeccionando"],
+	implementer: ["Editando", "Cocinando", "Tejiendo", "Puliendo"],
+	verifier: ["Comprobando", "Auditando", "Verificando", "Inspeccionando"],
+};
+
+/** Verbos del orquestador "decidiendo" (mismo espíritu, sin ligarse a una `Capability`). */
+const ORCHESTRATOR_VERBS: readonly string[] = ["pensando", "decidiendo", "evaluando", "sopesando"];
 
 export class StreamRenderer implements AiesEventHandlers {
 	private readonly stream: NodeJS.WritableStream;
@@ -120,6 +136,9 @@ export class StreamRenderer implements AiesEventHandlers {
 	private isRetrySafe = false;
 	/** Línea de estado de telemetría pendiente de emisión tras cerrar el worker. */
 	private pendingStatusLine: string | null = null;
+	/** T4.6 — contadores de rotación determinista de verbos (por instancia, no random). */
+	private orchestratorThinkingTick = 0;
+	private workerThinkingTick = 0;
 
 	constructor(stream: NodeJS.WritableStream = process.stdout, options: { verbose?: boolean } = {}) {
 		this.stream = stream;
@@ -217,6 +236,32 @@ export class StreamRenderer implements AiesEventHandlers {
 		lines.forEach((ln, i) => this.line(i === 0 ? `${prefix}${ln}` : `│     ${ln}`));
 	}
 
+	/** T4.6 — siguiente verbo del orquestador "pensando" (rotación determinista). */
+	private nextOrchestratorVerb(): string {
+		const verb = ORCHESTRATOR_VERBS[this.orchestratorThinkingTick % ORCHESTRATOR_VERBS.length]!;
+		this.orchestratorThinkingTick += 1;
+		return verb;
+	}
+
+	/** T4.6 — siguiente verbo "pensando" para el rol dado (rotación determinista por rol). */
+	private nextWorkerVerb(capacidad: Capability): string {
+		const pool = THINKING_VERBS[capacidad];
+		const verb = pool[this.workerThinkingTick % pool.length]!;
+		this.workerThinkingTick += 1;
+		return verb;
+	}
+
+	/**
+	 * T4.6 — llena el silencio entre `onWorkerStart`/`onWorkerToolResult` y el siguiente evento
+	 * (tool call, verificación, o fin de unidad): sin esto, el worker generando/razonando sin
+	 * invocar una tool no emite NINGÚN evento y el spinner se apaga (usuario ve la terminal
+	 * congelada). No hay contenido real que mostrar en ese hueco (sin streaming de pensamiento —
+	 * T5 deferred), así que el detalle es un verbo genérico del rol, nunca contenido inventado.
+	 */
+	private spinWorkerThinking(capacidad: Capability): void {
+		this.spin("│  ", `${pc.bold(this.nextWorkerVerb(capacidad))}…`);
+	}
+
 	/** Resumen de una línea para el scrollback: primera línea con contenido, recortada. */
 	private summarize(text: string, max = 140): string {
 		const line = text.replace(/\s+/g, " ").trim();
@@ -296,7 +341,7 @@ export class StreamRenderer implements AiesEventHandlers {
 	}
 
 	onDecideStart(_iteration: number): void {
-		this.spin("", `${cyan("◆")} Orquestador decidiendo…`);
+		this.spin("", `${cyan("◆")} Orquestador ${this.nextOrchestratorVerb()}…`);
 	}
 
 	onDecideSuccess(decision: Decision): void {
@@ -329,10 +374,14 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.worker = {
 			id: unit.id,
 			esVerificacion: unit.capacidad === "verifier",
+			capacidad: unit.capacidad,
 		};
 		const label = CAP_LABELS[unit.capacidad] ?? unit.capacidad;
 		const model = workerInfo.model && workerInfo.model !== "unknown" ? ` · ${workerInfo.model}` : "";
 		this.line(`┌─ ${cyan("●")} ${bright(label)} (${cyan(unit.id)}: ${unit.objetivo})${model}`);
+		// T4.6 — el worker puede tardar en generar antes de su primera tool call; sin esto la
+		// terminal se queda en silencio (spinner apagado) hasta ese primer evento.
+		this.spinWorkerThinking(unit.capacidad);
 	}
 
 	onWorkerToolCall(unitId: string, tool: string, args: Record<string, unknown>): void {
@@ -346,6 +395,11 @@ export class StreamRenderer implements AiesEventHandlers {
 		const mark = isError ? red("✗") : green("✓");
 		const target = cur?.target ? `  ${cur.target}` : "";
 		this.settle(`│  ${mark}  ${cyan(tool)}${target}`);
+		// T4.6 — mismo hueco que en onWorkerStart: entre esta tool y la siguiente (o el fin de
+		// la unidad) el worker vuelve a generar sin emitir eventos. onWorkerFinish/
+		// onVerificationStart/onVerificationResult ya llaman a detachSpinner()/settle() antes de
+		// pintar su línea final, así que este spinner nunca sobrevive al cierre real del worker.
+		if (this.worker) this.spinWorkerThinking(this.worker.capacidad);
 	}
 
 	onVerificationStart(unitId: string, command: string): void {
@@ -359,7 +413,7 @@ export class StreamRenderer implements AiesEventHandlers {
 		if (!this.worker) {
 			// El gate determinista puede correr antes/encima sin bloque de worker (p. ej. verifier
 			// puro determinista). Abrir cabecera para mantener el árbol coherente.
-			this.worker = { id: unitId, esVerificacion: true };
+			this.worker = { id: unitId, esVerificacion: true, capacidad: "verifier" };
 			this.line(`┌─ ${cyan("●")} ${bright("Verifying")} (${cyan(unitId)})`);
 		}
 		this.verificationCommand = command;

@@ -358,12 +358,57 @@ describe("StreamRenderer TTY", () => {
 		const plain = stream.plain();
 		// En TTY el spinner se borra con \\r; lo que queda visible es lo posterior al último CR.
 		const visual = plain.replace(/[^\n]*\r/g, "");
-		assert.match(plain, /Orquestador decidiendo/);
+		assert.match(plain, /Orquestador (pensando|decidiendo|evaluando|sopesando)/);
 		// Corrección UX: la deliberación del orquestador ya NO ensucia el scrollback.
 		assert.doesNotMatch(visual, /Decisión :/);
 		assert.doesNotMatch(visual, /Motivo   :/);
-		assert.doesNotMatch(visual, /Orquestador decidiendo/);
+		assert.doesNotMatch(visual, /Orquestador (pensando|decidiendo|evaluando|sopesando)/);
 		assert.equal(visual.includes("\r"), false);
+	});
+
+	it("T4.6: los verbos del orquestador rotan de forma determinista en llamadas sucesivas", () => {
+		const stream = captureStream(false); // pipe: cada pintado es línea completa, sin \r que filtrar
+		renderer = new StreamRenderer(stream);
+		renderer.onDecideStart(0);
+		renderer.onDecideStart(1);
+		renderer.onDecideStart(2);
+		renderer.onDecideStart(3);
+		renderer.onDecideStart(4); // 5ª llamada: vuelve a rotar (pool de 4 verbos)
+		const lines = stream.plain().trim().split("\n");
+		assert.match(lines[0]!, /Orquestador pensando…/);
+		assert.match(lines[1]!, /Orquestador decidiendo…/);
+		assert.match(lines[2]!, /Orquestador evaluando…/);
+		assert.match(lines[3]!, /Orquestador sopesando…/);
+		assert.match(lines[4]!, /Orquestador pensando…/);
+	});
+
+	it("T4.6: onWorkerStart llena el hueco antes de la primera tool call (spinner nunca se apaga)", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "explorar", capacidad: "explorer", estado: "En curso" }, { model: "test" });
+		const plain = stream.plain();
+		assert.match(plain, /Explorando…|Mapeando…|Rastreando…|Inspeccionando…/);
+	});
+
+	it("T4.6: onWorkerToolResult vuelve a llenar el hueco hasta la siguiente tool call", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "implementar", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerToolCall("u0", "bash", { command: "ls" });
+		renderer.onWorkerToolResult("u0", "bash", "ok", false);
+		const plain = stream.plain();
+		const afterToolResult = plain.split("✓")[1] ?? "";
+		assert.match(afterToolResult, /Editando…|Cocinando…|Tejiendo…|Puliendo…/);
+	});
+
+	it("T4.6: el hueco 'pensando' del worker no sobrevive a onWorkerFinish (no queda en el scrollback final)", () => {
+		const stream = captureStream(false);
+		renderer = new StreamRenderer(stream);
+		renderer.onWorkerStart({ id: "u0", objetivo: "implementar", capacidad: "implementer", estado: "En curso" }, { model: "test" });
+		renderer.onWorkerFinish("u0", { kind: "unidad", text: "listo", unidadId: "u0", passed: true });
+		const plain = stream.plain();
+		const lastLine = plain.trim().split("\n").at(-1)!;
+		assert.match(lastLine, /Resultado: listo/);
 	});
 
 	it("con verbose, la decisión sí se muestra como antes", () => {
@@ -511,7 +556,7 @@ describe("StreamRenderer pipe (no-TTY)", () => {
 		renderer.onDecideSuccess(infoDecision());
 		renderer.finalize();
 		assert.equal(stream.text().includes("\r"), false);
-		assert.match(stream.plain(), /Orquestador decidiendo/);
+		assert.match(stream.plain(), /Orquestador (pensando|decidiendo|evaluando|sopesando)/);
 		// Por defecto NO se vuelca "Decisión :" en pipe; queda sólo para verbose.
 		assert.doesNotMatch(stream.plain(), /Decisión :/);
 	});

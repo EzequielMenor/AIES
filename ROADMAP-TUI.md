@@ -8,7 +8,10 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-25 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T4.6+T4.8+T6 implementados; T2.3 aplazado; T4 ampliado con 4.8 árbol de plan adaptativo y desacoplamiento de telemetría de worker).
+> Última revisión: 2026-09-05 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.1+T4.3(--json,--verbose)+
+> T4.4+T4.6+T4.8+T6 implementados; T2.3 aplazado; T4.2/4.3(--quiet,NO_COLOR)/4.5/4.7 pendientes).
+> Nota: la revisión anterior (2026-08-25) ya listaba T4.6 como implementado en esta cabecera
+> pero el ítem §4.6 no tenía ✅ — doc drift entre cabecera y cuerpo; corregido aquí.
 
 ---
 
@@ -330,13 +333,32 @@
 4.4 **Truncado de salidas largas** con marca expandible vía `--verbose`
     (outputs de bash no inundan el scroll).
 4.5 **Fallback de color** para terminales sin truecolor.
-4.6 **Vocabulario formal de estados.** Glifos consistentes en el
-    renderer: `◌` pensando, `◉` decidiendo, `●` ejecutando, `✓`
-    verificado, `!` intervención, `✗` fallido. Aplica al spinner
-    (`onDecideStart`, ya activo por T0.3) y a los rótulos de bloques
-    de worker (✓/✗ ya activos en `stream-renderer.ts`). Solo cambios
-    locales en `stream-renderer.ts` + tests; el bucle no se toca
-    (P-02 intacto).
+4.6 **Indicador "pensando" del orquestador y los workers.** ✅ (2026-09-05).
+    Ampliado sobre el alcance original (glifos estáticos) — gap real
+    encontrado: entre `onWorkerStart`/`onWorkerToolResult` y el siguiente
+    evento (tool call, verificación, fin de unidad) el worker está
+    generando/razonando sin invocar ninguna tool, y el bucle no emite
+    NINGÚN evento en ese hueco — el spinner se apagaba y la terminal
+    parecía congelada. Sin streaming de pensamiento (T5 deferred) no hay
+    contenido real que mostrar ahí, así que se rellena con un **verbo
+    lúdico por rol** (estilo Claude Code: verbo animado + detalle real
+    cuando lo hay, todo en una línea — se descartó un diseño de dos líneas
+    separadas por necesitar redibujado ANSI multilínea nuevo sin beneficio
+    claro sobre una sola línea).
+    - `THINKING_VERBS` (`explorer`/`implementer`/`verifier`) y
+      `ORCHESTRATOR_VERBS` en `stream-renderer.ts`, rotación determinista
+      por contador de instancia (nunca random — tests predicen el verbo
+      exacto).
+    - `onDecideStart` rota el verbo del orquestador (antes: texto fijo
+      "decidiendo").
+    - `onWorkerStart` y `onWorkerToolResult` llaman a
+      `spinWorkerThinking(capacidad)` para cerrar el hueco; `onWorkerFinish`/
+      `onVerificationStart`/`onVerificationResult` ya hacían
+      `detachSpinner()`/`settle()` antes de pintar su línea final, así que
+      el spinner "pensando" nunca sobrevive al cierre real del worker (sin
+      cambios necesarios ahí).
+    - Sigue sin tocar el bucle (P-02 intacto): todo el cambio vive en
+      `stream-renderer.ts` + tests.
 4.7 **Tarjeta de cierre (`CompletionCard` / `FailureCard`).** Al
     terminar una tarea (`Completada` o `Fallida`), pintar una tarjeta
     resumen con `{objetivo}`, métricas agregadas de `TaskTelemetry`
