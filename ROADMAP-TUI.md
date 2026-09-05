@@ -8,7 +8,9 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-25 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T4.6+T4.8+T6 implementados; T2.3 aplazado; T4 ampliado con 4.8 árbol de plan adaptativo y desacoplamiento de telemetría de worker).
+> Última revisión: 2026-09-05 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T4.6/4.9+T4.8+T6
+> implementados; T2.3 aplazado; T4.1/4.2/4.4/4.5/4.7 pendientes — T4.1/4.4 en
+> `feat/tui-t4-history-truncation-v2`, sin mergear).
 
 ---
 
@@ -330,13 +332,51 @@
 4.4 **Truncado de salidas largas** con marca expandible vía `--verbose`
     (outputs de bash no inundan el scroll).
 4.5 **Fallback de color** para terminales sin truecolor.
-4.6 **Vocabulario formal de estados.** Glifos consistentes en el
-    renderer: `◌` pensando, `◉` decidiendo, `●` ejecutando, `✓`
-    verificado, `!` intervención, `✗` fallido. Aplica al spinner
-    (`onDecideStart`, ya activo por T0.3) y a los rótulos de bloques
-    de worker (✓/✗ ya activos en `stream-renderer.ts`). Solo cambios
-    locales en `stream-renderer.ts` + tests; el bucle no se toca
-    (P-02 intacto).
+4.6/4.9 **Indicador "pensando" (2 líneas) + visibilidad de `obtener información`
+    + formato de código en texto libre.** ✅ (2026-09-05). Ampliado muy por
+    encima del alcance original (glifos estáticos) tras feedback en vivo:
+    - **Spinner de dos líneas** (título animado + subtítulo dim con el
+      detalle real: target de tool, comando de verificación). `ActiveSpinner`
+      ahora trackea `linesDrawn` para el redibujado ANSI multilínea
+      (`clearOverlay`/`paintSpinner` suben/bajan 1 línea según corresponda);
+      pipe-safe: en no-TTY cada línea del bloque se imprime completa, sin
+      animación. `THINKING_VERBS`/`ORCHESTRATOR_VERBS`: rotación determinista
+      por rol (nunca random — tests predicen el verbo exacto).
+    - **Hueco cerrado en `onWorkerStart`/`onWorkerToolResult`** (`spinWorkerThinking`):
+      sin esto, el worker generando/razonando sin tool call no emitía ningún
+      evento y el spinner se apagaba.
+    - **`obtener información` (Explorer) ahora es visible — antes: silencio
+      total.** Gap real encontrado en producción: `core/loop.ts` sólo emite
+      `onWorkerStart`/`onWorkerFinish` para `ejecutar una unidad`; para
+      `obtener información` (sin `WorkUnit`) no había ningún hook. Fix en dos
+      partes:
+      - `stream-renderer.ts` abre/cierra un bloque equivalente al de un
+        worker real usando `onLoopObservation` (`execution:start`/
+        `execution:resolved`, que YA se emiten para cualquier operación) —
+        sin tocar el bucle.
+      - `core/loop.ts`: la sink de tool events era `emptyWorkerSink()` para
+        esta operación (sin `WorkUnit`), así que las tool calls reales de
+        Explorer (grep/read) se descartaban en silencio antes de llegar a
+        `onWorkerToolCall`/`onWorkerToolResult`. Ahora usa `buildWorkerSink`
+        con un id sintético (`"info"`) igual que cualquier worker — único
+        cambio en el bucle de este ticket, puramente aditivo (P-02 intacto:
+        sigue sin importar nada de presentación, sólo despacha a handlers
+        opcionales ya existentes).
+    - **Formato de código en texto libre.** Los workers son modelos de chat:
+      su prosa libre (informes, comunicación al desarrollador, hallazgos de
+      `obtener información`) trae markdown de forma natural, incluidos
+      fences ` ``` ` — mostrados tal cual salían como backticks literales
+      feos en la terminal. `formatMarkdownForTerminal()` los limpia (quita
+      delimitadores, indenta el código con borde dim) en los caminos que
+      muestran texto completo (`--verbose`, comunicación); `summarize()`
+      (vista de una línea) ahora también los quita vía `stripFenceMarkers()`
+      antes de colapsar a una línea.
+    - Superó y reemplaza el diseño de una sola línea de la iteración anterior
+      de este ítem (rama `feat/tui-worker-thinking-indicator`, sin mergear —
+      queda obsoleta, a cerrar sin mergear una vez este ticket esté aprobado).
+    - Tests: `stream-renderer.test.ts` (verbos, hueco de worker, bloque de
+      `obtener información`, formato markdown) + `loop.test.ts` (sink de
+      tool events durante `obtener información`).
 4.7 **Tarjeta de cierre (`CompletionCard` / `FailureCard`).** Al
     terminar una tarea (`Completada` o `Fallida`), pintar una tarjeta
     resumen con `{objetivo}`, métricas agregadas de `TaskTelemetry`

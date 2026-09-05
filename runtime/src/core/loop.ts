@@ -505,7 +505,12 @@ export async function runLoop(initial: RuntimeState, handlers: AiesEventHandlers
 		}
 
 		safeObserve(observe, { phase: "execution:start", state, decision: turn.decision });
-		const sink = workerUnit ? buildWorkerSink(handlers, workerUnit.id) : emptyWorkerSink();
+		// `obtener información` no tiene WorkUnit (no modifica el plan), pero SÍ invoca a Explorer
+		// con tools reales (grep/read) — antes usaba emptyWorkerSink() y esas tool calls se
+		// descartaban en silencio, sin llegar nunca a onWorkerToolCall/onWorkerToolResult. Un id
+		// sintético ("info") basta: buildWorkerSink sólo lo usa para prefijar el callback.
+		const sinkUnitId = workerUnit?.id ?? (turn.decision.operación === "obtener información" ? "info" : null);
+		const sink = sinkUnitId ? buildWorkerSink(handlers, sinkUnitId) : emptyWorkerSink();
 		const out = await handlers.execute(state, turn.decision, sink);
 		accUsage(telemetryAcc, out.telemetry.usage);
 

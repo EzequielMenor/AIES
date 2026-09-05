@@ -34,7 +34,7 @@ import type {
 	WorkerInfo,
 } from "../core/events.js";
 import type { LoopObservation } from "../core/observation.js";
-import type { Decision, RuntimeState, WorkUnit } from "../core/state.js";
+import type { Capability, Decision, RuntimeState, WorkUnit } from "../core/state.js";
 import type { LogEntry } from "../observability.js";
 
 // ── Paleta ANSI truecolor (hex exactos de las reglas de UX) ─────────────────
@@ -76,19 +76,45 @@ const CAP_LABELS: Record<string, string> = {
 	verifier: "Verifier",
 };
 
-/** Estado vivo de la línea de spinner en curso. */
+/** T4.9 — id sintético para el bloque de `obtener información` (no tiene WorkUnit real). */
+const INFO_BLOCK_ID = "__info__";
+
+/**
+ * Estado vivo del bloque de spinner en curso. `title` es la línea con el glifo animado;
+ * `subtitle` (opcional) es una segunda línea en dim con el detalle real cuando lo hay (target
+ * de una tool, comando de verificación). Sin `subtitle` el bloque es de una sola línea.
+ */
 interface ActiveSpinner {
 	prefix: string;
-	animated: string;
+	title: string;
+	subtitle: string | null;
 	frame: number;
 	ticker: ReturnType<typeof setInterval> | null;
+	/** Nº de líneas físicas actualmente pintadas (0 antes del primer paint, 1 o 2 después). */
+	linesDrawn: number;
 }
 
 /** Cabecera del bloque de worker abierto. */
 interface OpenWorker {
 	id: string;
 	esVerificacion: boolean;
+	/** Rol real del worker, para elegir el verbo del spinner "pensando" (T4.6/T4.9). */
+	capacidad: Capability;
 }
+
+/**
+ * T4.9 — vocabulario informal de "pensando" por rol (estilo Claude Code: un verbo lúdico
+ * animado + detalle real en la segunda línea cuando lo hay). Rota de forma determinista
+ * (contador de instancia, no random) para que los tests puedan predecir el verbo exacto.
+ */
+const THINKING_VERBS: Record<Capability, readonly string[]> = {
+	explorer: ["Explorando", "Mapeando", "Rastreando", "Inspeccionando"],
+	implementer: ["Editando", "Cocinando", "Tejiendo", "Puliendo"],
+	verifier: ["Comprobando", "Auditando", "Verificando", "Inspeccionando"],
+};
+
+/** Verbos del orquestador "pensando" (mismo espíritu, sin ligarse a una `Capability`). */
+const ORCHESTRATOR_VERBS: readonly string[] = ["pensando", "decidiendo", "evaluando", "sopesando"];
 
 export class StreamRenderer implements AiesEventHandlers {
 	private readonly stream: NodeJS.WritableStream;
@@ -120,6 +146,9 @@ export class StreamRenderer implements AiesEventHandlers {
 	private isRetrySafe = false;
 	/** Línea de estado de telemetría pendiente de emisión tras cerrar el worker. */
 	private pendingStatusLine: string | null = null;
+	/** T4.9 — contadores de rotación determinista de verbos (por instancia, no random). */
+	private orchestratorThinkingTick = 0;
+	private workerThinkingTick = 0;
 
 	constructor(stream: NodeJS.WritableStream = process.stdout, options: { verbose?: boolean } = {}) {
 		this.stream = stream;
@@ -144,9 +173,18 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.raw(clean.endsWith("\n") ? clean : clean + "\n");
 	}
 
-	/** Limpia el overlay del spinner (TTY) o es no-op en pipe. */
+	/**
+	 * Limpia el overlay del spinner (TTY) o es no-op en pipe. Tras un paint, el cursor queda al
+	 * final de la última línea escrita (título si no hay subtítulo, subtítulo si lo hay) — desde
+	 * ahí: limpiar la línea actual y, si había 2 líneas, subir una y limpiarla también.
+	 */
 	private clearOverlay(): void {
-		if (this.tty) this.raw("\r\x1b[2K");
+		if (!this.tty) return;
+		const lines = this.spinner?.linesDrawn ?? 0;
+		if (lines === 0) return;
+		this.raw("\r\x1b[2K");
+		if (lines === 2) this.raw("\x1b[1A\r\x1b[2K");
+		if (this.spinner) this.spinner.linesDrawn = 0;
 	}
 
 	private frameChar(): string {
@@ -155,12 +193,16 @@ export class StreamRenderer implements AiesEventHandlers {
 
 	private paintSpinner(): void {
 		if (!this.spinner) return;
-		const { prefix, animated } = this.spinner;
+		const { prefix, title, subtitle } = this.spinner;
 		if (this.tty) {
 			this.clearOverlay();
-			this.raw(`${prefix}${this.frameChar()} ${animated}`);
+			this.raw(`${prefix}${this.frameChar()} ${title}`);
+			if (subtitle !== null) this.raw(`\n${prefix}  ${pc.dim(subtitle)}`);
+			this.spinner.linesDrawn = subtitle !== null ? 2 : 1;
 		} else {
-			this.raw(`${prefix}• ${animated}\n`);
+			// pipe: cada pintado son líneas completas — sin animación, sin sobrescritura.
+			this.raw(`${prefix}• ${title}\n`);
+			if (subtitle !== null) this.raw(`${prefix}  ${subtitle}\n`);
 		}
 	}
 
@@ -172,10 +214,14 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.spinner = null;
 	}
 
-	/** Fija la línea de spinner (una única línea vivrecite). */
-	private spin(prefix: string, animated: string): void {
+	/**
+	 * Fija el bloque de spinner vivo: título animado + `subtitle` opcional (dim, segunda línea)
+	 * con el detalle real cuando lo hay. Sin `subtitle`, se comporta como el spinner de una sola
+	 * línea de siempre.
+	 */
+	private spin(prefix: string, title: string, subtitle: string | null = null): void {
 		this.detachSpinner();
-		this.spinner = { prefix, animated, frame: 0, ticker: null };
+		this.spinner = { prefix, title, subtitle, frame: 0, ticker: null, linesDrawn: 0 };
 		if (this.tty) {
 			this.paintSpinner();
 			this.spinner.ticker = setInterval(() => {
@@ -217,10 +263,66 @@ export class StreamRenderer implements AiesEventHandlers {
 		lines.forEach((ln, i) => this.line(i === 0 ? `${prefix}${ln}` : `│     ${ln}`));
 	}
 
+	/** T4.9 — siguiente verbo del orquestador "pensando" (rotación determinista). */
+	private nextOrchestratorVerb(): string {
+		const verb = ORCHESTRATOR_VERBS[this.orchestratorThinkingTick % ORCHESTRATOR_VERBS.length]!;
+		this.orchestratorThinkingTick += 1;
+		return verb;
+	}
+
+	/** T4.9 — siguiente verbo "pensando" para el rol dado (rotación determinista por rol). */
+	private nextWorkerVerb(capacidad: Capability): string {
+		const pool = THINKING_VERBS[capacidad];
+		const verb = pool[this.workerThinkingTick % pool.length]!;
+		this.workerThinkingTick += 1;
+		return verb;
+	}
+
+	/**
+	 * T4.9 — llena el silencio entre `onWorkerStart`/`onWorkerToolResult` y el siguiente evento
+	 * (tool call, verificación, o fin de unidad): sin esto, el worker generando/razonando sin
+	 * invocar una tool no emite NINGÚN evento y el spinner se apaga (usuario ve la terminal
+	 * congelada). No hay contenido real que mostrar en ese hueco (sin streaming de pensamiento —
+	 * T5 deferred), así que el detalle es un verbo genérico del rol — nunca contenido inventado —
+	 * sin segunda línea (no hay nada real que poner ahí todavía).
+	 */
+	private spinWorkerThinking(capacidad: Capability): void {
+		this.spin("│  ", `${pc.bold(this.nextWorkerVerb(capacidad))}…`);
+	}
+
+	/**
+	 * T4.9 — quita los delimitadores ``` de bloque de código markdown antes de colapsar a una
+	 * línea. Los workers son modelos de chat y su texto libre (informes, "obtener información",
+	 * comunicación al desarrollador) llega con formato markdown de forma natural; sin esto, un
+	 * resumen de un texto con fences muestra los backticks literales en vez de limpiarlos.
+	 */
+	private stripFenceMarkers(text: string): string {
+		return text.replace(/```[a-zA-Z0-9_+-]*\n?/g, "").replace(/```/g, "");
+	}
+
 	/** Resumen de una línea para el scrollback: primera línea con contenido, recortada. */
 	private summarize(text: string, max = 140): string {
-		const line = text.replace(/\s+/g, " ").trim();
+		const line = this.stripFenceMarkers(text).replace(/\s+/g, " ").trim();
 		return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
+	}
+
+	/**
+	 * T4.9 — formatea bloques de código markdown para terminal (nunca los deja como texto plano
+	 * con ``` literales): quita los delimitadores, muestra el lenguaje si lo hay en dim, e indenta
+	 * el código con un borde también en dim — visualmente separado de la prosa alrededor. Usado
+	 * sólo en los caminos que muestran texto COMPLETO (`--verbose`, comunicación al desarrollador)
+	 * — la vista resumida de una línea ya pasa por `stripFenceMarkers` dentro de `summarize`.
+	 */
+	private formatMarkdownForTerminal(text: string): string {
+		return text.replace(/```[ \t]*([\w+-]*)[ \t]*\n([\s\S]*?)```/g, (_match, lang: string, code: string) => {
+			const body = code.replace(/\n+$/, "");
+			const header = lang ? `  ${pc.dim(lang)}` : "";
+			const bordered = body
+				.split("\n")
+				.map((ln) => `  ${pc.dim("│")} ${ln}`)
+				.join("\n");
+			return header ? `${header}\n${bordered}` : bordered;
+		});
 	}
 
 	private formatElapsed(startTs: number, endTs: number): string {
@@ -296,7 +398,7 @@ export class StreamRenderer implements AiesEventHandlers {
 	}
 
 	onDecideStart(_iteration: number): void {
-		this.spin("", `${cyan("◆")} Orquestador decidiendo…`);
+		this.spin("", `${cyan("◆")} Orquestador ${this.nextOrchestratorVerb()}…`);
 	}
 
 	onDecideSuccess(decision: Decision): void {
@@ -329,16 +431,20 @@ export class StreamRenderer implements AiesEventHandlers {
 		this.worker = {
 			id: unit.id,
 			esVerificacion: unit.capacidad === "verifier",
+			capacidad: unit.capacidad,
 		};
 		const label = CAP_LABELS[unit.capacidad] ?? unit.capacidad;
 		const model = workerInfo.model && workerInfo.model !== "unknown" ? ` · ${workerInfo.model}` : "";
 		this.line(`┌─ ${cyan("●")} ${bright(label)} (${cyan(unit.id)}: ${unit.objetivo})${model}`);
+		// T4.9 — el worker puede tardar en generar antes de su primera tool call; sin esto la
+		// terminal se queda en silencio (spinner apagado) hasta ese primer evento.
+		this.spinWorkerThinking(unit.capacidad);
 	}
 
 	onWorkerToolCall(unitId: string, tool: string, args: Record<string, unknown>): void {
 		const target = this.deriveTarget(args);
 		this.lastTool = { tool, target };
-		this.spin("│  ", `${cyan(tool)}${target ? `  ${target}` : ""}`);
+		this.spin("│  ", cyan(tool), target);
 	}
 
 	onWorkerToolResult(unitId: string, tool: string, result: string, isError: boolean): void {
@@ -346,11 +452,16 @@ export class StreamRenderer implements AiesEventHandlers {
 		const mark = isError ? red("✗") : green("✓");
 		const target = cur?.target ? `  ${cur.target}` : "";
 		this.settle(`│  ${mark}  ${cyan(tool)}${target}`);
+		// T4.9 — mismo hueco que en onWorkerStart: entre esta tool y la siguiente (o el fin de
+		// la unidad) el worker vuelve a generar sin emitir eventos. onWorkerFinish/
+		// onVerificationStart/onVerificationResult ya llaman a detachSpinner()/settle() antes de
+		// pintar su línea final, así que este spinner nunca sobrevive al cierre real del worker.
+		if (this.worker) this.spinWorkerThinking(this.worker.capacidad);
 	}
 
 	onVerificationStart(unitId: string, command: string): void {
 		this.verificationCommand = command;
-		this.spin("│  ", cyan(command));
+		this.spin("│  ", cyan("verificando"), command);
 	}
 
 	/** Verificación determinista (sin LLM): un comando real del proyecto, pintado como el resto
@@ -359,11 +470,11 @@ export class StreamRenderer implements AiesEventHandlers {
 		if (!this.worker) {
 			// El gate determinista puede correr antes/encima sin bloque de worker (p. ej. verifier
 			// puro determinista). Abrir cabecera para mantener el árbol coherente.
-			this.worker = { id: unitId, esVerificacion: true };
+			this.worker = { id: unitId, esVerificacion: true, capacidad: "verifier" };
 			this.line(`┌─ ${cyan("●")} ${bright("Verifying")} (${cyan(unitId)})`);
 		}
 		this.verificationCommand = command;
-		this.spin("│  ", `${cyan(name)} ${pc.dim(command)}`);
+		this.spin("│  ", cyan(name), command);
 	}
 
 	onDeterministicCheckResult(unitId: string, name: string, command: string, passed: boolean, failure: string): void {
@@ -407,7 +518,7 @@ export class StreamRenderer implements AiesEventHandlers {
 		}
 		// La unidad puede traer un reporte JSON multilínea (veracidad para el orquestador, no
 		// para la terminal). Resumen a una línea salvo verbose.
-		const visible = this.verbose ? result.text : this.summarize(result.text);
+		const visible = this.verbose ? this.formatMarkdownForTerminal(result.text) : this.summarize(result.text);
 		if (this.worker.esVerificacion) {
 			this.branch("│  ", `${cyan("└─")} Salida: ${visible}`);
 			const color = result.passed === true ? green : result.passed === false ? red : cyan;
@@ -530,6 +641,19 @@ export class StreamRenderer implements AiesEventHandlers {
 				this.line(`${violet("⚑")} Intervención del desarrollador incorporada — se tendrá en cuenta en la decisión.`);
 				return;
 			}
+			case "execution:start": {
+				// T4.9 — `obtener información` corre SIN WorkUnit: `core/loop.ts` no emite
+				// `onWorkerStart` para esta operación (gap verificado — sólo dispara para
+				// `ejecutar una unidad`), así que hasta ahora no había NINGÚN indicio en la
+				// terminal de que Explorer estaba trabajando. Se abre aquí un bloque equivalente
+				// al de un worker real; `execution:resolved` lo cierra con el hallazgo real.
+				if (obs.decision.operación === "obtener información" && !this.worker) {
+					this.worker = { id: INFO_BLOCK_ID, esVerificacion: false, capacidad: "explorer" };
+					this.line(`┌─ ${cyan("●")} ${bright(CAP_LABELS.explorer ?? "Explorer")} (obtener información)`);
+					this.spinWorkerThinking("explorer");
+				}
+				return;
+			}
 			case "execution:resolved": {
 				// T3.1 — acumular telemetría del worker y emitir la línea de estado.
 				if (obs.telemetry?.usage) {
@@ -560,10 +684,30 @@ export class StreamRenderer implements AiesEventHandlers {
 				} else {
 					this.line(statusLine);
 				}
+				// T4.9 — cierra el bloque de `obtener información` abierto en `execution:start` con
+				// el hallazgo real (antes: silencio total, ver comentario en `execution:start`).
+				// `core/loop.ts` no emite `onWorkerFinish` para esta operación, así que el cierre
+				// vive por completo aquí.
+				if (obs.decision.operación === "obtener información" && this.worker?.id === INFO_BLOCK_ID) {
+					const visible = this.verbose ? this.formatMarkdownForTerminal(obs.result.text) : this.summarize(obs.result.text);
+					this.line(`└─ Resultado: ${visible}`);
+					this.closeWorker();
+					if (this.pendingStatusLine) {
+						this.line(this.pendingStatusLine);
+						this.pendingStatusLine = null;
+					}
+					this.line("");
+					return;
+				}
 				if (obs.decision.operación !== "comunicar al desarrollador" || obs.result.kind !== "comunicación") {
 					return;
 				}
-				const texto = obs.result.text || obs.decision.comunicación || "";
+				const textoRaw: unknown = obs.result.text || obs.decision.comunicación || "";
+				// T4.9 — `obs.result.text` es prosa libre del orquestador (modelo de chat): puede
+				// traer markdown con fences igual que cualquier otro texto de worker. El fallback a
+				// `decision.comunicación` (CommunicationRequest, un objeto) es preexistente — se
+				// conserva tal cual (String(...)) para no cambiar ese comportamiento en este ticket.
+				const texto = typeof textoRaw === "string" ? this.formatMarkdownForTerminal(textoRaw) : String(textoRaw);
 				this.line("");
 				this.line(`${cyan("💬")} ${bright("Orquestador:")} ${texto}`);
 				this.line("");
