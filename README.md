@@ -99,6 +99,8 @@ Para actualizar una instalación existente:
 aies update
 ```
 
+Antes de actualizar, el instalador comprueba si `~/.aies` tiene cambios locales o commits divergentes. Nunca los pisa: en una ejecución no interactiva conserva la instalación completa en `~/.aies.bak.<timestamp>` y reinstala limpio; en una terminal podés elegir `backup`, `stash` o `abort`. También podés fijar la estrategia con `AIES_UPDATE_STRATEGY=backup|stash|abort`.
+
 El chequeo automático de nuevas versiones se puede desactivar con `AIES_NO_UPDATE_CHECK=1`.
 
 ### Instalación manual

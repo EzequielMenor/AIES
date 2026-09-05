@@ -5,10 +5,31 @@ REPO="https://github.com/EzequielMenor/AIES.git"
 INSTALL_DIR="$HOME/.aies"
 BIN_DIR="$HOME/.local/bin"
 BIN_NAME="aies"
+UPDATE_STRATEGY="${AIES_UPDATE_STRATEGY:-}"
+ROLLBACK_BACKUP=""
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 fail()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+rollback_on_failure() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ -n "$ROLLBACK_BACKUP" ] && [ -d "$ROLLBACK_BACKUP" ]; then
+    warn "La actualización no pudo completarse; restaurando la instalación anterior desde $ROLLBACK_BACKUP."
+    local failed_dir="$INSTALL_DIR.failed.$(date +%Y%m%d%H%M%S)"
+    if [ -e "$INSTALL_DIR" ]; then
+      mv "$INSTALL_DIR" "$failed_dir" 2>/dev/null || true
+    fi
+    if mv "$ROLLBACK_BACKUP" "$INSTALL_DIR" 2>/dev/null; then
+      info "Instalación anterior restaurada. La copia incompleta quedó en $failed_dir."
+    else
+      warn "No se pudo restaurar automáticamente $ROLLBACK_BACKUP; conservá esa copia para recuperar la instalación."
+    fi
+  fi
+  exit "$status"
+}
+
+trap rollback_on_failure EXIT
 
 check_node() {
   command -v node >/dev/null 2>&1 || fail "Node.js no encontrado. Instalá Node.js >= 22.19.0: https://nodejs.org"
@@ -40,11 +61,68 @@ detect_pm() {
 clone_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     info "Actualizando $INSTALL_DIR"
-    local prev_short prev_full new_full new_short
+    local prev_short prev_full new_full new_short local_changes upstream strategy
     prev_short=$(git -C "$INSTALL_DIR" rev-parse --short HEAD)
     prev_full=$(git -C "$INSTALL_DIR" rev-parse HEAD)
+
+    local_changes=$(git -C "$INSTALL_DIR" status --porcelain)
+    if ! git -C "$INSTALL_DIR" fetch --quiet; then
+      fail "No se pudo consultar el remoto de $INSTALL_DIR; la instalación quedó intacta"
+    fi
+    upstream=$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+
+    local divergent=false
+    if [ -z "$upstream" ]; then
+      divergent=true
+    elif ! git -C "$INSTALL_DIR" merge-base --is-ancestor HEAD "$upstream"; then
+      divergent=true
+    fi
+
+    if [ -n "$local_changes" ] || [ "$divergent" = true ]; then
+      warn "La instalación local tiene cambios o commits que no se pueden sobrescribir automáticamente."
+      if [ -n "$local_changes" ]; then
+        info "Cambios locales detectados:"
+        printf '%s\n' "$local_changes"
+      fi
+      if [ "$divergent" = true ]; then
+        warn "La rama local diverge de ${upstream:-su remoto configurado}."
+        git --no-pager -C "$INSTALL_DIR" log --oneline -5 HEAD || true
+      fi
+      warn "Estrategias: backup (conserva todo y reinstala), stash (solo cambios sin commits locales) o abort."
+
+      strategy="$UPDATE_STRATEGY"
+      if [ -z "$strategy" ] && [ -r /dev/tty ] && [ -t 1 ]; then
+        printf 'Elegí una estrategia [b]ackup/[s]tash/[a]bort (backup): ' > /dev/tty
+        read -r strategy < /dev/tty || strategy="backup"
+      fi
+      strategy="${strategy:-backup}"
+      case "$strategy" in
+        b|backup)
+          backup_existing_installation
+          return 0
+          ;;
+        s|stash)
+          if [ "$divergent" = true ]; then
+            warn "stash no resuelve commits divergentes; se usará backup para conservarlos."
+            backup_existing_installation
+            return 0
+          fi
+          if ! git -C "$INSTALL_DIR" stash push --include-untracked --message "aies update $(date +%Y%m%d%H%M%S)"; then
+            fail "No se pudieron guardar los cambios en stash; la instalación quedó intacta"
+          fi
+          info "Cambios locales guardados en git stash; la actualización continuará con un árbol limpio."
+          ;;
+        a|abort)
+          fail "Actualización cancelada. Usá AIES_UPDATE_STRATEGY=backup, stash o abort para elegir explícitamente."
+          ;;
+        *)
+          fail "Estrategia desconocida '$strategy'. Usá backup, stash o abort."
+          ;;
+      esac
+    fi
+
     if ! git -C "$INSTALL_DIR" pull --ff-only --quiet; then
-      fail "git pull falló — repo local divergente en $INSTALL_DIR"
+      fail "git pull falló; la instalación quedó intacta. Usá AIES_UPDATE_STRATEGY=backup para reinstalar conservando una copia."
     fi
     new_full=$(git -C "$INSTALL_DIR" rev-parse HEAD)
     new_short=$(git -C "$INSTALL_DIR" rev-parse --short HEAD)
@@ -68,6 +146,18 @@ clone_or_update() {
     info "Clonando AIES en $INSTALL_DIR"
     git clone --depth 1 --quiet "$REPO" "$INSTALL_DIR"
   fi
+}
+
+backup_existing_installation() {
+  local backup="$INSTALL_DIR.bak.$(date +%Y%m%d%H%M%S)"
+  while [ -e "$backup" ]; do
+    backup="$INSTALL_DIR.bak.$(date +%Y%m%d%H%M%S).$RANDOM"
+  done
+  warn "Moviendo la instalación local a $backup (no se perderán cambios)."
+  mv "$INSTALL_DIR" "$backup"
+  ROLLBACK_BACKUP="$backup"
+  info "Clonando AIES limpio en $INSTALL_DIR"
+  git clone --depth 1 --quiet "$REPO" "$INSTALL_DIR"
 }
 
 install_deps() {
@@ -118,6 +208,26 @@ link_bin() {
       fi
       ;;
   esac
+}
+
+verify_installation() {
+  local src="$INSTALL_DIR/runtime/dist/cli.js"
+  local dst="$BIN_DIR/$BIN_NAME"
+  local expected_version actual_version
+
+  [ -f "$src" ] || fail "Verificación falló: build incompleto ($src no existe)"
+  [ -L "$dst" ] || fail "Verificación falló: $dst no es un symlink"
+  [ "$(readlink "$dst")" = "$src" ] || fail "Verificación falló: $dst no apunta al build nuevo"
+
+  expected_version=$(node -e 'const fs = require("node:fs"); const p = process.argv[1]; process.stdout.write(JSON.parse(fs.readFileSync(p, "utf8")).version)' "$INSTALL_DIR/runtime/package.json") \
+    || fail "No se pudo leer la versión de runtime/package.json"
+  actual_version=$("$dst" --version 2>&1) \
+    || fail "El binario actualizado no responde a --version"
+  case "$actual_version" in
+    "aies $expected_version ("*) ;;
+    *) fail "Verificación falló: se esperaba aies $expected_version y se obtuvo '$actual_version'" ;;
+  esac
+  info "Verificado: build, binario y $actual_version"
 }
 
 install_codegraph() {
@@ -187,6 +297,7 @@ main() {
   install_deps
   build
   link_bin
+  verify_installation
   install_extras
   info "AIES instalado. Ejecutá: aies"
 }

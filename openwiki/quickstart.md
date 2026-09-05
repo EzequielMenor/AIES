@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/EzequielMenor/AIES/main/install.sh 
 aies "lista los archivos del proyecto"
 ```
 
-Use `aies update` to rerun the installer and update an existing installation. The installer clones to `~/.aies`, builds, and symlinks `aies` into `~/.local/bin/`. Manual install:
+Use `aies update` to rerun the installer and update an existing installation. Before pulling, the installer detects dirty/divergent state and never overwrites it silently: non-interactive runs preserve the full installation in `~/.aies.bak.<timestamp>` and reinstall clean; interactive runs can choose `backup`, `stash`, or `abort` (`AIES_UPDATE_STRATEGY` also sets it). The installer then verifies the build, symlinked binary, and `aies --version` against the new runtime package. It clones to `~/.aies`, builds, and symlinks `aies` into `~/.local/bin/`. Manual install:
 
 ```bash
 cd runtime
