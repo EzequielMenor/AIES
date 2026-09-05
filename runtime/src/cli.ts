@@ -42,7 +42,7 @@ import {
 	PROVIDER_ENV_KEY,
 	supportedLoginProviders,
 } from "./auth.js";
-import { LocalStore } from "./cli-persistence.js";
+import { LocalStore, REPL_HISTORY_LIMIT } from "./cli-persistence.js";
 import { formatLogTail, parseLogArg } from "./cli-log.js";
 import { formatStatus } from "./cli-status.js";
 import { defaultConfigPath, loadConfig, type Config } from "./config.js";
@@ -421,6 +421,8 @@ export interface RunCycleOptions {
 	resumeGuide?: string | undefined;
 	/** ADR-011 — startup cacheado. Si se omite, se calcula aquí (runStartup). */
 	startup?: StartupReport | undefined;
+	/** T4.4 — pasa al StreamRenderer por defecto (desactiva el truncado de salidas largas). */
+	verbose?: boolean | undefined;
 }
 
 export interface RunCycleResult {
@@ -473,7 +475,7 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		signal: opts.signal,
 		modelRuntime: opts.modelRuntime,
 	};
-	const renderer = opts.renderer ?? new StreamRenderer(output);
+	const renderer = opts.renderer ?? new StreamRenderer(output, { verbose: opts.verbose });
 	const decide: (state: RuntimeState) => Promise<DecideOutcome> =
 		opts.decideOverride ?? createDecide(decideCtx);
 	const execute: ExecuteFn = opts.executeOverride ?? buildExecute(wctx, opts.signal, opts.verification ?? DEFAULT_VERIFICATION);
@@ -608,7 +610,9 @@ const HELP_TEXT = [
 	" Mientras corre una tarea, escribe para intervenir (se aplicará en la siguiente decisión);",
 	" ESC la pausa (sigue en /resume); Ctrl+C la pausa y cierra la sesión",
 	" (un 2º Ctrl+C fuerza salida inmediata).",
-	" Persistencia: .aies/state.json y .aies/log.jsonl tras cada ciclo.",
+	" Persistencia: .aies/state.json, .aies/log.jsonl y .aies/history (historial del REPL).",
+	" ↑↓ recorre el historial entre sesiones; escribe / para ver comandos disponibles.",
+	" --verbose: no trunca salidas largas de workers/verificación.",
 	" provider/modelo por rol: aies.config.json (usa /model <rol> [ref] para cambiarlo).",
 ].join("\n");
 
@@ -734,7 +738,9 @@ const CLI_HELP_TEXT = [
 	"  aies run \"<tarea>\"         modo headless explícito (mismos códigos de salida; admite",
 	"                             tarea por stdin: cat tarea.txt | aies run)",
 	"  aies \"<tarea>\" --json      igual, pero stdout es una sola línea de JSON (scripts/pipes)",
+	"  aies \"<tarea>\" --verbose   no trunca salidas largas de workers/verificación",
 	"  aies                         inicia el REPL interactivo",
+	"  aies --verbose               REPL con salidas completas (o AIES_VERBOSE=1)",
 	"  aies auth                    estado de autenticación por provider",
 	"  aies login <proveedor>       guarda una API key (persiste en ~/.pi/agent/auth.json)",
 	"  aies logout <proveedor>      borra la credencial persistida",
@@ -1112,7 +1118,11 @@ async function main(): Promise<void> {
 	// Sólo lo consume el camino oneshot; en los demás simplemente desaparece del argv.
 	const rawArgv = process.argv.slice(2);
 	const jsonMode = rawArgv.includes("--json");
-	let argv = jsonMode ? rawArgv.filter((a) => a !== "--json") : rawArgv;
+	// T4.4: --verbose se reconoce y retira igual que --json (misma justificación: no debe
+	// cambiar cómo se parsean subcomandos/tarea). Desactiva el truncado de salidas largas en el
+	// StreamRenderer; hasta ahora sólo existía como AIES_VERBOSE=1 (env), sin flag de CLI.
+	const verboseMode = rawArgv.includes("--verbose") || process.env.AIES_VERBOSE === "1";
+	let argv = rawArgv.filter((a) => a !== "--json" && a !== "--verbose");
 	if (argv.length >= 1 && argv[0] === "update" && argv.length === 1) {
 		process.exit(await runUpdate());
 	}
@@ -1190,7 +1200,7 @@ async function main(): Promise<void> {
 	}
 
 	if (repl) {
-		await runRepl({ cwd, limits, model, roleModels, modelsOk, thinkingLevel, updatePromise, runtime, cfg });
+		await runRepl({ cwd, limits, model, roleModels, modelsOk, thinkingLevel, updatePromise, runtime, cfg, verbose: verboseMode });
 	} else {
 		const exitCode = await runOneshot(taskArg!, {
 			cwd,
@@ -1202,6 +1212,7 @@ async function main(): Promise<void> {
 			thinkingLevel,
 			updatePromise,
 			json: jsonMode,
+			verbose: verboseMode,
 			diagOut,
 		});
 		const status = await waitForUpdateNotice(updatePromise);
@@ -1254,6 +1265,8 @@ export async function runOneshot(
 		 */
 		json?: boolean | undefined;
 		diagOut?: NodeJS.WritableStream | undefined;
+		/** T4.4 — no truncar salidas largas de workers/verificación en el StreamRenderer. */
+		verbose?: boolean | undefined;
 	},
 ): Promise<number> {
 	const out = ctx.out ?? output;
@@ -1291,9 +1304,10 @@ export async function runOneshot(
 		store,
 		// json: el StreamRenderer por defecto de runCycle() pinta a `output` (ANSI,
 		// spinners, bloques de worker) — ese ruido se manda a stderr, nunca a stdout.
-		renderer: ctx.renderer ?? (ctx.json ? new StreamRenderer(diag) : undefined),
+		renderer: ctx.renderer ?? (ctx.json ? new StreamRenderer(diag, { verbose: ctx.verbose }) : undefined),
 		decideOverride: ctx.decideOverride,
 		executeOverride: ctx.executeOverride,
+		verbose: ctx.verbose,
 	});
 
 	if (!ctx.signal) process.off("SIGINT", onSigint);
@@ -1322,9 +1336,17 @@ async function runRepl(ctx: {
 	updatePromise: Promise<UpdateStatus>;
 	runtime: ModelRuntime;
 	cfg: Config;
+	verbose: boolean;
 }): Promise<void> {
 	const store = new LocalStore(ctx.cwd);
-	const prompt = new PromptUI({ streams: { input, output }, prompt: "❯ " });
+	const prompt = new PromptUI({
+		streams: { input, output },
+		prompt: "❯ ",
+		// T4.1 — historial persistente entre sesiones (.aies/history).
+		history: store.loadHistory(),
+		historySize: REPL_HISTORY_LIMIT,
+		onHistoryChange: (history) => store.saveHistory(history),
+	});
 	// Modelo por rol mutable durante la sesión. `orchestrator` actúa como override de sesión no
 	// persistente (equivale al antiguo `activeModel`); los demás roles se re-resuelven al
 	// reasignar con /model (que SÍ persiste en aies.config.json).
@@ -1516,6 +1538,7 @@ async function runRepl(ctx: {
 							store,
 							pollIntervention: () => drainInterventionQueue(interventionQueue),
 							resumeGuide: guide,
+							verbose: ctx.verbose,
 						}),
 				});
 				if (result) currentState = result.state;
@@ -1563,6 +1586,7 @@ async function runRepl(ctx: {
 						signal,
 						store,
 						pollIntervention: () => drainInterventionQueue(interventionQueue),
+						verbose: ctx.verbose,
 					}),
 			});
 			if (result) currentState = result.state;

@@ -23,6 +23,12 @@ export interface PromptUIOptions {
 	streams: PromptStreams;
 	prompt: string;
 	columns?: number | undefined;
+	/** T4.1 — historial inicial del REPL (más reciente primero), cargado de `.aies/history`. */
+	history?: readonly string[] | undefined;
+	/** T4.1 — máximo de entradas retenidas en memoria/disco (default: 500, ver REPL_HISTORY_LIMIT). */
+	historySize?: number | undefined;
+	/** T4.1 — se invoca (más reciente primero) cada vez que el historial cambia, para persistir. */
+	onHistoryChange?: ((history: readonly string[]) => void) | undefined;
 }
 
 export interface PaletteItem {
@@ -64,11 +70,23 @@ export class PromptUI {
 	readonly #prompt: string;
 	readonly #tty: boolean;
 	readonly #columns: number;
+	readonly #historySize: number;
+	readonly #onHistoryChange: ((history: readonly string[]) => void) | undefined;
+	/**
+	 * T4.1 — `readLine()` crea y cierra un `readline.Interface` nuevo en CADA llamada (evita el
+	 * bug de paste parcial que motivó esa arquitectura). El historial de readline vive dentro de
+	 * ese objeto efímero, así que hay que reseedearlo en cada construcción con el snapshot más
+	 * reciente para que ↑/↓ funcione entre líneas dentro de la misma sesión.
+	 */
+	#history: string[];
 	constructor(opts: PromptUIOptions) {
 		this.#streams = opts.streams;
 		this.#prompt = opts.prompt;
 		this.#tty = isStdioTTY(opts.streams.input) && isStdioTTY(opts.streams.output);
 		this.#columns = opts.columns ?? process.stdout.columns ?? 80;
+		this.#history = opts.history ? [...opts.history] : [];
+		this.#historySize = opts.historySize ?? 500;
+		this.#onHistoryChange = opts.onHistoryChange;
 	}
 
 	get isTTY(): boolean {
@@ -85,6 +103,15 @@ export class PromptUI {
 			input: this.#streams.input,
 			output: this.#streams.output,
 			terminal: true,
+			history: this.#history,
+			historySize: this.#historySize,
+			removeHistoryDuplicates: true,
+		});
+		// T4.1 — evento tipado de readline (la propiedad `.history` existe en runtime pero no en
+		// los tipos públicos de @types/node); emite el array actualizado en cada línea aceptada.
+		rl.on("history", (history: string[]) => {
+			this.#history = history;
+			this.#onHistoryChange?.(history);
 		});
 		emitKeypressEvents(this.#streams.input as NodeJS.ReadStream);
 		try {

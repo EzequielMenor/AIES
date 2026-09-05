@@ -15,6 +15,7 @@ export default defineConfig({
 			"tests/recovery.test.ts",
 			"tests/update.test.ts",
 			"src/cli.test.ts",
+			"src/cli-persistence.test.ts",
 			"src/ui/stream-renderer.test.ts",
 			"src/cli-status.test.ts",
 			"src/cli-log.test.ts",

@@ -18,11 +18,20 @@ export interface PersistPaths {
 	dir: string;
 	stateFile: string;
 	logFile: string;
+	historyFile: string;
 }
+
+/** Máximo de líneas en `.aies/history` (T4.1). Más antiguas se descartan al guardar. */
+export const REPL_HISTORY_LIMIT = 500;
 
 export function persistPaths(cwd: string): PersistPaths {
 	const dir = path.join(cwd, ".aies");
-	return { dir, stateFile: path.join(dir, "state.json"), logFile: path.join(dir, "log.jsonl") };
+	return {
+		dir,
+		stateFile: path.join(dir, "state.json"),
+		logFile: path.join(dir, "log.jsonl"),
+		historyFile: path.join(dir, "history"),
+	};
 }
 
 function writeAtomic(file: string, content: string): void {
@@ -184,5 +193,40 @@ export class LocalStore {
 
 	readLog(): LogEntry[] {
 		return this.readLogIndexed().map((x) => x.entry);
+	}
+
+	/**
+	 * Historial del REPL (T4.1). El fichero es cronológico (más antiguo primero, estilo bash).
+	 * El array devuelto va **más reciente primero**, que es lo que espera `readline` (`history[0]`).
+	 * Fichero ausente o ilegible → `[]` (el REPL arranca vacío; no es un error de usuario).
+	 */
+	loadHistory(): string[] {
+		if (!existsSync(this.paths.historyFile)) return [];
+		try {
+			const text = readFileSync(this.paths.historyFile, "utf8");
+			const lines = text.split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0);
+			const kept = lines.length > REPL_HISTORY_LIMIT ? lines.slice(-REPL_HISTORY_LIMIT) : lines;
+			return kept.slice().reverse();
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Reescribe `.aies/history` desde el array de readline (más reciente primero).
+	 * Fallo de disco: best-effort — no tumba el REPL.
+	 */
+	saveHistory(newestFirst: readonly string[]): void {
+		try {
+			mkdirSync(this.paths.dir, { recursive: true });
+			const chronological = newestFirst.filter((l) => l.length > 0).slice().reverse();
+			const kept =
+				chronological.length > REPL_HISTORY_LIMIT
+					? chronological.slice(-REPL_HISTORY_LIMIT)
+					: chronological;
+			writeAtomic(this.paths.historyFile, kept.length ? `${kept.join("\n")}\n` : "");
+		} catch {
+			/* historial best-effort */
+		}
 	}
 }

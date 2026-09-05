@@ -8,7 +8,8 @@
 > Alcance: **toda la superficie de terminal de AIES** — modo oneshot, REPL y
 > renderer (`runtime/src/cli.ts`, `runtime/src/ui/stream-renderer.ts`).
 >
-> Última revisión: 2026-08-25 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.3a+T4.6+T4.8+T6 implementados; T2.3 aplazado; T4 ampliado con 4.8 árbol de plan adaptativo y desacoplamiento de telemetría de worker).
+> Última revisión: 2026-09-05 (T0+T1+T2.1+T2.2+T2.4+T3.1+3.2+3.3+T4.1+T4.3(--json,--verbose)+T4.4+T4.6+T4.8+T6
+> implementados; T2.3 aplazado; T4.2/4.3(--quiet,NO_COLOR)/4.5/4.7 pendientes).
 
 ---
 
@@ -309,7 +310,23 @@
 **Items:**
 
 4.1 **Historia persistente** del REPL (`.aies/history`) + **tab-completion**
-    de comandos `/`.
+    de comandos `/`. ✅ (2026-09-05).
+    - Historia: `LocalStore.loadHistory()`/`saveHistory()` en
+      `cli-persistence.ts` (fichero cronológico, capado a
+      `REPL_HISTORY_LIMIT=500`, lectura/escritura best-effort).
+      `PromptUI` (`ui/prompt-ui.ts`) acepta `history`/`historySize`/
+      `onHistoryChange`; como `readLine()` crea un `readline.Interface`
+      nuevo en cada llamada (arquitectura ya existente para evitar el bug
+      de paste parcial), el historial vive en un campo privado de
+      `PromptUI` y se re-siembra en cada construcción — el snapshot se seguía
+      vía el evento tipado `"history"` (la propiedad `.history` existe en
+      runtime pero no en `@types/node`).
+    - Tab-completion: ya cubierto por el "slash discovery" existente
+      (`setupSlashDiscovery` + `commands.ts::filterSlashCommands`) — un
+      overlay en vivo bajo el prompt mientras se escribe `/algo`, sin
+      esperar a pulsar Tab. No se duplicó con un `completer` de readline
+      aparte.
+    - Tests en `cli-persistence.test.ts` (nuevo) y `ui/prompt-ui.test.ts`.
 4.2 **Entrada multi-línea** para tareas (las descripciones largas no caben en
     una línea de readline).
 4.3 **Flags**:
@@ -324,11 +341,21 @@
       agotó los 3 parse-fails del orquestador: stdout se mantuvo como una
       única línea JSON válida durante todo el fallo. 5 tests nuevos en
       `cli.test.ts`.
-    - `--verbose` (salida completa de workers), `--quiet` (mínimo),
-      `--version`, verificación de `NO_COLOR` (picocolors ya lo respeta;
-      validar truecolor): pendiente.
+    - `--verbose` ✅ (2026-09-05). Reconocido en cualquier posición del argv
+      (mismo patrón que `--json`), disponible en oneshot y REPL; equivalente
+      a `AIES_VERBOSE=1` (que ya existía como env-only). Desactiva el
+      truncado de T4.4 y reactiva el detalle de Decisión/Motivo del
+      orquestador (`onDecideSuccess`) — un único flag para "modo debug",
+      no dos conceptos separados.
+    - `--quiet` (mínimo), `--version` (ya existe como `-V`/`--version`,
+      pendiente sólo `NO_COLOR`/verificación de truecolor): pendiente.
 4.4 **Truncado de salidas largas** con marca expandible vía `--verbose`
-    (outputs de bash no inundan el scroll).
+    (outputs de bash no inundan el scroll). ✅ (2026-09-05, cerrando un
+    gap parcial). `onWorkerFinish` ya truncaba a una línea (`summarize()`,
+    140 chars) desde el MVP; `onVerificationResult` NO lo hacía — la salida
+    de verificación (bash/test runner, a menudo multilínea) se pintaba sin
+    recortar. Ahora ambos caminos respetan `this.verbose`/`summarize()` de
+    forma consistente. Tests en `stream-renderer.test.ts`.
 4.5 **Fallback de color** para terminales sin truecolor.
 4.6 **Vocabulario formal de estados.** Glifos consistentes en el
     renderer: `◌` pensando, `◉` decidiendo, `●` ejecutando, `✓`

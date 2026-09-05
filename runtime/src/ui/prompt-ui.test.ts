@@ -208,3 +208,76 @@ describe("command palette — non-TTY es line-oriented", () => {
 		assert.doesNotMatch(streams.outputText(), /\x1b/);
 	});
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T4.1 — historial persistente en readLine().
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe("PromptUI.readLine — historial (T4.1)", () => {
+	it("sin historial seed, Enter en línea vacía resuelve a cadena vacía", async () => {
+		const streams = makeTTYStreams();
+		const prompt = new PromptUI({ streams, prompt: "❯ " });
+		const resultPromise = prompt.readLine();
+		await new Promise<void>((r) => setImmediate(r));
+		streams.writeInput("\r");
+		assert.equal(await resultPromise, "");
+	});
+
+	it("flecha arriba recupera la entrada más reciente del historial sembrado", async () => {
+		const streams = makeTTYStreams();
+		// history: más reciente primero (mismo contrato que readline nativo).
+		const prompt = new PromptUI({ streams, prompt: "❯ ", history: ["segunda", "primera"] });
+		const resultPromise = prompt.readLine();
+		await new Promise<void>((r) => setImmediate(r));
+		streams.writeInput("\x1b[A"); // ↑
+		streams.writeInput("\r");
+		assert.equal(await resultPromise, "segunda");
+	});
+
+	it("dos flechas arriba recupera la entrada anterior a esa", async () => {
+		const streams = makeTTYStreams();
+		const prompt = new PromptUI({ streams, prompt: "❯ ", history: ["segunda", "primera"] });
+		const resultPromise = prompt.readLine();
+		await new Promise<void>((r) => setImmediate(r));
+		streams.writeInput("\x1b[A\x1b[A");
+		streams.writeInput("\r");
+		assert.equal(await resultPromise, "primera");
+	});
+
+	it("onHistoryChange se invoca (más reciente primero) tras aceptar una línea", async () => {
+		const streams = makeTTYStreams();
+		const changes: readonly string[][] = [];
+		const prompt = new PromptUI({
+			streams,
+			prompt: "❯ ",
+			history: ["vieja"],
+			onHistoryChange: (h) => changes.push([...h]),
+		});
+		const resultPromise = prompt.readLine();
+		await new Promise<void>((r) => setImmediate(r));
+		streams.writeInput("nueva");
+		streams.writeInput("\r");
+		assert.equal(await resultPromise, "nueva");
+		assert.equal(changes.length, 1);
+		assert.deepEqual(changes[0], ["nueva", "vieja"]);
+	});
+
+	it("el historial sembrado persiste entre llamadas sucesivas a readLine() (misma sesión)", async () => {
+		const streams = makeTTYStreams();
+		const prompt = new PromptUI({ streams, prompt: "❯ ", history: ["original"] });
+
+		const first = prompt.readLine();
+		await new Promise<void>((r) => setImmediate(r));
+		streams.writeInput("linea-uno");
+		streams.writeInput("\r");
+		assert.equal(await first, "linea-uno");
+
+		// readLine() crea un readline.Interface nuevo en cada llamada — verificar que el
+		// historial de la llamada anterior (linea-uno, original) sigue disponible con ↑↑.
+		const second = prompt.readLine();
+		await new Promise<void>((r) => setImmediate(r));
+		streams.writeInput("\x1b[A\x1b[A");
+		streams.writeInput("\r");
+		assert.equal(await second, "original");
+	});
+});

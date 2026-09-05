@@ -152,6 +152,31 @@ describe("StreamRenderer TTY", () => {
 		assert.match(plain, /• u1: archivo no encontrado/);
 	});
 
+	it("T4.4: onVerificationResult resume la salida larga a una línea sin --verbose", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream); // verbose por defecto (sin AIES_VERBOSE)
+		renderer.onWorkerStart({ id: "v0", objetivo: "verify", capacidad: "verifier", estado: "En curso" }, { model: "test" });
+		renderer.onVerificationStart("v0", "npm test");
+		const long = Array.from({ length: 30 }, (_, i) => `linea de salida ${i}`).join("\n");
+		renderer.onVerificationResult("v0", "FAIL", long);
+		const plain = stream.plain();
+		// Resumida a UNA línea "Salida: ..." (multilínea colapsada + recortada a 140 chars).
+		assert.doesNotMatch(plain, /linea de salida 29/);
+		assert.match(plain, /Salida: linea de salida 0 linea de salida 1/);
+	});
+
+	it("T4.4: onVerificationResult con verbose:true no trunca la salida", () => {
+		const stream = captureStream(true);
+		renderer = new StreamRenderer(stream, { verbose: true });
+		renderer.onWorkerStart({ id: "v0", objetivo: "verify", capacidad: "verifier", estado: "En curso" }, { model: "test" });
+		renderer.onVerificationStart("v0", "npm test");
+		const long = Array.from({ length: 10 }, (_, i) => `linea ${i}`).join("\n");
+		renderer.onVerificationResult("v0", "FAIL", long);
+		const plain = stream.plain();
+		assert.match(plain, /linea 0/);
+		assert.match(plain, /linea 9/);
+	});
+
 	it("onVerificationResult populate failedVerifications cuando verdict=FAIL", () => {
 		const stream = captureStream(true);
 		renderer = new StreamRenderer(stream);

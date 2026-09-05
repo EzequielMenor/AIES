@@ -27,7 +27,7 @@
 		"test:parse": "tsc -p tsconfig.test.json && node dist-test/tests/parse.test.js",
 		"test:e2e": "vitest run tests/smoke-e2e.test.ts tests/dogfooding.test.ts tests/verification.test.ts tests/recovery.test.ts",
 		"test:update": "vitest run tests/update.test.ts",
-		"test:cli": "vitest run src/cli.test.ts src/ui/stream-renderer.test.ts src/ui/prompt-ui.test.ts src/cli-status.test.ts src/cli-log.test.ts src/integrations/integrations.test.ts src/auth.test.ts src/commands.test.ts src/models-list.test.ts src/model-runtime.test.ts src/cli-models.test.ts src/cli-repl-helpers.test.ts src/cli-repl.test.ts src/workers/tools.test.ts",
+		"test:cli": "vitest run src/cli.test.ts src/cli-persistence.test.ts src/ui/stream-renderer.test.ts src/ui/prompt-ui.test.ts src/cli-status.test.ts src/cli-log.test.ts src/integrations/integrations.test.ts src/auth.test.ts src/commands.test.ts src/models-list.test.ts src/model-runtime.test.ts src/cli-models.test.ts src/cli-repl-helpers.test.ts src/cli-repl.test.ts src/workers/tools.test.ts",
 		"test:persist": "node dist/self-check/persistence.js",
 		"test:orch": "node dist/self-check/orchestrator.js",
 		"test:compaction": "node dist/self-check/compaction.js",

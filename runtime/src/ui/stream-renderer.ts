@@ -121,7 +121,7 @@ export class StreamRenderer implements AiesEventHandlers {
 	/** Línea de estado de telemetría pendiente de emisión tras cerrar el worker. */
 	private pendingStatusLine: string | null = null;
 
-	constructor(stream: NodeJS.WritableStream = process.stdout, options: { verbose?: boolean } = {}) {
+	constructor(stream: NodeJS.WritableStream = process.stdout, options: { verbose?: boolean | undefined } = {}) {
 		this.stream = stream;
 		this.tty = Boolean("isTTY" in stream && stream.isTTY);
 		this.verbose = options.verbose ?? process.env.AIES_VERBOSE === "1";
@@ -392,7 +392,10 @@ export class StreamRenderer implements AiesEventHandlers {
 		if (verdict === "FAIL") {
 			this.failedVerifications.push(output.slice(0, 80));
 		}
-		this.branch("│  ", `${cyan("└─")} Salida: ${output}`);
+		// T4.4 — mismo criterio que onWorkerFinish: sin --verbose, la salida de verificación
+		// (a menudo bash/test runner multilínea) se resume a una línea para no inundar el scroll.
+		const visibleOutput = this.verbose ? output : this.summarize(output);
+		this.branch("│  ", `${cyan("└─")} Salida: ${visibleOutput}`);
 		const color = verdict === "PASS" ? green : red;
 		this.line(`└─ ${color(`VEREDICTO: ${verdict}`)}`);
 		this.closeWorker();
