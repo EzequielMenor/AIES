@@ -17,6 +17,8 @@ export default defineConfig({
 			"src/cli.test.ts",
 			"src/ui/stream-renderer.test.ts",
 			"src/cli-status.test.ts",
+			"src/core/tool-trace.test.ts",
+			"src/observability.test.ts",
 			"src/cli-log.test.ts",
 			"src/integrations/integrations.test.ts",
 			"src/auth.test.ts",

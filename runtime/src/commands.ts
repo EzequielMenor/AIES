@@ -25,6 +25,7 @@ const RAW: readonly SlashCommand[] = [
 	{ name: "status", description: "Ver estado de AIES" },
 	{ name: "state", description: "Ver el estado de la tarea" },
 	{ name: "log", description: "Ver el historial de ejecución" },
+	{ name: "trace", description: "Traza de tools de los workers (/trace [unidad])" },
 	{ name: "auth", description: "Ver estado de autenticación" },
 	{ name: "resume", description: "Continuar una tarea pausada" },
 	{ name: "clear", description: "Limpiar la pantalla" },

@@ -53,6 +53,14 @@ function isPersistedLogEntry(value: unknown): value is LogEntry {
 	if (entry.type === "compaction") {
 		return typeof entry.fase === "string" && typeof entry.reason === "string";
 	}
+	if (entry.type === "tool") {
+		return (
+			typeof entry.herramienta === "string" &&
+			typeof entry.resumen === "string" &&
+			typeof entry.error === "boolean" &&
+			(entry.unidadId === null || typeof entry.unidadId === "string")
+		);
+	}
 	return false;
 }
 

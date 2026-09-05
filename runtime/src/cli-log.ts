@@ -1,4 +1,5 @@
-// src/cli-log.ts — `/log`: tail legible de .aies/log.jsonl (decisión/resultado/compaction).
+// src/cli-log.ts — `/log`: tail legible de .aies/log.jsonl (decisión/resultado/compaction) +
+// `/trace`: traza de tools de los workers (v0.5 Caja de cristal — Tool trace).
 //
 // RNF-11: lee el artefacto persistido tal cual — sin reejecutar el bucle ni invocar
 // decide/workers. Mismo espíritu que /status (cli-status.ts), pero con dos diferencias:
@@ -11,7 +12,7 @@
 // de reimplementar el emparejamiento decisión↔resultado — la misma vuelta debe leerse
 // igual en /status y en /log.
 
-import type { LogEntry } from "./observability.js";
+import type { LogEntry, ToolTraceLogEntry } from "./observability.js";
 import { describeOperación, describeResultKind, pairTurns, type IndexedLogEntry } from "./cli-status.js";
 import { formatCost, formatTokens } from "./ui/stream-renderer.js";
 
@@ -77,6 +78,50 @@ export function formatLogTail(log: IndexedLogEntry[], limit: number | null = DEF
 			: `Log (últimas ${shown.length} de ${lines.length} — "/log all" para el historial completo):`;
 
 	return [header, ...shown.map((l) => l.text)].join("\n");
+}
+
+/** Analiza el argumento de `/trace`: filtro opcional por unidad. */
+export function parseTraceArg(arg: string): string | null {
+	const token = arg.split(/\s+/).find((t) => t && t !== "all" && !t.startsWith("--"));
+	return token ?? null;
+}
+
+/**
+ * Traza de tools (v0.5 Caja de cristal): inspección bajo demanda de `type: "tool"` en
+ * log.jsonl. Agrupada por unidad (capability + iter), una línea por tool-execution con
+ * target, resumen del resultado y ✓/✗. Filtro opcional por unidad.
+ */
+export function formatToolTrace(log: IndexedLogEntry[], unit: string | null = null, limit: number | null = 80): string {
+	const tools = log
+		.filter((x): x is IndexedLogEntry & { entry: ToolTraceLogEntry } => x.entry.type === "tool")
+		.filter((x) => !unit || x.entry.unidadId === unit);
+	if (tools.length === 0) {
+		return unit ? `  (sin trazas de tools para la unidad "${unit}")` : "  (sin trazas de tools en .aies/log.jsonl)";
+	}
+	const shown = limit === null ? tools : tools.slice(-limit);
+	const lines: string[] = [
+		`Traza de tools (${shown.length}${shown.length < tools.length ? ` de ${tools.length}` : ""}${unit ? `, unidad ${unit}` : ""}):`,
+	];
+	const groups = new Map<string, ToolTraceLogEntry[]>();
+	for (const { entry } of shown) {
+		const key = entry.unidadId ?? "?";
+		const arr = groups.get(key) ?? [];
+		arr.push(entry);
+		groups.set(key, arr);
+	}
+	for (const [unitId, entries] of groups) {
+		const first = entries[0]!;
+		const errors = entries.filter((e) => e.error).length;
+		lines.push("");
+		lines.push(`● ${unitId} · ${first.capacidad ?? "?"} · iter ${first.iter}${errors ? `  (${errors} error${errors > 1 ? "es" : ""})` : ""}`);
+		for (const e of entries) {
+			const mark = e.error ? "✗" : "✓";
+			const target = e.target ? truncate(e.target, 56) : "";
+			const mods = e.archivos_modificados.length > 0 ? `  → modifica ${e.archivos_modificados.join(", ")}` : "";
+			lines.push(`  ${mark} ${e.herramienta.padEnd(14)}${target ? ` ${target.padEnd(56)}` : `${" ".repeat(57)}`}${e.resumen}${mods}`);
+		}
+	}
+	return lines.join("\n");
 }
 
 /** Parsea el argumento de /log: "" → tail por defecto, "all" → todo, "<n>" → tail de n. Inválido → tail por defecto. */

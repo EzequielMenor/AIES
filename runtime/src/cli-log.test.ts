@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "vitest";
 
 import { LocalStore } from "./cli-persistence.js";
-import { DEFAULT_LOG_TAIL, formatLogTail, parseLogArg } from "./cli-log.js";
+import { DEFAULT_LOG_TAIL, formatLogTail, formatToolTrace, parseLogArg, parseTraceArg } from "./cli-log.js";
 import type { CompactionLogEntry, DecisionLogEntry, ResultLogEntry } from "./observability.js";
 import type { TelemetryUsage } from "./telemetry/types.js";
 
@@ -203,5 +203,83 @@ describe("formatLogTail", () => {
 		const out = formatLogTail(store.readLogIndexed(), 999);
 		assert.match(out, /^Log \(1 entradas\):/);
 		assert.doesNotMatch(out, /últimas/);
+	});
+});
+
+// ── /trace: Tool trace (v0.5 Caja de cristal) ─────────────────────────────────
+
+function toolEntry(overrides: Partial<import("./observability.js").ToolTraceLogEntry> = {}): import("./observability.js").ToolTraceLogEntry {
+	return {
+		type: "tool",
+		iter: 2,
+		unidadId: "U1",
+		capacidad: "explorer",
+		herramienta: "read",
+		args: { path: "src/a.ts" },
+		target: "src/a.ts",
+		archivos_leidos: ["src/a.ts"],
+		archivos_modificados: [],
+		resumen: "40 líneas",
+		detalle: "…",
+		error: false,
+		ts: "2026-09-05T10:00:00.000Z",
+		...overrides,
+	};
+}
+
+describe("/trace — formatToolTrace", () => {
+	it("las entradas tool sobreviven al round-trip por LocalStore", () => {
+		const store = newStore("aies-trace-roundtrip-");
+		store.appendLog(toolEntry());
+		const back = store.readLogIndexed();
+		assert.equal(back.length, 1);
+		assert.equal(back[0]!.entry.type, "tool");
+	});
+
+	it('no contamina "/log" (sólo vueltas y compaction)', () => {
+		const store = newStore("aies-trace-log-clean-");
+		store.appendLog(decisionEntry(0, "obtener información"));
+		store.appendLog(resultEntry(0, "info"));
+		store.appendLog(toolEntry());
+		const out = formatLogTail(store.readLogIndexed(), null);
+		assert.match(out, /^Log \(1 entradas\):/);
+		assert.doesNotMatch(out, /read/);
+	});
+
+	it("agrupa por unidad y muestra herramienta, target, resumen y modificación", () => {
+		const store = newStore("aies-trace-group-");
+		store.appendLog(toolEntry());
+		store.appendLog(toolEntry({ unidadId: "U2", capacidad: "implementer", iter: 3, herramienta: "edit", target: "src/b.ts", args: { path: "src/b.ts" }, archivos_modificados: ["src/b.ts"], archivos_leidos: [], resumen: "aplicado" }));
+		const out = formatToolTrace(store.readLogIndexed());
+		assert.match(out, /^Traza de tools \(2\):/);
+		assert.match(out, /● U1 · explorer · iter 2/);
+		assert.match(out, /● U2 · implementer · iter 3/);
+		assert.match(out, /✓ read\s+src\/a\.ts\s+40 líneas/);
+		assert.match(out, /✓ edit\s+src\/b\.ts\s+aplicado\s+→ modifica src\/b\.ts/);
+	});
+
+	it("filtra por unidad y reporta vacío explícito", () => {
+		const store = newStore("aies-trace-filter-");
+		store.appendLog(toolEntry());
+		store.appendLog(toolEntry({ unidadId: "U2" }));
+		const out = formatToolTrace(store.readLogIndexed(), "U2");
+		assert.match(out, /unidad U2/);
+		assert.match(out, /● U2/);
+		assert.doesNotMatch(out, /● U1/);
+		assert.match(formatToolTrace(store.readLogIndexed(), "U9"), /sin trazas de tools para la unidad "U9"/);
+	});
+
+	it("cuenta errores por unidad", () => {
+		const store = newStore("aies-trace-err-");
+		store.appendLog(toolEntry({ herramienta: "bash", target: "pnpm tsc", resumen: "error TS2345", error: true }));
+		const out = formatToolTrace(store.readLogIndexed());
+		assert.match(out, /● U1 · explorer · iter 2\s+\(1 error\)/);
+		assert.match(out, /✗ bash/);
+	});
+
+	it("parseTraceArg: sin arg → null; 'all' → null; unidad → unidad", () => {
+		assert.equal(parseTraceArg(""), null);
+		assert.equal(parseTraceArg("all"), null);
+		assert.equal(parseTraceArg("U2"), "U2");
 	});
 });

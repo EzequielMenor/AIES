@@ -69,7 +69,32 @@ export interface CompactionLogEntry {
 	ts?: string;
 }
 
-export type LogEntry = DecisionLogEntry | ResultLogEntry | CompactionLogEntry;
+/**
+ * Entrada de traza de tools de un worker (v0.5 Caja de cristal — Tool trace). Una entrada por
+ * tool-execution completada: herramienta, argumentos relevantes, target, archivos leídos/
+ * modificados, resumen del resultado y error si existe. El detalle completo vive aquí
+ * (inspección bajo demanda vía `/trace`); la vista principal muestra sólo el resumen.
+ */
+export interface ToolTraceLogEntry {
+	type: "tool";
+	iter: number;
+	unidadId: string | null;
+	capacidad: string | null;
+	herramienta: string;
+	args: Record<string, unknown>;
+	target: string | null;
+	archivos_leidos: string[];
+	archivos_modificados: string[];
+	/** Resumen de UNA línea del resultado (o del mensaje de error). */
+	resumen: string;
+	/** Resultado crudo acotado (evidencia para `/trace`/inspección; no se pinta en la vista). */
+	detalle: string;
+	error: boolean;
+	/** Marca temporal (ISO) al cerrar la tool-execution. */
+	ts?: string;
+}
+
+export type LogEntry = DecisionLogEntry | ResultLogEntry | CompactionLogEntry | ToolTraceLogEntry;
 
 export function serializeEntry(entry: LogEntry): string {
 	return JSON.stringify(entry);
@@ -143,6 +168,25 @@ export function syntheticDecision(
 		condición: null,
 		parseFail,
 		...(telemetry ? telemetryFields(telemetry) : {}),
+	};
+}
+
+/** Entrada de traza de tool (Tool trace): proyección de un `ToolTraceRecord` del recorder a log.jsonl. */
+export function toolTraceEntry(r: import("./core/tool-trace.js").ToolTraceRecord): ToolTraceLogEntry {
+	return {
+		type: "tool",
+		iter: r.iter,
+		unidadId: r.unidadId,
+		capacidad: r.capacidad,
+		herramienta: r.herramienta,
+		args: r.args,
+		target: r.target,
+		archivos_leidos: r.leidos,
+		archivos_modificados: r.modificados,
+		resumen: r.resumen,
+		detalle: r.detalle,
+		error: r.error,
+		ts: r.ts,
 	};
 }
 

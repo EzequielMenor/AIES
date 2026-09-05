@@ -36,6 +36,7 @@ import type {
 import type { LoopObservation } from "../core/observation.js";
 import type { Decision, RuntimeState, WorkUnit } from "../core/state.js";
 import type { LogEntry } from "../observability.js";
+import { relevantArgs, summarizeToolResult, toolTarget } from "../core/tool-trace.js";
 
 // ── Paleta ANSI truecolor (hex exactos de las reglas de UX) ─────────────────
 function truecolor(hex: string, s: string): string {
@@ -246,13 +247,17 @@ export class StreamRenderer implements AiesEventHandlers {
 		return `ctx ${Math.round(pct)}%`;
 	}
 
-	/** Deriva el target (path/cmd/pattern) de los args de un tool. */
+	/** Resumen corto de args relevantes para el spinner (sin payloads textuales): `k=v · k=v`. */
+	private argsSummary(args: Record<string, unknown>): string {
+		return Object.entries(relevantArgs(args))
+			.filter(([k]) => k !== "path" && k !== "file_path" && k !== "cmd" && k !== "command" && k !== "pattern")
+			.map(([k, v]) => `${k}=${String(v)}`)
+			.join(" · ");
+	}
+
+	/** Deriva el target (path/cmd/pattern) de los args de un tool — misma regla que el registro. */
 	private deriveTarget(args: Record<string, unknown>): string | null {
-		const candidates = [args.path, args.file_path, args.cmd, args.command, args.pattern];
-		for (const c of candidates) {
-			if (typeof c === "string" && c.length > 0) return c;
-		}
-		return null;
+		return toolTarget(args);
 	}
 
 	private describeDecision(d: Decision): string {
@@ -338,14 +343,26 @@ export class StreamRenderer implements AiesEventHandlers {
 	onWorkerToolCall(unitId: string, tool: string, args: Record<string, unknown>): void {
 		const target = this.deriveTarget(args);
 		this.lastTool = { tool, target };
-		this.spin("│  ", `${cyan(tool)}${target ? `  ${target}` : ""}`);
+		// Resumen de args relevantes para el spinner (paths/consultas; payloads textuales fuera).
+		const shown = target ?? this.summarize(this.argsSummary(args));
+		this.spin("│  ", `${cyan(tool)}${shown ? `  ${shown}` : ""}`);
 	}
 
 	onWorkerToolResult(unitId: string, tool: string, result: string, isError: boolean): void {
 		const cur = this.lastTool && this.lastTool.tool === tool ? this.lastTool : null;
 		const mark = isError ? red("✗") : green("✓");
 		const target = cur?.target ? `  ${cur.target}` : "";
-		this.settle(`│  ${mark}  ${cyan(tool)}${target}`);
+		// Tool trace: una línea limpia por tool (✓/✗ + resumen de resultado). El detalle completo
+		// queda en log.jsonl (`/trace`); el error se amplía en el branch para accionabilidad.
+		const summary = summarizeToolResult(tool, result, isError);
+		if (isError) {
+			// El mensaje va SOLO en el branch (multilínea si cabe): repetir el resumen en la línea
+			// ✓/✗ sería ruido.
+			this.settle(`│  ${mark}  ${cyan(tool)}${target} ${pc.dim("· error")}`);
+			this.branch("│  ", red(result.split("\n").slice(0, 3).join("\n")));
+		} else {
+			this.settle(`│  ${mark}  ${cyan(tool)}${target} ${pc.dim(`· ${summary}`)}`);
+		}
 	}
 
 	onVerificationStart(unitId: string, command: string): void {

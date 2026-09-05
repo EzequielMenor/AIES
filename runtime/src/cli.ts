@@ -43,7 +43,7 @@ import {
 	supportedLoginProviders,
 } from "./auth.js";
 import { LocalStore } from "./cli-persistence.js";
-import { formatLogTail, parseLogArg } from "./cli-log.js";
+import { formatLogTail, formatToolTrace, parseLogArg, parseTraceArg } from "./cli-log.js";
 import { formatStatus } from "./cli-status.js";
 import { defaultConfigPath, loadConfig, type Config } from "./config.js";
 import { runStartup, type StartupReport } from "./integrations/index.js";
@@ -96,7 +96,8 @@ import {
 	type ProjectChecksReport,
 } from "./verification/engine.js";
 import { StreamRenderer, amber, violet } from "./ui/stream-renderer.js";
-import { serializeEntry, type LogEntry } from "./observability.js";
+import { serializeEntry, toolTraceEntry, type LogEntry } from "./observability.js";
+import { createToolTraceRecorder } from "./core/tool-trace.js";
 import type { WorkerTelemetry } from "./telemetry/types.js";
 import { checkForUpdate, formatUpdateNotice, resolveInstallDir, runUpdate, type UpdateStatus } from "./update.js";
 
@@ -487,6 +488,36 @@ export async function runCycle(task: Task, opts: RunCycleOptions): Promise<RunCy
 		} catch {
 			/* log best-effort (P-02: el bus es fire-and-forget) */
 		}
+	};
+	// Tool trace (v0.5 Caja de cristal): el recorder empareja call↔result por unidad y vuelca el
+	// registro completo a log.jsonl. La vista (renderer) sigue recibiendo su evento igual: el
+	// wrapper encadena presentación + registro sin tocar el bucle (P-02).
+	const trace = createToolTraceRecorder((r) => {
+		try {
+			opts.store.appendLog(toolTraceEntry(r));
+		} catch {
+			/* log best-effort */
+		}
+	});
+	const rendererOnDecideStart = handlers.onDecideStart?.bind(renderer);
+	handlers.onDecideStart = (iteration) => {
+		trace.noteIteration(iteration);
+		rendererOnDecideStart?.(iteration);
+	};
+	const rendererOnWorkerStart = handlers.onWorkerStart?.bind(renderer);
+	handlers.onWorkerStart = (unit, workerInfo) => {
+		trace.noteUnit(unit.id, unit.capacidad);
+		rendererOnWorkerStart?.(unit, workerInfo);
+	};
+	const rendererOnToolCall = handlers.onWorkerToolCall?.bind(renderer);
+	handlers.onWorkerToolCall = (unitId, tool, args) => {
+		trace.onToolCall(unitId, tool, args);
+		rendererOnToolCall?.(unitId, tool, args);
+	};
+	const rendererOnToolResult = handlers.onWorkerToolResult?.bind(renderer);
+	handlers.onWorkerToolResult = (unitId, tool, result, isError) => {
+		trace.onToolResult(unitId, tool, result, isError);
+		rendererOnToolResult?.(unitId, tool, result, isError);
 	};
 	handlers.stopSignal = () => Boolean(opts.signal?.aborted);
 	// model-per-role real: propaga la etiqueta provider/model de cada rol al WorkerInfo para
@@ -1437,6 +1468,13 @@ async function runRepl(ctx: {
 			if (input0 === "/log" || input0.startsWith("/log ")) {
 				const arg = input0.slice("/log".length).trim();
 				prompt.info(formatLogTail(store.readLogIndexed(), parseLogArg(arg)));
+				continue;
+			}
+			if (input0 === "/trace" || input0.startsWith("/trace ")) {
+				// Tool trace (Caja de cristal): inspección del detalle delegado — qué herramientas
+				// usó cada worker, con qué args, sobre qué archivos y con qué resultado.
+				const arg = input0.slice("/trace".length).trim();
+				prompt.info(formatToolTrace(store.readLogIndexed(), parseTraceArg(arg)));
 				continue;
 			}
 			if (input0 === "/auth") {
