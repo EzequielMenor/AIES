@@ -34,7 +34,11 @@ jobs:
 
           config.model: "openai/qwen3.8-flash"
           config.fallback_models: '["openai/qwen3.8-flash"]'
+          config.custom_model_max_tokens: "991808"
 
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "false"
+
+          github_action_config.handle_push_trigger: "true"
+          github_action_config.push_commands: '["/describe", "/review"]'
