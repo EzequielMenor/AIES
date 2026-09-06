@@ -50,7 +50,7 @@ The CLI entrypoint is `runtime/src/cli.ts`. From argv it dispatches into three m
 
 - **Oneshot** — `aies "<tarea>"` (or any non-empty positional argument): runs one task to a terminal state and exits 0/1.
 - **Headless** — `aies run "<tarea>"` (alias explícito del oneshot para CI/scripts; admite `cat task.txt | aies run` para la tarea por stdin). Mismas exit codes 0/1/2 que el oneshot normal.
-- **REPL** — `aies` (no args): interactive prompt `❯ `; each line is a new task over the project. Commands: `/help`, `/state`, `/state --json`, `/resume`, `/clear`, `/exit | /quit`. See `cli.ts::HELP_TEXT`.
+- **REPL** — `aies` (no args): interactive prompt `❯ `; each line is a new task over the project. Commands: `/help`, `/state`, `/state --json`, `/log [n|all]`, `/trace [unidad|all]`, `/auth`, `/resume`, `/clear`, `/exit | /quit`. See `cli.ts::HELP_TEXT`.
 
 ```text
 cli.ts
@@ -63,6 +63,7 @@ cli.ts
   ├── execute = buildExecute(wctx, signal, verification)   # workers/tools.ts::runWorker + verification/engine gate
   ├── controller = new AbortController()        # SIGINT → abort (no exit, no kill en la primera señal; segunda SIGINT → exit 130)
   ├── renderer = new StreamRenderer(...)        # ui/stream-renderer.ts (verbose opcional con AIES_VERBOSE=1)
+  ├── trace = createToolTraceRecorder(...)      # core/tool-trace.ts — Caja de cristal: empareja call↔result y vuelca `type:"tool"` a log.jsonl
   └── runCycle(task, { ..., roleModels, modelRuntime, verification })
                                                  # runLoop(state, { decide, execute, handlers, ... })
         └─ store.saveState(finalState)
@@ -74,7 +75,7 @@ What this means:
 - **Input del REPL — contrato de Enter** (`cli.ts::readPromptLine`): el REPL NO usa `rl.question()` (resolvería en el primer `\n` del input y enviaría un fragmento de un paste multi-línea al orquestador, con el resto entrando luego como intervención al `onInterventionLine`). En su lugar `readPromptLine` muestra el prompt con `rl.prompt()` y sólo resuelve con el contenido completo cuando llega un `\r` *standalone* en el stream crudo — exactamente lo que envía la tecla Enter. Los `\n` embebidos en un paste (CRLF o LF) NO disparan el orquestador; preservan saltos de línea dentro del mensaje. `close` (Ctrl+C / Ctrl+D) rechaza: no se envía contenido parcial. Las garantías están cubiertas por `src/cli-repl.test.ts`.
 - **Persistence path** — the CLI uses `LocalStore` (`cli-persistence.ts`) at `<cwd>/.aies/{state.json,log.jsonl}`. The legacy `persistence/file_store.ts` (used by the deprecated extension) lives at `<agentDir>/aies/<sha1(cwd).slice(0,16)>/{state.json,log.jsonl}` and is still exercised by `self-check/persistence.ts`. Both write JSONL append-only and `state.json` atomically (`.tmp` + rename).
 - **`runLoop`** runs while `taskState ∈ {Recibida, En curso}`. Each iteration is `decide(state) → execute(state, decision) → applyOperationResult`. Limits, parse failures, and SIGINT are checked before each turn; see [architecture.md §3](architecture.md#3-the-decision-loop).
-- **Worker call** — `execute` invokes `workers/tools.ts::runWorker(cap, …)`, which builds an ephemeral `AgentSession` via `workers/session-factory.ts::createWorkerSession` with the capability's tool allowlist (`workers/capabilities.ts`), the persona prompt (`workers/prompts.ts::CAPABILITY_PROMPT`), and an `AbortSignal` wired to `controller.signal`.
+- **Worker call** — `execute` invokes `workers/tools.ts::runWorker(cap, …)`, which builds an ephemeral `AgentSession` via `workers/session-factory.ts::createWorkerSession` with the capability's tool allowlist (`workers/capabilities.ts`), the persona prompt (`workers/prompts.ts::CAPABILITY_PROMPT`), and an `AbortSignal` wired to `controller.signal`. During the unit, the trace recorder (`runtime/src/core/tool-trace.ts::createToolTraceRecorder`, wired in `runCycle`) listens to `onWorkerToolCall`/`onWorkerToolResult` to emit one `type: "tool"` entry per completed tool-execution — see §5.
 
 ## 3. The pi boundary
 
@@ -173,6 +174,18 @@ Las invariantes del pipeline (testeadas en `tests/verification.test.ts` + `tests
 - **Reparación acotada** — `maxRepairAttempts` se respeta aunque los checks no pasen; si se agota, la unidad cierra con `passed=false` y el orquestador recibe la salida completa de los checks fallidos.
 - **Reporte no se pierde** — el `WorkerReport` del worker se preserva y se le añaden los criterios deterministas (`gateCriteria`); los `unmetCriteria` se concatenan con los nombres de los checks fallidos.
 
+## 5.4 Tool trace in the main view (`runtime/src/core/tool-trace.ts`)
+
+Worker tool-executions used to flood the scrollback with the raw tool output. v0.5 *Caja de cristal* flips the contract: the main view shows one tidy line per tool-call, the full record goes to `log.jsonl` for inspection.
+
+- **`onWorkerToolCall(unitId, tool, args)`** — spinner line `│  cyan(tool)  target` (or the relevant-args summary, e.g. `offset=1`, when the tool has no `path`/`file_path`/`cmd`/`command`/`pattern` target). Target derivation lives in `core/tool-trace.ts::toolTarget` (shared with the recorder so what the user sees matches what's logged).
+- **`onWorkerToolResult(unitId, tool, result, isError)`** — closes the spinner with one line:
+  - On success: `│  ✓ cyan(tool)  target · resumen` where `resumen` comes from `summarizeToolResult(tool, result, false)` (`read` → "N líneas", `grep`/`find`/`glob`/`code_explore` → "N coincidencias", `ls` → "N entradas", `edit`/`write` → "aplicado", `bash` → first non-empty line + line count, otherwise first 120 chars of the trimmed result).
+  - On error: `│  ✗ cyan(tool)  target · error` followed by a `branch` with the first 3 lines of the error message so the user sees the actionable signal without dumping the whole stderr. The full error message stays in `log.jsonl` (`/trace` or raw read).
+- **Detail is no longer painted** — the previous behavior printed the raw tool output in the main view; now it is only in `log.jsonl` (capped at `DETALLE_MAX = 2000` chars via `capDetalle`, head + tail with a marker for the truncated middle). The recorder is best-effort (fire-and-forget, P-02) and never throws into the worker.
+
+Tests in `runtime/src/ui/stream-renderer.test.ts` (success branch shows `✓ read src/a.ts · 3 líneas`; error branch shows `✗ bash pnpm tsc · error` + the first 3 lines of the message and no further; `edit` with `path` resolves target and shows `· aplicado`) and `runtime/src/core/tool-trace.test.ts` (helpers + recorder: FIFO pairing by `(unitId, tool)`, `affectedFiles` per write/read tool, args projection, summary by tool kind).
+
 ## 6. Running it
 
 From the [quickstart](quickstart.md):
@@ -205,6 +218,8 @@ pnpm run research:metrics -- .aies/log.jsonl
 - `src/string-utils.test.ts` — utilidades genéricas (e.g. `truncate`) creadas durante TUI-01; incluidas en vitest y en `pnpm run test:cli` si se añaden.
 - `src/model-runtime.test.ts` — `resolveRoleModels` estricto (sin fallback silencioso), `roleModelLabel`, casos de error accionables (`unknown_provider`/`model_not_found`/`no_auth`/`invalid_ref`).
 - `src/workers/tools.test.ts` — `runWorker` con `models` per-capability (model-per-role real) y comportamiento de fallback al `model` del orquestador.
+- `src/core/tool-trace.test.ts` — Caja de cristal: args relevantes (payloads textuales resumidos), target derivado, archivos afectados por write/read tools, emparejamiento call↔result por `(unitId, tool)` del recorder, `summarizeToolResult` por tipo de tool.
+- `src/observability.test.ts` — serializers y discriminadores de las cuatro formas de `LogEntry` (`decision` / `resultado` / `compaction` / `tool`); forma y campos del nuevo `toolTraceEntry`.
 - `self-check/persistence.js` — state.json + log.jsonl, recovery on corrupt (uses `FileStore`).
 - `self-check/orchestrator.js` — Zod parser against the orchestrator schema.
 - `self-check/compaction.js` — pi → domain mapping for `compaction_start` / `compaction_end` (imports `telemetry/pi-events.ts::mapCompaction`).
@@ -261,6 +276,7 @@ There is no `pnpm run smoke` script anymore — the legacy one was removed. The 
 - **Change the deterministic verification pipeline** → `runtime/src/verification/engine.ts` (descubrimiento + ejecución de checks) + `runtime/src/cli.ts::buildExecute` (cableado verifier-deterministic-first y repair loop del implementer). Política en `runtime/src/config.ts::VerificationPolicy` + `verificationFromConfig`; defaults en `DEFAULT_VERIFICATION`. Cobertura: `tests/verification.test.ts` (engine) + `tests/recovery.test.ts` (ciclo completo).
 - **Change a limit** → `runtime/src/limits.ts` and `runtime/aies.config.json`. ADR-005 says values come from `06-research`.
 - **Add a new log entry shape** → `runtime/src/observability.ts` and the type union in `LogEntry`. Update the metrics extractor in `runtime/src/research/metrics.ts` to consume it.
+- **Change the tool trace (Caja de cristal)** → `runtime/src/core/tool-trace.ts` (helpers `relevantArgs`/`toolTarget`/`affectedFiles`/`summarizeToolResult` + recorder `createToolTraceRecorder`), `runtime/src/observability.ts::toolTraceEntry` (proyección a `log.jsonl`), `runtime/src/cli.ts::runCycle` (cableado del recorder) y `runtime/src/cli-log.ts::formatToolTrace` (vista de `/trace`). Vista principal: `runtime/src/ui/stream-renderer.ts` (`onWorkerToolCall`/`onWorkerToolResult` muestran la línea limpia). Validator de log: `runtime/src/cli-persistence.ts::isPersistedLogEntry` (nuevo branch `type === "tool"`).
 - **Add a metrics dimension** → extend the `MetricsReport` in `runtime/src/research/metrics.ts`; the dataset is `log.jsonl`.
 
 See [architecture.md](architecture.md) for the conceptual model behind each of these, and the [principles](../01-Concept/Principles.md) and [ADRs](../05-Decisions/) for the policy that pins them down.
