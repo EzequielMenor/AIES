@@ -12,10 +12,9 @@ AIES is a personal AI engineering environment built **on top of Pi**.
 
 The command is `aies`; underneath it is `pi`.
 
-> Phase status: isolated bootstrap (AIES-001) plus a session metrics baseline
-> (AIES-002) that measures the parent session and does nothing else. No
-> dashboard, subagents, orchestration, reviews, memory or autopilot. See
-> [Scope](#scope).
+> Phase status: isolated bootstrap (AIES-001), session metrics baseline
+> (AIES-002), and isolated child exploration delegation (AIES-003) via
+> `aies_delegate`. See [Scope](#scope).
 
 ## Requirements
 
@@ -108,12 +107,16 @@ Only these arguments are interpreted by AIES:
 | `bin/aies` | the launcher: resolves the profile, bootstraps it, execs `pi` |
 | `scripts/bootstrap-profile.sh` | idempotent profile setup (symlinks, settings seed) |
 | `profile/settings.json` | seed for the profile's `settings.json`, copied once |
+| `profile/aies.json` | seed configuration for AIES agents, copied once |
+| `agents/explore.md` | role prompt for the isolated explore child agent |
 | `extensions/` | AIES extensions, linked into the isolated profile |
 | `extensions/aies-identity.ts` | profile visibility: startup notice and `/aies-info` |
 | `extensions/aies-runtime/` | session metrics: footer line, `/aies-status`, no behavior changes |
+| `extensions/aies-agents/` | agent delegation: `aies_delegate` tool, child session runner |
 | `tests/isolation.test.mjs` | deterministic isolation checks (no credentials) |
 | `tests/observability.test.mjs` | metric rules and rendering, driven through a fake `ExtensionAPI` |
 | `tests/observability-runtime.test.mjs` | the observer inside a real Pi process, over RPC |
+| `tests/explore.test.mjs` | child exploration isolation, tool surface, handoff & execution |
 | `scripts/check-isolation.sh` | one-command entry point for the checks |
 | `docs/ARCHITECTURE.md` | how the launcher and the profile actually work |
 | `docs/DECISIONS.md` | decisions taken, with their rationale |
@@ -133,7 +136,7 @@ Then, by hand:
 ```bash
 aies          # one footer line: AIES · ctx 34k/peak 41k · tools 8 · files 4 · 02:14
 /aies-info    # prints the extension path, agent dir, project config dir, cwd, mode
-/aies-status  # the same metrics unfolded: context, tools, exploration, runtime
+/aies-status  # the same metrics unfolded: context, tools, exploration, delegations, runtime
 pi            # your normal Pi must still start exactly as before
 ```
 
@@ -146,11 +149,15 @@ threshold changes what Pi does with a tool call, a delegation or a compaction.
 Phase 1 shipped: repository structure, profile isolation, the `aies` command,
 minimal configuration, one identity extension, and the isolation checks.
 
-Phase 2 (current) ships the observability baseline: one footer line and one
-diagnostic command, measuring context, parent tool activity, exploration, tool
-output volume, session runtime and tool surface. It measures only.
+Phase 2 shipped the observability baseline: one footer line and one diagnostic
+command, measuring context, parent tool activity, exploration, tool output
+volume, session runtime and tool surface.
 
-Explicitly out of scope for this phase: acting on any metric (delegation
-triggers, context pressure, proactive compaction), dashboards, subagents,
-orchestration, code review, memory, autopilot, theming, branding, CI and
-publishing.
+Phase 3 (current) ships the isolated explore delegation primitive:
+`aies_delegate` tool for parent sessions, isolated child `AgentSession` with
+fresh context and strictly read-only tools (`read`, `grep`, `find`, `ls`, guarded
+`bash`), defensive handoff capping, and parent metrics isolation.
+
+Explicitly out of scope for this phase: automatic routing, planner or worker
+roles, proactive compaction policies, dashboards, review pipelines, memory, and
+autopilot.

@@ -137,6 +137,29 @@ problem, not a silent gap here.
 
 ---
 
+## D9 - Isolated Explore primitive (AIES-003)
+
+**Decision.** AIES implements delegation as a single parent tool `aies_delegate`
+which, for AIES-003, exclusively supports the `explore` role. The child runs in
+a separate Pi `AgentSession` with fresh context (no parent history or reasoning
+leakage), a strictly read-only tool surface (`read`, `grep`, `find`, `ls`, and
+guarded `bash`; no `edit` or `write`), and returns a structured handoff
+(`status`, `summary`, `evidence`, `issues`, `next`) capped defensively under
+6,000 characters. Child sessions disable extensions (`noExtensions: true`), so
+internal child calls never contaminate parent metrics.
+
+**Why.** Context pollution is the primary failure mode of long-horizon AI coding:
+exploratory reads, large directory listings, and searches fill the context
+window, degrading subsequent reasoning. Running an isolated child agent allows
+thorough codebase exploration while preserving parent context headroom. Strict
+read-only tool surface and shell guards guarantee safety by design.
+
+**Consequence.** The parent session only sees one tool call (`aies_delegate`)
+and receives a concise, structured answer. Automatic delegation routing and
+other roles (`planner`, `worker`) are deferred to subsequent phases.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

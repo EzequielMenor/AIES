@@ -145,6 +145,52 @@ checkpointed yet, and a `/new` starts clean by definition. Known limits:
 - output size counts text blocks and base64 image payloads as characters. It is
   a volume signal, not the token bill Pi already reports.
 
+## Child agent delegation (`extensions/aies-agents/`, `agents/explore.md`)
+
+AIES-003. Builds the first real delegation primitive: isolated child exploration.
+The parent session receives the `aies_delegate` tool:
+
+```ts
+aies_delegate({
+  role: "explore",
+  task: "Investigate architecture of the observer runtime",
+  context?: "Look under extensions/aies-runtime"
+})
+```
+
+### Delegation lifecycle and isolation guarantees
+
+```
+Parent Session (AgentSession)
+  │
+  ├─ Calls aies_delegate({ role: "explore", task, context })
+  │
+  ├─ Spawns Child AgentSession
+  │    ├── Fresh context (no parent history, sentinels, or reasoning)
+  │    ├── System prompt: agents/explore.md
+  │    ├── Tools allowed: read, grep, find, ls, bash (strictly read-only)
+  │    ├── Tools denied: edit, write (not registered)
+  │    ├── Bash guard: rejects rm, touch, >, >>, sed -i, subshells
+  │    ├── Extensions: noExtensions: true (parent metrics unaffected)
+  │    └── Session: in-memory (no disk clutter)
+  │
+  ├─ Child investigates repository and concludes with structured JSON
+  │
+  ├─ Child session disposed (session.dispose())
+  │
+  └─ Returns compact formatted handoff (< 6,000 chars) to parent
+```
+
+| Module | Role |
+|---|---|
+| `agents/explore.md` | Role prompt defining the read-only exploration rules and output schema |
+| `extensions/aies-agents/bash-guard.ts` | Safety filter rejecting mutating commands, file redirects, and subshell executions |
+| `extensions/aies-agents/handoff.ts` | Structured parser and defensive formatter capping handoffs under 6,000 characters |
+| `extensions/aies-agents/model.ts` | Model resolution: `AIES_EXPLORE_MODEL` env > `aies.json` (`agents.explore.model`) > parent model |
+| `extensions/aies-agents/explore.ts` | Isolated child session runner creating and disposing the child `AgentSession` |
+| `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool conforming to TypeBox schema |
+| `extensions/aies-agents/index.ts` | Extension entry point registering `aies_delegate` with Pi |
+
 ## Verification model
 
 All checks run with a temporary `AIES_HOME` and a deliberately hostile ambient

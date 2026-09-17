@@ -8,5 +8,12 @@ npm-debug.log*
 # Local verification artifacts
 .verification/
 
+# Root runtime state if accidentally created in repo
+/auth.json
+/models.json
+/models-store.json
+/trust.json
+/sessions/
+
 # macOS
 .DS_Store

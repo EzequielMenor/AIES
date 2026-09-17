@@ -18,6 +18,8 @@ import {
   applyActiveToolCount,
   applyCompaction,
   applyContextUsage,
+  applyDelegationEnd,
+  applyDelegationStart,
   applyModel,
   applyResumedAt,
   applySessionMeta,
@@ -173,6 +175,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         Date.now(),
         ctx.cwd,
       );
+      if (event.toolName === "aies_delegate") {
+        const input = event.input as Record<string, unknown> | undefined;
+        const role = typeof input?.role === "string" ? input.role : "explore";
+        state = applyDelegationStart(state, role, Date.now());
+      }
       render(ctx);
     });
   });
@@ -180,6 +187,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     guard(() => {
       state = applyToolResult(state, { content: event.content, isError: event.isError }, Date.now());
+      if (event.toolName === "aies_delegate") {
+        const outcome = event.isError ? "failed" : "done";
+        state = applyDelegationEnd(state, outcome, Date.now());
+      }
       render(ctx);
     });
   });
@@ -195,6 +206,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
   pi.on("agent_settled", async (_event, ctx) => {
     guard(() => {
+      if (state.delegations.activeRole) {
+        state = applyDelegationEnd(state, "interrupted", Date.now());
+      }
       render(ctx);
       persist();
     });

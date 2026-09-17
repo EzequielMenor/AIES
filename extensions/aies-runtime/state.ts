@@ -67,6 +67,14 @@ export interface ToolsState {
   callsByName: Record<string, number>;
 }
 
+/** Delegations launched from the parent session (AIES-003). */
+export interface DelegationsState {
+  total: number;
+  byRole: Record<string, number>;
+  activeRole: string | undefined;
+  lastOutcome: string | undefined;
+}
+
 /** How much the parent looked at, and how much it swallowed doing that. */
 export interface ExplorationState {
   /** Distinct paths handed to the native file-reading tools. */
@@ -82,12 +90,13 @@ export interface ExplorationState {
   largestOutputChars: number;
 }
 
-/** Everything AIES-002 measures about one parent session. */
+/** Everything AIES measures about one parent session. */
 export interface AiesState {
   version: number;
   session: SessionState;
   context: ContextState;
   tools: ToolsState;
+  delegations: DelegationsState;
   exploration: ExplorationState;
   compactionCount: number;
   activeToolCount: number;
@@ -132,6 +141,7 @@ export function createState(now: number): AiesState {
       usagePercent: null,
     },
     tools: { calls: 0, results: 0, errors: 0, callsByName: {} },
+    delegations: { total: 0, byRole: {}, activeRole: undefined, lastOutcome: undefined },
     exploration: {
       filesInspected: [],
       sourceReads: 0,
@@ -152,6 +162,7 @@ function cloneState(state: AiesState): AiesState {
     session: { ...state.session },
     context: { ...state.context },
     tools: { ...state.tools, callsByName: { ...state.tools.callsByName } },
+    delegations: { ...state.delegations, byRole: { ...state.delegations.byRole } },
     exploration: { ...state.exploration, filesInspected: [...state.exploration.filesInspected] },
   };
 }
@@ -331,6 +342,25 @@ export function applyCompaction(state: AiesState, now: number): AiesState {
   return next;
 }
 
+/** Record the start of a child agent delegation. */
+export function applyDelegationStart(state: AiesState, role: string, now: number): AiesState {
+  const next = cloneState(state);
+  next.delegations.total += 1;
+  next.delegations.byRole[role] = (next.delegations.byRole[role] ?? 0) + 1;
+  next.delegations.activeRole = role;
+  next.session.lastEventAt = now;
+  return next;
+}
+
+/** Record the completion or settlement of a child agent delegation. */
+export function applyDelegationEnd(state: AiesState, outcome: string, now: number): AiesState {
+  const next = cloneState(state);
+  next.delegations.activeRole = undefined;
+  next.delegations.lastOutcome = outcome;
+  next.session.lastEventAt = now;
+  return next;
+}
+
 /** Remember which model is running, so a peak can be attributed to it. */
 export function applyModel(state: AiesState, model: { id?: unknown; provider?: unknown; name?: unknown } | null | undefined): AiesState {
   if (!model || typeof model.id !== "string" || !model.id) return state;
@@ -431,6 +461,12 @@ export interface AiesSnapshot {
   compactionCount: number;
   activeToolCount: number;
   model: AiesState["model"];
+  delegations: {
+    total: number;
+    byRole: Record<string, number>;
+    activeRole: string | undefined;
+    lastOutcome: string | undefined;
+  };
 }
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
@@ -460,6 +496,12 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     compactionCount: state.compactionCount,
     activeToolCount: state.activeToolCount,
     model: state.model ? { ...state.model } : undefined,
+    delegations: {
+      total: state.delegations.total,
+      byRole: { ...state.delegations.byRole },
+      activeRole: state.delegations.activeRole,
+      lastOutcome: state.delegations.lastOutcome,
+    },
   };
 }
 
@@ -490,6 +532,16 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
   state.tools.results = positive(source.toolResults) ?? 0;
   state.tools.errors = positive(source.toolErrors) ?? 0;
   state.tools.callsByName = countMap(source.toolCallsByName);
+
+  const rawDelegations = (source.delegations && typeof source.delegations === "object" && !Array.isArray(source.delegations)
+    ? source.delegations
+    : {}) as Record<string, unknown>;
+  state.delegations = {
+    total: positive(rawDelegations.total) ?? 0,
+    byRole: countMap(rawDelegations.byRole),
+    activeRole: text(rawDelegations.activeRole),
+    lastOutcome: text(rawDelegations.lastOutcome),
+  };
 
   state.exploration.filesInspected = stringList(source.filesInspected);
   state.exploration.sourceReads = positive(source.sourceReads) ?? 0;

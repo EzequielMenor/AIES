@@ -74,6 +74,7 @@ export function renderFooter(snapshot: AiesSnapshot, now: number): string {
     `files ${snapshot.filesInspected.length}`,
   ];
   if (snapshot.compactionCount > 0) parts.push(`cmp ${snapshot.compactionCount}`);
+  if (snapshot.delegations?.activeRole) parts.push(`delegando ${snapshot.delegations.activeRole}`);
   parts.push(formatDuration(now - snapshot.startedAt));
   return parts.join(" · ");
 }
@@ -103,6 +104,14 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
       row("archivos", String(snapshot.filesInspected.length)),
       row("más usadas", topTools(snapshot.toolCallsByName, TOP_TOOLS)),
     ]),
+    ...(snapshot.delegations && snapshot.delegations.total > 0
+      ? section("Delegaciones", [
+          row("total", String(snapshot.delegations.total)),
+          ...Object.entries(snapshot.delegations.byRole).map(([r, c]) => row(`  ${r}`, String(c))),
+          row("activa", snapshot.delegations.activeRole ?? "-"),
+          row("último resultado", snapshot.delegations.lastOutcome ?? "-"),
+        ])
+      : []),
     ...section("Resultados de tools", [
       row("devueltos", String(snapshot.toolResults)),
       row("con error", String(snapshot.toolErrors)),

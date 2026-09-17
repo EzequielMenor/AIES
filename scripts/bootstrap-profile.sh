@@ -38,11 +38,16 @@ link_resource() {
   ln -s "$src" "$dst"
 }
 
-for resource in extensions prompts themes; do
+for resource in agents extensions prompts themes; do
   link_resource "$resource"
 done
 
 # Seed settings.json once. From then on pi owns it (aies install, /settings).
 if [ ! -e "$AIES_AGENT_DIR/settings.json" ]; then
   cp "$AIES_REPO/profile/settings.json" "$AIES_AGENT_DIR/settings.json"
+fi
+
+# Seed aies.json once if present in profile.
+if [ ! -e "$AIES_AGENT_DIR/aies.json" ] && [ -e "$AIES_REPO/profile/aies.json" ]; then
+  cp "$AIES_REPO/profile/aies.json" "$AIES_AGENT_DIR/aies.json"
 fi
