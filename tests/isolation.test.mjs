@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -119,6 +119,25 @@ describe("AIES isolation", () => {
     assert.equal(info.PI_CODING_AGENT_DIR, agentDir);
     assert.equal(info.AIES_REPO, REPO);
     assert.notEqual(info.PI_CODING_AGENT_DIR, PI_PROFILE);
+  });
+
+  it("resolves the repository correctly when launched through a PATH symlink", () => {
+    // Typical installation: ~/.local/bin/aies -> <repo>/bin/aies. AIES_REPO
+    // must follow the real script, not the symlink location.
+    const binDir = mkdtempSync(join(tmpdir(), "aies-symlink-"));
+    try {
+      const link = join(binDir, "aies");
+      symlinkSync(AIES, link);
+
+      const result = spawnSync(link, ["--aies-info"], { env, encoding: "utf8" });
+      assert.equal(result.status, 0, `symlinked launcher failed:\n${result.stderr}`);
+
+      const info = parseInfo(result.stdout);
+      assert.equal(info.AIES_REPO, REPO);
+      assert.equal(info.AIES_HOME, home);
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 
   it("is resolved by Pi's own API, not by AIES's assumptions", async () => {

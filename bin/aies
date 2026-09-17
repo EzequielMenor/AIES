@@ -14,7 +14,18 @@
 #
 set -euo pipefail
 
-AIES_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# Resolve this script through symlinks before deriving the repository root:
+# installed as ~/.local/bin/aies -> <repo>/bin/aies, BASH_SOURCE is the symlink
+# path and would point AIES_REPO at the symlink's directory instead.
+AIES_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$AIES_SOURCE" ]; do
+  AIES_TARGET="$(readlink -- "$AIES_SOURCE")"
+  case "$AIES_TARGET" in
+    /*) AIES_SOURCE="$AIES_TARGET" ;;
+    *) AIES_SOURCE="$(dirname -- "$AIES_SOURCE")/$AIES_TARGET" ;;
+  esac
+done
+AIES_REPO="$(cd -- "$(dirname -- "$AIES_SOURCE")/.." && pwd -P)"
 
 # Profile location. Overridable so tests and experiments never touch the real
 # one. Default: a standard user data directory outside this repository.
