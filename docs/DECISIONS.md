@@ -1,0 +1,153 @@
+# Decisions
+
+Recorded decisions with their rationale. Numbered, append-only: to change one,
+add a new entry that supersedes it instead of editing history.
+
+---
+
+## D1 - Pi is the runtime, AIES never becomes one
+
+**Decision.** AIES uses the official `pi` binary and the documented extension
+API. No fork, no vendored copy, no alternative CLI, no agent loop of its own.
+
+**Why.** Pi already owns sessions, models, tools, TUI, RPC, the extension
+loader and the profile layout. Re-implementing any of that means maintaining it
+forever and drifting from upstream. The interesting part of a personal
+engineering environment is the opinionated layer on top, not the runtime below.
+
+**Consequence.** `bin/aies` must stay a launcher. Any feature that cannot be
+expressed as an extension, a skill, a prompt, a theme, a setting or a flag is a
+signal that the feature does not belong in AIES.
+
+---
+
+## D2 - Isolation through `PI_CODING_AGENT_DIR`
+
+**Decision.** Every `aies` run sets `PI_CODING_AGENT_DIR` to
+`$AIES_HOME/agent`, unsets `PI_CODING_AGENT_SESSION_DIR`, and never writes to
+the ambient Pi profile.
+
+**Why.** It is Pi's own, documented mechanism, and the resolution lives in
+`getAgentDir()`: settings, credentials, models, sessions, trust, extensions,
+prompts, themes, tool binaries and installed packages all derive from that one
+path. Verified against Pi 0.85.1, including that Pi creates a missing profile
+directory automatically.
+
+**Consequence.** "Isolated" must be stated precisely, because the variable does
+not cover everything. `~/.agents/skills/`, project-local `.pi/`, and
+`AGENTS.md` / `CLAUDE.md` are out of its scope. Those three are documented in
+the README and one of them is neutralised by D4.
+
+---
+
+## D3 - Profile lives outside the repository
+
+**Decision.** Default profile: `~/.local/share/aies/agent`. Overridable with
+`AIES_HOME`.
+
+**Why.** Runtime state is not source code: it must survive a repository move,
+must not end up in git by accident, and must be deletable in one command.
+Keeping it outside the repository also makes accidental commits impossible
+rather than merely ignored.
+
+**Consequence.** The suite always sets `AIES_HOME` to a temporary directory, so
+no test can ever touch the real profile.
+
+---
+
+## D4 - AIES owns its skills; global skills stay out
+
+**Decision.** `aies` always passes `--no-skills` and adds `--skill
+<repo>/skills` once that directory has content.
+
+**Why.** `~/.agents/skills/` is a cross-harness convention that
+`PI_CODING_AGENT_DIR` does not isolate; without this, every AIES session loads
+skills shared with other harnesses, which makes AIES behaviour depend on state
+outside the project. A reproducible profile was worth more than reusing those
+skills by default.
+
+**Consequence.** AIES skills live in this repository and are explicit. A skill
+the user wants in both environments must exist in both places.
+
+---
+
+## D5 - `aies` is a launcher with a one-flag contract
+
+**Decision.** `bin/aies` resolves the profile, bootstraps it, and execs `pi`.
+Only `--aies-*` arguments are interpreted; the single implemented flag is
+`--aies-info`. Pi subcommands bypass the session flags and go straight through.
+
+**Why.** A second CLI would duplicate Pi's argument surface and age badly.
+Argument passthrough means every current and future Pi flag works in AIES for
+free, and the isolation stays in one place.
+
+**Consequence.** Refusing unknown `--aies-*` flags loudly (exit 2) keeps the
+reserved namespace honest instead of silently swallowing a typo.
+
+---
+
+## D6 - Own git repository, one work-unit commit per task
+
+**Decision.** `git init` inside this directory, work on a feature branch, and
+close every task in `odd/tasks/` with a Conventional Commit that carries tests
+and docs alongside the behaviour. No remote is configured.
+
+**Why.** The directory previously sat inside a git repository rooted at `$HOME`,
+which makes change tracking meaningless. Commits per work unit keep the change
+reviewable and recoverable.
+
+**Consequence.** No push and no pull request without an explicit decision.
+
+---
+
+## D7 - npm as the package manager of this repository
+
+**Decision.** `npm` for the dev dependency and the lockfile, even though the
+user's global tooling is pnpm.
+
+**Why.** It matches Pi's default `npmCommand`, so package behaviour here and
+inside Pi agree. One less difference to reason about.
+
+**Consequence.** `package-lock.json` is versioned; `node_modules/` is not.
+
+---
+
+## Open issues
+
+### O1 - Broken global `pre-commit` hook (resolved)
+
+**Situation.** `init.templateDir` is `~/.git-templates`, and its `pre-commit`
+runs `gga run || exit 1`. `git init` copies that hook verbatim into every new
+repository (verified: identical sha256), and `gga` is not installed anywhere on
+this machine and is not defined in any shell rc file. The second command in the
+hook (`openwiki --update`) is non-blocking, and `openwiki` does exist.
+
+**Decision.** The local, unversioned `.git/hooks/pre-commit` was deleted in this
+repository only. `~/.git-templates` was left untouched. No commit uses
+`--no-verify`.
+
+**Why.** The hook arrived by accident, not by requirement: it is not part of
+AIES, and it guards nothing here because the tool it calls does not exist. A
+broken gate that blocks every commit is worse than no gate, and bypassing it
+with `--no-verify` on every commit would normalise silently skipping checks.
+Removing the local file is the smallest change that makes the gate honest.
+
+**Standing constraint.** `gga` is not used anywhere in AIES, by explicit user
+decision. Do not reintroduce it, and do not bypass hooks with `--no-verify`.
+
+**Follow-up (deliberately not acted on).** Any future `git init` still inherits
+the same broken hook from the global template. Fixing that means editing
+`~/.git-templates`, which is the user's call and outside this repository.
+
+### O2 - The name "AIES" is already taken by a different project
+
+**Situation.** `github.com/EzequielMenor/AIES` exists and holds a different
+architecture: an autonomous harness with its own runtime, subagents and
+roadmap. Two working copies exist locally (`~/repos/AIES`, `~/.aies`), plus
+backup directories.
+
+**Status.** Not blocking this phase. No remote is configured in this repository,
+and the two projects are unrelated in code, dependencies and design.
+
+**Needed decision.** Before any push: rename one of them, use a new repository,
+or explicitly declare this one a successor and archive the other.
