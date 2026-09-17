@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# aies - AIES launcher.
+#
+# AIES is a harness layer on top of Pi. This script is not a CLI and not a
+# runtime: it points the official `pi` binary at an isolated Pi profile and then
+# gets out of the way. Everything pi already knows how to do is inherited
+# through argument passthrough.
+#
+# Contract:
+#   aies --aies-info    print the resolved profile paths and exit
+#   aies --aies-*       reserved for AIES; unknown ones fail loudly
+#   aies <anything>     handed to pi verbatim (exec, no re-parsing)
+#
+set -euo pipefail
+
+AIES_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+# Profile location. Overridable so tests and experiments never touch the real
+# one. Default: a standard user data directory outside this repository.
+AIES_HOME="${AIES_HOME:-$HOME/.local/share/aies}"
+case "$AIES_HOME" in "~/"*) AIES_HOME="$HOME/${AIES_HOME#\~/}" ;; esac
+AIES_AGENT_DIR="$AIES_HOME/agent"
+
+print_info=0
+for arg in "$@"; do
+  case "$arg" in
+    --aies-info) print_info=1 ;;
+    --aies-*) printf 'aies: unknown AIES flag: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+if ! command -v pi >/dev/null 2>&1; then
+  printf 'aies: the official pi binary is not on PATH\n' >&2
+  exit 127
+fi
+
+bash "$AIES_REPO/scripts/bootstrap-profile.sh" >/dev/null
+
+# Isolate the profile. An inherited agent dir or session dir would silently
+# break the isolation this project depends on.
+export PI_CODING_AGENT_DIR="$AIES_AGENT_DIR"
+unset PI_CODING_AGENT_SESSION_DIR
+
+if [ "$print_info" -eq 1 ]; then
+  printf 'AIES_REPO=%s\n' "$AIES_REPO"
+  printf 'AIES_HOME=%s\n' "$AIES_HOME"
+  printf 'PI_CODING_AGENT_DIR=%s\n' "$AIES_AGENT_DIR"
+  printf 'pi_bin=%s\n' "$(command -v pi)"
+  printf 'pi_version=%s\n' "$(pi --version)"
+  exit 0
+fi
+
+# pi subcommands manage state or print information; session flags do not apply.
+if [ $# -gt 0 ]; then
+  case " install remove uninstall update list config auth " in
+    *" $1 "*) exec pi "$@" ;;
+  esac
+fi
+
+# Session runs: AIES owns its skills, so cross-harness global skills stay out.
+# Repo skills are added explicitly once the directory has content.
+pi_args=(--no-skills)
+if [ -n "$(ls -A "$AIES_REPO/skills" 2>/dev/null)" ]; then
+  pi_args+=(--skill "$AIES_REPO/skills")
+fi
+
+exec pi "${pi_args[@]}" "$@"
