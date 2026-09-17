@@ -12,8 +12,10 @@ AIES is a personal AI engineering environment built **on top of Pi**.
 
 The command is `aies`; underneath it is `pi`.
 
-> Phase 1 status: bootstrap only. No dashboard, subagents, orchestration,
-> reviews, memory or autopilot. See [Scope](#scope).
+> Phase status: isolated bootstrap (AIES-001) plus a session metrics baseline
+> (AIES-002) that measures the parent session and does nothing else. No
+> dashboard, subagents, orchestration, reviews, memory or autopilot. See
+> [Scope](#scope).
 
 ## Requirements
 
@@ -107,7 +109,11 @@ Only these arguments are interpreted by AIES:
 | `scripts/bootstrap-profile.sh` | idempotent profile setup (symlinks, settings seed) |
 | `profile/settings.json` | seed for the profile's `settings.json`, copied once |
 | `extensions/` | AIES extensions, linked into the isolated profile |
+| `extensions/aies-identity.ts` | profile visibility: startup notice and `/aies-info` |
+| `extensions/aies-runtime/` | session metrics: footer line, `/aies-status`, no behavior changes |
 | `tests/isolation.test.mjs` | deterministic isolation checks (no credentials) |
+| `tests/observability.test.mjs` | metric rules and rendering, driven through a fake `ExtensionAPI` |
+| `tests/observability-runtime.test.mjs` | the observer inside a real Pi process, over RPC |
 | `scripts/check-isolation.sh` | one-command entry point for the checks |
 | `docs/ARCHITECTURE.md` | how the launcher and the profile actually work |
 | `docs/DECISIONS.md` | decisions taken, with their rationale |
@@ -125,16 +131,26 @@ npm run check:isolation
 Then, by hand:
 
 ```bash
-aies          # footer shows "AIES", startup notice shows the AIES profile path
+aies          # one footer line: AIES · ctx 34k/peak 41k · tools 8 · files 4 · 02:14
 /aies-info    # prints the extension path, agent dir, project config dir, cwd, mode
+/aies-status  # the same metrics unfolded: context, tools, exploration, runtime
 pi            # your normal Pi must still start exactly as before
 ```
 
+The metrics line and `/aies-status` come from
+`extensions/aies-runtime/`. They measure and never govern: no counter, ratio or
+threshold changes what Pi does with a tool call, a delegation or a compaction.
+
 ## Scope
 
-Phase 1 (current) ships: repository structure, profile isolation, the `aies`
-command, minimal configuration, one identity extension, and the isolation
-checks.
+Phase 1 shipped: repository structure, profile isolation, the `aies` command,
+minimal configuration, one identity extension, and the isolation checks.
 
-Explicitly out of scope for this phase: dashboards, subagents, orchestration,
-code review, memory, autopilot, theming, branding, CI and publishing.
+Phase 2 (current) ships the observability baseline: one footer line and one
+diagnostic command, measuring context, parent tool activity, exploration, tool
+output volume, session runtime and tool surface. It measures only.
+
+Explicitly out of scope for this phase: acting on any metric (delegation
+triggers, context pressure, proactive compaction), dashboards, subagents,
+orchestration, code review, memory, autopilot, theming, branding, CI and
+publishing.

@@ -112,6 +112,31 @@ inside Pi agree. One less difference to reason about.
 
 ---
 
+## D8 - AIES-002 measures, and persists only through Pi's own entries
+
+**Decision.** The runtime observer is a sensor with no actuator. It keeps its
+state in memory and checkpoints it with `pi.appendEntry("aies-metrics", ...)`,
+restoring from the last such entry on `session_start`. No SQLite, no JSONL of our
+own, no analytics pipeline. The observer also owns the `aies` footer status key,
+which `aies-identity.ts` stopped writing.
+
+**Why.** A governance layer (AIES-003) is only defensible on top of numbers that
+already proved stable and comparable, and a phase that both measures and decides
+cannot tell which one broke. Custom entries are Pi's documented mechanism for
+state that survives a restart and never enters the model's context, so resume
+support costs one append and one scan instead of a storage layer to maintain.
+One writer per status key keeps the footer honest without relying on extension
+load order.
+
+**Consequence.** Counters survive `/resume` and `/fork`, and are lost on a hard
+kill between checkpoints - documented, not engineered around. No threshold exists
+anywhere in this code: nothing can block, delegate, compact or route because of a
+metric yet. And because a Pi subagent runs in its own session, the parent only
+sees one call to its own tool: measuring subagent activity is a separate phase's
+problem, not a silent gap here.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

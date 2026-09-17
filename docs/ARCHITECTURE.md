@@ -78,14 +78,72 @@ profile.
 
 The smallest thing that answers "which profile am I actually running in?":
 
-- on `session_start`: footer status `AIES` and a notice with the resolved agent
-  directory;
+- on `session_start`: a notice with the resolved agent directory;
 - `/aies-info`: extension path, agent dir, project config directory name, cwd,
   run mode.
 
 It asks Pi directly (`getAgentDir()`, `VERSION`, `CONFIG_DIR_NAME`) instead of
 reading `process.env`, so what it prints is Pi's own resolution, not AIES's
-assumption.
+assumption. The footer status line is not its business: since AIES-002 the
+runtime observer owns it, and that line starts with `AIES` too.
+
+## The runtime observer (`extensions/aies-runtime/`)
+
+AIES-002. Sensors, no actuators: it measures the parent session and changes
+nothing about how Pi runs it. It registers one footer line and one command, and
+no tools.
+
+| Module | Job |
+|---|---|
+| `state.ts` | The typed state and its transitions. Pure: no Pi import, no I/O, no timers. Token counts come from Pi, never estimated here |
+| `status.ts` | Turns a snapshot into the footer line and the `/aies-status` report. Pure presentation |
+| `index.ts` | The only file in AIES-002 that touches Pi |
+
+What it reads, from `session_start`, `tool_call`, `tool_result`, `turn_end`,
+`model_select`, `session_compact`, `agent_settled` and `session_shutdown`:
+
+- **context**: current tokens, peak tokens (monotonic, and tagged with the window
+  it was measured against), compaction count;
+- **parent tools**: calls, calls per tool, results, results that errored;
+- **exploration**: source reads (`read`, `view_file`), searches (`grep`, `find`,
+  `ls`, `glob`, `codegraph`), `bash` calls whose command is an obvious inspection
+  command, and the distinct paths given to the reading tools;
+- **output volume**: approximate characters Pi handed back to the model, plus the
+  largest single result;
+- **runtime**: model and provider, elapsed, session id and file, last stop
+  reason, active tool count.
+
+Two invariants, both under test: no handler ever returns a value (nothing can
+block a call or patch a result), and every measurement sits behind a guard (the
+observer degrades into silence instead of into a Pi extension error). No
+threshold, counter or ratio feeds any decision yet: that is AIES-003.
+
+The footer refreshes on events and every five seconds, and only when its text
+actually changed, so it never repaints itself. The clock is `unref`ed and cleared
+on `session_shutdown`.
+
+### Where the numbers come from, and where they stop
+
+Tokens, model, session identity and the tool surface are read from Pi, not
+reconstructed: `ctx.getContextUsage()`, `ctx.model`, `ctx.sessionManager`,
+`pi.getActiveTools()`. AIES never estimates a token count and never truncates a
+result to make one cheaper to measure.
+
+State lives in memory. On `agent_settled` and `session_shutdown` the observer
+appends one `aies-metrics` custom entry (see D8), which is Pi's own mechanism and
+never enters the model's context. A `/resume` therefore keeps its cumulative
+counters and its peak; a session interrupted by a hard kill loses whatever was not
+checkpointed yet, and a `/new` starts clean by definition. Known limits:
+
+- the counters describe the **parent** session only. What a subagent reads or
+  costs is invisible here, because the parent only sees one call to its own tool;
+- `filesInspected` counts paths given to the reading tools, not files a `grep`
+  matched. A shell command contributes one counter and no paths: this is a
+  heuristic with a test, not a shell parser;
+- `search` and `shell inspection` counters are comparable between sessions, not
+  exact measures of how much was read;
+- output size counts text blocks and base64 image payloads as characters. It is
+  a volume signal, not the token bill Pi already reports.
 
 ## Verification model
 
@@ -100,6 +158,8 @@ the real Pi profile), so the suite proves both isolation and override.
 | profile bootstrap | `extensions` is a symlink into the repo; `settings.json` seeded |
 | session storage | RPC `get_state` returns a session file inside the isolated profile |
 | extension loading | RPC `get_commands` shows the identity extension with `baseDir` = isolated agent dir, and nothing from the ambient profile |
+| observability wiring | RPC `get_commands` lists `/aies-status` from `extensions/aies-runtime/index.ts`, and RPC `prompt "/aies-status"` returns the report |
+| observability invariants | the reducer rules, the classification and both renderings, driven directly and through a fake `ExtensionAPI` (`tests/observability.test.mjs`) |
 | skills policy | RPC `get_commands` contains zero `source: "skill"` entries |
 | package isolation | `aies list` output excludes every package of the ambient profile |
 | non-regression | sha256 of the ambient profile's `settings.json`, `auth.json`, `models.json` and the session directory listing are unchanged |

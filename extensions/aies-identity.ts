@@ -30,7 +30,9 @@ export default function aiesIdentity(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
 
-    ctx.ui.setStatus("aies", "AIES");
+    // The footer line belongs to the runtime observer (`aies-runtime`), which
+    // starts with the same `AIES` prefix and has real numbers to show. This
+    // extension reports the profile once, at start, and nothing else.
     ctx.ui.notify(`AIES profile: ${getAgentDir()}`, "info");
   });
 
