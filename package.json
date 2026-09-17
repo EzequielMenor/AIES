@@ -1,0 +1,40 @@
+{
+  "name": "aies",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AIES - personal AI engineering environment built on top of Pi",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "aies": "./bin/aies"
+  },
+  "files": [
+    "bin",
+    "extensions",
+    "profile",
+    "docs",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "scripts": {
+    "bootstrap": "bash scripts/bootstrap-profile.sh",
+    "check:isolation": "bash scripts/check-isolation.sh",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

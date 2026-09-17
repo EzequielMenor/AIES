@@ -1,0 +1,12 @@
+# Local Pi runtime state (legacy artifact from a non-isolated Pi run)
+.atl/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local verification artifacts
+.verification/
+
+# macOS
+.DS_Store
