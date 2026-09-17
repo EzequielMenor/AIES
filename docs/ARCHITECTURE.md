@@ -168,9 +168,9 @@ Parent Session (AgentSession)
   ├─ Spawns Child AgentSession
   │    ├── Fresh context (no parent history, sentinels, or reasoning)
   │    ├── System prompt: agents/explore.md
-  │    ├── Tools allowed: read, grep, find, ls, bash (strictly read-only)
-  │    ├── Tools denied: edit, write (not registered)
-  │    ├── Bash guard: rejects rm, touch, >, >>, sed -i, subshells
+  │    ├── Tools allowed: read, grep, find, ls, tgrep (strictly read-only search)
+  │    ├── Tools denied: bash, edit, write (not registered)
+  │    ├── Scoped tgrep: path containment, no shell injection, bounded output
   │    ├── Extensions: noExtensions: true (parent metrics unaffected)
   │    └── Session: in-memory (no disk clutter)
   │
@@ -183,8 +183,8 @@ Parent Session (AgentSession)
 
 | Module | Role |
 |---|---|
-| `agents/explore.md` | Role prompt defining the read-only exploration rules and output schema |
-| `extensions/aies-agents/bash-guard.ts` | Safety filter rejecting mutating commands, file redirects, and subshell executions |
+| `agents/explore.md` | Role prompt defining progressive disclosure and read-only search rules |
+| `extensions/aies-agents/tgrep.ts` | Scoped code search tool with path containment, output limits, and fallback |
 | `extensions/aies-agents/handoff.ts` | Structured parser and defensive formatter capping handoffs under 6,000 characters |
 | `extensions/aies-agents/model.ts` | Model resolution: `AIES_EXPLORE_MODEL` env > `aies.json` (`agents.explore.model`) > parent model |
 | `extensions/aies-agents/explore.ts` | Isolated child session runner creating and disposing the child `AgentSession` |

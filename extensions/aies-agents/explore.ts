@@ -14,14 +14,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   createAgentSession,
-  createBashToolDefinition,
   DefaultResourceLoader,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-import { createReadOnlyBashOperations } from "./bash-guard.ts";
 import { parseExploreHandoff, type ExploreHandoff } from "./handoff.ts";
 import { resolveExploreModel } from "./model.ts";
+import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 
 export interface RunExploreOptions {
   task: string;
@@ -34,6 +33,7 @@ export interface RunExploreOptions {
   systemPrompt?: string;
   signal?: AbortSignal;
   sessionManager?: any;
+  tgrepRunner?: TgrepRunner;
 }
 
 function resolveSystemPrompt(agentDir: string, override?: string): string {
@@ -85,8 +85,8 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
   });
   await resourceLoader.reload();
 
-  const customBash = createBashToolDefinition(cwd, {
-    operations: createReadOnlyBashOperations(),
+  const customTgrep = createTgrepToolDefinition(cwd, {
+    runner: options.tgrepRunner,
   });
 
   const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
@@ -98,8 +98,8 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
     modelRuntime,
     resourceLoader,
     sessionManager,
-    customTools: [customBash],
-    tools: ["read", "grep", "find", "ls", "bash"],
+    customTools: [customTgrep],
+    tools: ["read", "grep", "find", "ls", "tgrep"],
   });
 
   let promptText = `TASK: ${task}`;
