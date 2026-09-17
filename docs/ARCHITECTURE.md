@@ -145,36 +145,42 @@ checkpointed yet, and a `/new` starts clean by definition. Known limits:
 - output size counts text blocks and base64 image payloads as characters. It is
   a volume signal, not the token bill Pi already reports.
 
-## Child agent delegation (`extensions/aies-agents/`, `agents/explore.md`)
+## Child agent delegation (`extensions/aies-agents/`, `agents/`)
 
-AIES-003. Builds the first real delegation primitive: isolated child exploration.
-The parent session receives the `aies_delegate` tool:
+AIES-003 and AIES-004 provide two isolated child roles via `aies_delegate`:
 
 ```ts
 aies_delegate({
-  role: "explore",
-  task: "Investigate architecture of the observer runtime",
-  context?: "Look under extensions/aies-runtime"
+  role: "explore" | "worker",
+  task: "Investigate architecture or implement a specific work unit",
+  context?: "Background context, acceptance criteria, or explore findings"
 })
 ```
+
+### Roles and tool surfaces
+
+| Role | Job | Allowed tools | Denied tools | Prompt |
+|---|---|---|---|---|
+| `explore` | Read-only codebase investigation | `read`, `grep`, `find`, `ls`, `tgrep` | `bash`, `edit`, `write` | `agents/explore.md` |
+| `worker` | Concrete work unit implementation | `read`, `grep`, `find`, `ls`, `tgrep`, `edit`, `write`, guarded `bash` | Destructive/remote bash (`git clean`, `reset --hard`, `git push`, `sudo`, mass `rm`) | `agents/worker.md` |
 
 ### Delegation lifecycle and isolation guarantees
 
 ```
 Parent Session (AgentSession)
   │
-  ├─ Calls aies_delegate({ role: "explore", task, context })
+  ├─ Decides route: Inline Direct | Explore | Worker
   │
-  ├─ Spawns Child AgentSession
+  ├─ Calls aies_delegate({ role: "explore" | "worker", task, context })
+  │
+  ├─ Spawns Child AgentSession (via session.ts)
   │    ├── Fresh context (no parent history, sentinels, or reasoning)
-  │    ├── System prompt: agents/explore.md
-  │    ├── Tools allowed: read, grep, find, ls, tgrep (strictly read-only search)
-  │    ├── Tools denied: bash, edit, write (not registered)
-  │    ├── Scoped tgrep: path containment, no shell injection, bounded output
+  │    ├── System prompt: agents/<role>.md
+  │    ├── Role-specific tool whitelist and custom tools
   │    ├── Extensions: noExtensions: true (parent metrics unaffected)
   │    └── Session: in-memory (no disk clutter)
   │
-  ├─ Child investigates repository and concludes with structured JSON
+  ├─ Child investigates or implements, concluding with structured JSON
   │
   ├─ Child session disposed (session.dispose())
   │
@@ -184,12 +190,34 @@ Parent Session (AgentSession)
 | Module | Role |
 |---|---|
 | `agents/explore.md` | Role prompt defining progressive disclosure and read-only search rules |
+| `agents/worker.md` | Role prompt defining scoped implementation, worktree protection, and checks |
+| `extensions/aies-agents/session.ts` | Shared isolated child `AgentSession` creation and disposal lifecycle |
 | `extensions/aies-agents/tgrep.ts` | Scoped code search tool with path containment, output limits, and fallback |
-| `extensions/aies-agents/handoff.ts` | Structured parser and defensive formatter capping handoffs under 6,000 characters |
-| `extensions/aies-agents/model.ts` | Model resolution: `AIES_EXPLORE_MODEL` env > `aies.json` (`agents.explore.model`) > parent model |
-| `extensions/aies-agents/explore.ts` | Isolated child session runner creating and disposing the child `AgentSession` |
-| `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool conforming to TypeBox schema |
-| `extensions/aies-agents/index.ts` | Extension entry point registering `aies_delegate` with Pi |
+| `extensions/aies-agents/worker-guard.ts` | Command security validator and guarded bash tool definition |
+| `extensions/aies-agents/handoff.ts` | Structured parser and defensive formatter for Explore and Worker handoffs |
+| `extensions/aies-agents/model.ts` | Model resolution: env (`AIES_<ROLE>_MODEL`) > `aies.json` (`agents.<role>.model`) > parent model |
+| `extensions/aies-agents/explore.ts` | Isolated Explore child agent runner |
+| `extensions/aies-agents/worker.ts` | Isolated Worker child agent runner |
+| `extensions/aies-agents/routing.ts` | Parent routing policy, soft signals, and hard guardrails |
+| `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool supporting `explore` and `worker` |
+| `extensions/aies-agents/index.ts` | Extension entry point registering `aies_delegate` and routing hooks with Pi |
+
+### Parent routing policy and guardrails
+
+Three routes:
+- **INLINE DIRECT**: Trivial changes (typos, single comments, localized edits, 1-2 source reads).
+- **EXPLORE**: Unknown scope, broad code search, or reading >2 files.
+- **WORKER**: Non-trivial multi-file changes (>= 2 files), iterative test/check cycles.
+
+Guardrails:
+- **Soft signals** inform model decisions:
+  - 3 exploratory reads -> soft pressure to delegate Explore.
+  - 7 tool calls since boundary -> soft pressure to evaluate delegation.
+  - >3 files inspected -> suggestion to delegate Explore.
+- **Hard guardrails** block direct runaway actions:
+  - 5 exploratory reads -> direct reads blocked (`parent exploration budget exceeded; delegate Explore`).
+  - 12 tool calls since boundary -> direct tools blocked (`parent tool budget exceeded; re-evaluation required`).
+- Delegation resets boundary counters (`toolsSinceBoundary = 0`, `readsSinceBoundary = 0`, `filesSinceBoundary = []`) while global AIES-002 telemetry accumulates.
 
 ## Verification model
 

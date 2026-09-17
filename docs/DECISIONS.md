@@ -163,6 +163,36 @@ other roles (`planner`, `worker`) are deferred to subsequent phases.
 
 ---
 
+## D10 - Isolated Worker child agent and Parent Routing Policy (AIES-004)
+
+**Decision.** AIES expands `aies_delegate` to support the `worker` role alongside
+`explore`, and introduces a hybrid routing policy with soft signals and hard
+guardrails on the parent session. The child Worker runs in an isolated Pi
+`AgentSession` (`noExtensions: true`, in-memory session manager, fresh context)
+with tools for localized reading, writing (`edit`, `write`), and development checks
+(`read`, `grep`, `find`, `ls`, `tgrep`, and guarded `bash`). Guarded `bash` blocks
+destructive operations (`git clean`, `reset --hard`, `checkout --`, `restore`,
+`push`, `merge`, `rebase`, `branch -D`, mass `rm`, `sudo`, `deploy`, `publish`).
+The parent retains coordination and small inline work (typos, single comments,
+1-2 file inspection), while routing guardrails enforce boundaries (soft pressure
+at 3 reads / 7 tools; hard block at 5 reads / 12 tools). Boundary counters reset
+on delegation while global telemetry continues to accumulate.
+
+**Why.** Preserves parent session context and reasoning capacity during multi-turn
+implementation tasks without turning AIES into an absurd dispatcher where a 1-line
+fix requires a subagent. Pure prompt routing is vulnerable to drift, while rigid
+counter dispatching breaks natural workflows; combining model judgment with
+deterministic guardrails ensures the parent stays high-level and children do the
+heavy lifting. Worktree protection prevents repeating real-world incidents such as
+unintended `git clean -fd` discarding concurrent working tree state.
+
+**Consequence.** Trivial edits remain direct and fast; complex or multi-file
+implementations must be delegated to Worker. Verification, autonomous planning,
+linear workflow, and multi-worker execution remain deferred to subsequent phases.
+
+---
+
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

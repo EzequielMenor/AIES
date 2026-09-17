@@ -1,9 +1,9 @@
 /**
- * Model resolution for Explore child agents.
+ * Model resolution for Explore and Worker child agents.
  *
  * Resolution order:
- * 1. Environment variable: AIES_EXPLORE_MODEL
- * 2. Configuration file: $AIES_AGENT_DIR/aies.json (agents.explore.model)
+ * 1. Environment variable: AIES_EXPLORE_MODEL / AIES_WORKER_MODEL
+ * 2. Configuration file: $AIES_AGENT_DIR/aies.json (agents.<role>.model)
  * 3. Parent model: ctx.model
  */
 
@@ -27,17 +27,48 @@ function findModel(modelRuntime: any, spec: string): any {
   return models.find((m: any) => m.id === trimmed || `${m.provider}/${m.id}` === trimmed);
 }
 
-function readConfigModel(agentDir: string): string | undefined {
+function readConfigModel(agentDir: string, role: "explore" | "worker"): string | undefined {
   const configPath = join(agentDir, "aies.json");
   if (!existsSync(configPath)) return undefined;
 
   try {
     const content = JSON.parse(readFileSync(configPath, "utf8"));
-    const modelSpec = content.agents?.explore?.model ?? content.delegate?.explore?.model;
+    const modelSpec =
+      content.agents?.[role]?.model ??
+      content.delegate?.[role]?.model;
     return typeof modelSpec === "string" && modelSpec.trim() ? modelSpec.trim() : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Resolve the Model instance for a specific child agent role.
+ */
+export async function resolveAgentModel(
+  role: "explore" | "worker",
+  modelRuntime: any,
+  parentModel: any,
+  agentDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<any> {
+  // 1. Environment variable override
+  const envVarName = role === "worker" ? "AIES_WORKER_MODEL" : "AIES_EXPLORE_MODEL";
+  const envModel = env[envVarName]?.trim();
+  if (envModel && modelRuntime) {
+    const model = findModel(modelRuntime, envModel);
+    if (model) return model;
+  }
+
+  // 2. Profile configuration: aies.json
+  const configModel = readConfigModel(agentDir, role);
+  if (configModel && modelRuntime) {
+    const model = findModel(modelRuntime, configModel);
+    if (model) return model;
+  }
+
+  // 3. Fallback to parent session model
+  return parentModel;
 }
 
 /**
@@ -49,20 +80,17 @@ export async function resolveExploreModel(
   agentDir: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<any> {
-  // 1. Environment variable override
-  const envModel = env.AIES_EXPLORE_MODEL?.trim();
-  if (envModel && modelRuntime) {
-    const model = findModel(modelRuntime, envModel);
-    if (model) return model;
-  }
+  return resolveAgentModel("explore", modelRuntime, parentModel, agentDir, env);
+}
 
-  // 2. Profile configuration: aies.json
-  const configModel = readConfigModel(agentDir);
-  if (configModel && modelRuntime) {
-    const model = findModel(modelRuntime, configModel);
-    if (model) return model;
-  }
-
-  // 3. Fallback to parent session model
-  return parentModel;
+/**
+ * Resolve the Model instance for the Worker child agent.
+ */
+export async function resolveWorkerModel(
+  modelRuntime: any,
+  parentModel: any,
+  agentDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<any> {
+  return resolveAgentModel("worker", modelRuntime, parentModel, agentDir, env);
 }

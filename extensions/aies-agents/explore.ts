@@ -3,23 +3,14 @@
  *
  * Spawns an isolated Pi AgentSession:
  * - Fresh context (no parent history/sentinel leakage).
- * - Read-only tool surface (read, grep, find, ls, guarded bash).
+ * - Read-only tool surface (read, grep, find, ls, scoped tgrep).
  * - Isolated from parent extensions (no metric pollution).
  * - Defensively parses and caps handoff output.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
-
 import { parseExploreHandoff, type ExploreHandoff } from "./handoff.ts";
 import { resolveExploreModel } from "./model.ts";
+import { executeChildSession, resolveRoleSystemPrompt } from "./session.ts";
 import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 
 export interface RunExploreOptions {
@@ -36,27 +27,6 @@ export interface RunExploreOptions {
   tgrepRunner?: TgrepRunner;
 }
 
-function resolveSystemPrompt(agentDir: string, override?: string): string {
-  if (override) return override;
-
-  const candidatePaths = [
-    join(agentDir, "agents", "explore.md"),
-    fileURLToPath(new URL("../../agents/explore.md", import.meta.url)),
-  ];
-
-  for (const candidate of candidatePaths) {
-    if (existsSync(candidate)) {
-      try {
-        return readFileSync(candidate, "utf8");
-      } catch {
-        // Continue to fallback
-      }
-    }
-  }
-
-  return "You are an isolated read-only explore agent. Investigate the codebase and conclude with structured JSON.";
-}
-
 /**
  * Execute an isolated exploration task in a dedicated child AgentSession.
  */
@@ -71,50 +41,29 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
     signal,
   } = options;
 
-  const systemPrompt = resolveSystemPrompt(agentDir, options.systemPrompt);
+  const systemPrompt = resolveRoleSystemPrompt("explore", agentDir, options.systemPrompt);
   const model = options.model ?? (await resolveExploreModel(modelRuntime, parentModel, agentDir));
-
-  const resourceLoader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    systemPrompt,
-  });
-  await resourceLoader.reload();
 
   const customTgrep = createTgrepToolDefinition(cwd, {
     runner: options.tgrepRunner,
   });
 
-  const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
-
-  const { session } = await createAgentSession({
-    cwd,
-    agentDir,
-    model,
-    modelRuntime,
-    resourceLoader,
-    sessionManager,
-    customTools: [customTgrep],
-    tools: ["read", "grep", "find", "ls", "tgrep"],
-  });
-
-  let promptText = `TASK: ${task}`;
-  if (context && context.trim()) {
-    promptText += `\n\nCONTEXT:\n${context.trim()}`;
-  }
-
   try {
-    if (signal?.aborted) {
-      throw new Error("Explore operation was aborted before starting");
-    }
+    const rawOutput = await executeChildSession({
+      task,
+      context,
+      cwd,
+      agentDir,
+      systemPrompt,
+      model,
+      modelRuntime,
+      tools: ["read", "grep", "find", "ls", "tgrep"],
+      customTools: [customTgrep],
+      signal,
+      sessionManager: options.sessionManager,
+    });
 
-    await session.prompt(promptText);
-    const lastAssistantText = session.getLastAssistantText();
-    return parseExploreHandoff(lastAssistantText);
+    return parseExploreHandoff(rawOutput);
   } catch (error: any) {
     return {
       status: "failed",
@@ -123,11 +72,5 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
       issues: [error?.message ?? String(error)],
       next: ["Check child agent configuration or retry exploration."],
     };
-  } finally {
-    try {
-      session.dispose();
-    } catch {
-      // Dispose errors must not mask execution results
-    }
   }
 }

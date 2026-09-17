@@ -3,6 +3,9 @@
   "agents": {
     "explore": {
       "model": null
+    },
+    "worker": {
+      "model": null
     }
   }
 }

@@ -71,8 +71,11 @@ export interface ToolsState {
 export interface DelegationsState {
   total: number;
   byRole: Record<string, number>;
+  byOutcome: Record<string, number>;
   activeRole: string | undefined;
+  activeStartedAt: number | undefined;
   lastOutcome: string | undefined;
+  lastDurationMs: number | undefined;
 }
 
 /** How much the parent looked at, and how much it swallowed doing that. */
@@ -141,7 +144,15 @@ export function createState(now: number): AiesState {
       usagePercent: null,
     },
     tools: { calls: 0, results: 0, errors: 0, callsByName: {} },
-    delegations: { total: 0, byRole: {}, activeRole: undefined, lastOutcome: undefined },
+    delegations: {
+      total: 0,
+      byRole: {},
+      byOutcome: {},
+      activeRole: undefined,
+      activeStartedAt: undefined,
+      lastOutcome: undefined,
+      lastDurationMs: undefined,
+    },
     exploration: {
       filesInspected: [],
       sourceReads: 0,
@@ -162,7 +173,11 @@ function cloneState(state: AiesState): AiesState {
     session: { ...state.session },
     context: { ...state.context },
     tools: { ...state.tools, callsByName: { ...state.tools.callsByName } },
-    delegations: { ...state.delegations, byRole: { ...state.delegations.byRole } },
+    delegations: {
+      ...state.delegations,
+      byRole: { ...state.delegations.byRole },
+      byOutcome: { ...state.delegations.byOutcome },
+    },
     exploration: { ...state.exploration, filesInspected: [...state.exploration.filesInspected] },
   };
 }
@@ -348,6 +363,7 @@ export function applyDelegationStart(state: AiesState, role: string, now: number
   next.delegations.total += 1;
   next.delegations.byRole[role] = (next.delegations.byRole[role] ?? 0) + 1;
   next.delegations.activeRole = role;
+  next.delegations.activeStartedAt = now;
   next.session.lastEventAt = now;
   return next;
 }
@@ -355,8 +371,13 @@ export function applyDelegationStart(state: AiesState, role: string, now: number
 /** Record the completion or settlement of a child agent delegation. */
 export function applyDelegationEnd(state: AiesState, outcome: string, now: number): AiesState {
   const next = cloneState(state);
+  next.delegations.lastDurationMs = state.delegations.activeStartedAt
+    ? Math.max(0, now - state.delegations.activeStartedAt)
+    : undefined;
   next.delegations.activeRole = undefined;
+  next.delegations.activeStartedAt = undefined;
   next.delegations.lastOutcome = outcome;
+  next.delegations.byOutcome[outcome] = (next.delegations.byOutcome[outcome] ?? 0) + 1;
   next.session.lastEventAt = now;
   return next;
 }
@@ -464,8 +485,11 @@ export interface AiesSnapshot {
   delegations: {
     total: number;
     byRole: Record<string, number>;
+    byOutcome: Record<string, number>;
     activeRole: string | undefined;
+    activeStartedAt: number | undefined;
     lastOutcome: string | undefined;
+    lastDurationMs: number | undefined;
   };
 }
 
@@ -499,8 +523,11 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     delegations: {
       total: state.delegations.total,
       byRole: { ...state.delegations.byRole },
+      byOutcome: { ...state.delegations.byOutcome },
       activeRole: state.delegations.activeRole,
+      activeStartedAt: state.delegations.activeStartedAt,
       lastOutcome: state.delegations.lastOutcome,
+      lastDurationMs: state.delegations.lastDurationMs,
     },
   };
 }
@@ -539,8 +566,11 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
   state.delegations = {
     total: positive(rawDelegations.total) ?? 0,
     byRole: countMap(rawDelegations.byRole),
+    byOutcome: countMap(rawDelegations.byOutcome),
     activeRole: text(rawDelegations.activeRole),
+    activeStartedAt: positive(rawDelegations.activeStartedAt) ?? undefined,
     lastOutcome: text(rawDelegations.lastOutcome),
+    lastDurationMs: positive(rawDelegations.lastDurationMs) ?? undefined,
   };
 
   state.exploration.filesInspected = stringList(source.filesInspected);

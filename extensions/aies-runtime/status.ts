@@ -110,6 +110,9 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
           ...Object.entries(snapshot.delegations.byRole).map(([r, c]) => row(`  ${r}`, String(c))),
           row("activa", snapshot.delegations.activeRole ?? "-"),
           row("último resultado", snapshot.delegations.lastOutcome ?? "-"),
+          ...(typeof snapshot.delegations.lastDurationMs === "number"
+            ? [row("última duración", formatDuration(snapshot.delegations.lastDurationMs))]
+            : []),
         ])
       : []),
     ...section("Resultados de tools", [
