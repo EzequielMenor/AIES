@@ -516,6 +516,111 @@ function createHost(overrides = {}) {
   return { emit, start, report, handlers, commands, appended, statuses, notifications, ctx, options };
 }
 
+describe("verification observability (AIES-005)", () => {
+  const verifyResult = (verification) => ({
+    toolName: "aies_delegate",
+    input: { role: "verify" },
+    content: [{ type: "text", text: "### Verify Result" }],
+    isError: false,
+    details: { verification },
+  });
+
+  it("keeps the footer quiet until something was verified", () => {
+    const footer = renderFooter(toSnapshot(createState(T0)), T0);
+
+    assert.equal(footer.includes("V:"), false, footer);
+    assert.equal(footer.includes("VERIFY"), false, footer);
+  });
+
+  it("names an in-flight verification and reports its verdict", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    assert.match(host.statuses.at(-1).text, /· VERIFY ·/u);
+    assert.match(host.statuses.at(-1).text, /V:\?/u);
+
+    await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
+
+    const footer = host.statuses.at(-1).text;
+    assert.match(footer, /V:PASS/u);
+    assert.equal(footer.includes("VERIFY"), false);
+  });
+
+  it("marks an old PASS as stale once the artifact changes", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
+    assert.match(host.statuses.at(-1).text, /V:PASS/u);
+
+    await host.emit("tool_call", toolCall("edit", { path: "config.js" }));
+
+    assert.match(host.statuses.at(-1).text, /V:STALE/u);
+    const report = await host.report();
+    assert.equal(field(report, "estado"), "PASS");
+    assert.equal(field(report, "válido"), "no");
+    assert.equal(field(report, "intentos"), "1");
+    assert.equal(field(report, "repairs"), "0 / 2");
+    assert.equal(field(report, "cambios tras PASS"), "1");
+    assert.match(field(report, "última duración"), /^\d{2}:\d{2}$/u);
+  });
+
+  it("distinguishes FAIL and BLOCKED from an absent verdict", async () => {
+    const failed = createHost();
+    await failed.start();
+    await failed.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await failed.emit("tool_result", verifyResult({ status: "fail", attempts: 1, repairs: 0, maxRepairs: 2, valid: false }));
+    assert.match(failed.statuses.at(-1).text, /V:FAIL/u);
+    assert.equal(field(await failed.report(), "estado"), "FAIL");
+
+    const blocked = createHost();
+    await blocked.start();
+    await blocked.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await blocked.emit("tool_result", verifyResult({ status: "blocked", attempts: 1, repairs: 0, maxRepairs: 2, valid: false }));
+    assert.match(blocked.statuses.at(-1).text, /V:BLOCKED/u);
+    assert.equal(field(await blocked.report(), "estado"), "BLOCKED");
+  });
+
+  it("survives a hostile or absent report without changing what it observes", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await host.emit("tool_result", { toolName: "aies_delegate", input: { role: "verify" }, content: "x", details: { verification: "not an object" } });
+    await host.emit("tool_result", { toolName: "aies_delegate", input: { role: "verify" }, content: "x", details: null });
+
+    assert.match(await host.report(), /Mide, no gobierna/u);
+    assert.equal(field(await host.report(), "intentos"), "1");
+  });
+
+  it("restores the verification counters from a persisted snapshot", async () => {
+    const host = createHost({
+      entries: [
+        {
+          type: "custom",
+          customType: "aies-metrics",
+          data: {
+            version: 1,
+            startedAt: T0 - 1000,
+            toolCalls: 4,
+            verification: { status: "fail", attempts: 2, repairs: 1, maxRepairs: 2, valid: false, mutationsSincePass: 0 },
+          },
+        },
+      ],
+    });
+    await host.start("resume");
+
+    assert.match(host.statuses.at(-1).text, /V:FAIL/u);
+    assert.equal(field(await host.report(), "intentos"), "2");
+    assert.equal(field(await host.report(), "repairs"), "1 / 2");
+
+    await host.emit("session_shutdown", { reason: "quit" });
+    assert.equal(host.appended.at(-1).data.verification.status, "fail");
+  });
+});
+
 describe("observability extension", () => {
   it("registers observation, and nothing that intervenes", () => {
     const host = createHost();

@@ -21,11 +21,14 @@ import {
   applyDelegationEnd,
   applyDelegationStart,
   applyModel,
+  applyParentMutation,
   applyResumedAt,
   applySessionMeta,
   applyStopReason,
   applyToolCall,
   applyToolResult,
+  applyVerificationReport,
+  applyVerificationStart,
   createState,
   fromSnapshot,
   toSnapshot,
@@ -41,6 +44,9 @@ const REFRESH_INTERVAL_MS = 5000;
 
 /** Footer status key. `aies-identity.ts` defers to this extension for it. */
 const STATUS_KEY = "aies";
+
+/** Native tools that change the artifact a verification verdict referred to. */
+const PARENT_MUTATION_TOOLS = ["edit", "write"];
 
 /** A session that never did anything measurable gets no entry in its own file. */
 function worthPersisting(snapshot: ReturnType<typeof toSnapshot>): boolean {
@@ -175,10 +181,16 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         Date.now(),
         ctx.cwd,
       );
+
+      if (PARENT_MUTATION_TOOLS.includes(event.toolName)) {
+        state = applyParentMutation(state);
+      }
+
       if (event.toolName === "aies_delegate") {
         const input = event.input as Record<string, unknown> | undefined;
         const role = typeof input?.role === "string" ? input.role : "explore";
         state = applyDelegationStart(state, role, Date.now());
+        if (role === "verify") state = applyVerificationStart(state);
       }
       render(ctx);
     });
@@ -190,6 +202,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       if (event.toolName === "aies_delegate") {
         const outcome = event.isError ? "failed" : "done";
         state = applyDelegationEnd(state, outcome, Date.now());
+
+        // The delegation tool reports the verification facts; the observer records them.
+        const details = event.details as Record<string, unknown> | undefined;
+        if (details?.verification) state = applyVerificationReport(state, details.verification);
       }
       render(ctx);
     });

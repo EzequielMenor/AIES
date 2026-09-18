@@ -78,6 +78,30 @@ export interface DelegationsState {
   lastDurationMs: number | undefined;
 }
 
+/**
+ * Independent verification as the parent session reported it (AIES-005).
+ *
+ * The observer never decides verification: it counts the runs it sees, records
+ * the verdict the authority reported, and measures how long a run took. The one
+ * derived field is `mutationsSincePass`, which is what makes an old PASS visible
+ * as stale in the footer after the artifact changed.
+ */
+export interface VerificationState {
+  status: "none" | "pass" | "fail" | "blocked";
+  /** Verification runs started, counted here. */
+  attempts: number;
+  /** Repair cycles reported by the verification policy. */
+  repairs: number;
+  maxRepairs: number;
+  /** Whether the authority still considers its last PASS valid. */
+  valid: boolean;
+  /** Whether a behaviour-bearing change is waiting for verification. */
+  awaiting: boolean;
+  lastDurationMs: number | undefined;
+  /** Parent mutations observed since the last reported PASS. */
+  mutationsSincePass: number;
+}
+
 /** How much the parent looked at, and how much it swallowed doing that. */
 export interface ExplorationState {
   /** Distinct paths handed to the native file-reading tools. */
@@ -100,6 +124,7 @@ export interface AiesState {
   context: ContextState;
   tools: ToolsState;
   delegations: DelegationsState;
+  verification: VerificationState;
   exploration: ExplorationState;
   compactionCount: number;
   activeToolCount: number;
@@ -153,6 +178,16 @@ export function createState(now: number): AiesState {
       lastOutcome: undefined,
       lastDurationMs: undefined,
     },
+    verification: {
+      status: "none",
+      attempts: 0,
+      repairs: 0,
+      maxRepairs: 0,
+      valid: false,
+      awaiting: false,
+      lastDurationMs: undefined,
+      mutationsSincePass: 0,
+    },
     exploration: {
       filesInspected: [],
       sourceReads: 0,
@@ -178,6 +213,7 @@ function cloneState(state: AiesState): AiesState {
       byRole: { ...state.delegations.byRole },
       byOutcome: { ...state.delegations.byOutcome },
     },
+    verification: { ...state.verification },
     exploration: { ...state.exploration, filesInspected: [...state.exploration.filesInspected] },
   };
 }
@@ -371,14 +407,60 @@ export function applyDelegationStart(state: AiesState, role: string, now: number
 /** Record the completion or settlement of a child agent delegation. */
 export function applyDelegationEnd(state: AiesState, outcome: string, now: number): AiesState {
   const next = cloneState(state);
-  next.delegations.lastDurationMs = state.delegations.activeStartedAt
+  const duration = state.delegations.activeStartedAt
     ? Math.max(0, now - state.delegations.activeStartedAt)
     : undefined;
+  next.delegations.lastDurationMs = duration;
   next.delegations.activeRole = undefined;
   next.delegations.activeStartedAt = undefined;
   next.delegations.lastOutcome = outcome;
   next.delegations.byOutcome[outcome] = (next.delegations.byOutcome[outcome] ?? 0) + 1;
   next.session.lastEventAt = now;
+
+  // A verification run reports its own verdict; its duration is ours to measure.
+  if (state.delegations.activeRole === "verify") {
+    next.verification.lastDurationMs = duration;
+  }
+  return next;
+}
+
+/** Count the start of a verification run. */
+export function applyVerificationStart(state: AiesState): AiesState {
+  const next = cloneState(state);
+  next.verification.attempts += 1;
+  return next;
+}
+
+/**
+ * Record the verification facts the authority reported through the delegation
+ * tool. Every field is validated: an unreadable report changes nothing.
+ */
+export function applyVerificationReport(state: AiesState, report: unknown): AiesState {
+  if (!report || typeof report !== "object" || Array.isArray(report)) return state;
+
+  const source = report as Record<string, unknown>;
+  const status =
+    source.status === "pass" || source.status === "fail" || source.status === "blocked"
+      ? source.status
+      : "none";
+
+  const next = cloneState(state);
+  next.verification.status = status;
+  next.verification.valid = source.valid === true;
+  next.verification.awaiting = source.awaitingVerification === true;
+  next.verification.repairs = positive(source.repairs) ?? next.verification.repairs;
+  next.verification.maxRepairs = positive(source.maxRepairs) ?? next.verification.maxRepairs;
+
+  // A new verdict starts counting mutations from that point again.
+  next.verification.mutationsSincePass = 0;
+  return next;
+}
+
+/** Observe a direct parent mutation: an old PASS stops describing the artifact. */
+export function applyParentMutation(state: AiesState): AiesState {
+  const next = cloneState(state);
+  next.verification.mutationsSincePass += 1;
+  if (next.verification.status === "pass") next.verification.valid = false;
   return next;
 }
 
@@ -491,6 +573,16 @@ export interface AiesSnapshot {
     lastOutcome: string | undefined;
     lastDurationMs: number | undefined;
   };
+  verification: {
+    status: "none" | "pass" | "fail" | "blocked";
+    attempts: number;
+    repairs: number;
+    maxRepairs: number;
+    valid: boolean;
+    awaiting: boolean;
+    lastDurationMs: number | undefined;
+    mutationsSincePass: number;
+  };
 }
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
@@ -529,6 +621,7 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
       lastOutcome: state.delegations.lastOutcome,
       lastDurationMs: state.delegations.lastDurationMs,
     },
+    verification: { ...state.verification },
   };
 }
 
@@ -571,6 +664,23 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     activeStartedAt: positive(rawDelegations.activeStartedAt) ?? undefined,
     lastOutcome: text(rawDelegations.lastOutcome),
     lastDurationMs: positive(rawDelegations.lastDurationMs) ?? undefined,
+  };
+
+  const rawVerification = (source.verification && typeof source.verification === "object" && !Array.isArray(source.verification)
+    ? source.verification
+    : {}) as Record<string, unknown>;
+  state.verification = {
+    status:
+      rawVerification.status === "pass" || rawVerification.status === "fail" || rawVerification.status === "blocked"
+        ? rawVerification.status
+        : "none",
+    attempts: positive(rawVerification.attempts) ?? 0,
+    repairs: positive(rawVerification.repairs) ?? 0,
+    maxRepairs: positive(rawVerification.maxRepairs) ?? 0,
+    valid: rawVerification.valid === true,
+    awaiting: rawVerification.awaiting === true,
+    lastDurationMs: positive(rawVerification.lastDurationMs) ?? undefined,
+    mutationsSincePass: positive(rawVerification.mutationsSincePass) ?? 0,
   };
 
   state.exploration.filesInspected = stringList(source.filesInspected);

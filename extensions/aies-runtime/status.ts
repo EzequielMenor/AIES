@@ -61,20 +61,50 @@ function peakLabel(snapshot: AiesSnapshot): string {
 }
 
 /**
- * The footer line: `AIES · ctx 34k/peak 41k · tools 8 · files 4 · 02:14`.
+ * The verification segment of the footer, or nothing when this session never
+ * verified anything. `V:?` means a verification run is in flight, `V:STALE`
+ * means its PASS no longer describes the artifact.
+ */
+function verificationSegment(snapshot: AiesSnapshot): string | undefined {
+  const verification = snapshot.verification;
+  if (!verification) return undefined;
+  if (snapshot.delegations?.activeRole === "verify") return "V:?";
+
+  switch (verification.status) {
+    case "pass":
+      return verification.valid ? "V:PASS" : "V:STALE";
+    case "fail":
+      return "V:FAIL";
+    case "blocked":
+      return "V:BLOCKED";
+    default:
+      return verification.attempts > 0 ? "V:none" : undefined;
+  }
+}
+
+/**
+ * The footer line: `AIES · ctx 34k/peak 41k · tools 8 · files 4 · V:PASS · 02:14`.
  *
- * One line, no panel. The compaction segment only appears once there is one to
- * report, so an ordinary session keeps the short form.
+ * One line, no panel. An in-flight verification names itself (`VERIFY`) and the
+ * segments that have nothing to report stay out: compaction only appears once
+ * there is one, and verification only once this session verified something.
  */
 export function renderFooter(snapshot: AiesSnapshot, now: number): string {
-  const parts = [
-    "AIES",
+  const parts = ["AIES"];
+  if (snapshot.delegations?.activeRole === "verify") parts.push("VERIFY");
+  parts.push(
     `ctx ${formatTokens(snapshot.contextTokens)}/peak ${formatTokens(snapshot.peakContextTokens)}`,
     `tools ${snapshot.toolCalls}`,
     `files ${snapshot.filesInspected.length}`,
-  ];
+  );
   if (snapshot.compactionCount > 0) parts.push(`cmp ${snapshot.compactionCount}`);
-  if (snapshot.delegations?.activeRole) parts.push(`delegando ${snapshot.delegations.activeRole}`);
+
+  const verification = verificationSegment(snapshot);
+  if (verification) parts.push(verification);
+
+  if (snapshot.delegations?.activeRole && snapshot.delegations.activeRole !== "verify") {
+    parts.push(`delegando ${snapshot.delegations.activeRole}`);
+  }
   parts.push(formatDuration(now - snapshot.startedAt));
   return parts.join(" · ");
 }
@@ -113,6 +143,22 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
           ...(typeof snapshot.delegations.lastDurationMs === "number"
             ? [row("última duración", formatDuration(snapshot.delegations.lastDurationMs))]
             : []),
+        ])
+      : []),
+    ...(snapshot.verification && (snapshot.verification.attempts > 0 || snapshot.verification.status !== "none")
+      ? section("Verificación", [
+          row("estado", snapshot.verification.status.toUpperCase()),
+          row("válido", snapshot.verification.valid ? "sí" : "no"),
+          row("intentos", String(snapshot.verification.attempts)),
+          row("repairs", `${snapshot.verification.repairs} / ${snapshot.verification.maxRepairs}`),
+          row("pendiente", snapshot.verification.awaiting ? "sí" : "no"),
+          row(
+            "última duración",
+            typeof snapshot.verification.lastDurationMs === "number"
+              ? formatDuration(snapshot.verification.lastDurationMs)
+              : "-",
+          ),
+          row("cambios tras PASS", String(snapshot.verification.mutationsSincePass)),
         ])
       : []),
     ...section("Resultados de tools", [
