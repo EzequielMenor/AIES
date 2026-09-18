@@ -9,9 +9,31 @@
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import { formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
+import { deriveStage } from "./vocabulary.ts";
 
 /** Width of the label column in the `/aies-status` overview. */
 const LABEL_WIDTH = 18;
+
+/**
+ * Autonomy stop reasons in Spanish for the human view. A reason with no entry is
+ * left out rather than printed as a raw code.
+ */
+const STOP_LABEL: Record<string, string> = {
+  completed: "completado",
+  user_stopped: "detenida por el usuario",
+  user_required: "necesita tu intervención",
+  blocked: "bloqueada",
+  verification_failed: "verificación fallida",
+  repair_limit: "límite de reparaciones agotado",
+  no_progress: "sin progreso",
+  continuation_limit: "límite de continuaciones alcanzado",
+  permission_denied: "permiso denegado",
+  sandbox_unavailable: "sandbox no disponible",
+  context_failure: "fallo de contexto",
+  linear_conflict: "conflicto en Linear",
+  linear_sync_failed: "Linear no sincronizó",
+  scope_change: "cambio de alcance",
+};
 
 export interface DoneSummaryInput {
   ticket?: string;
@@ -122,6 +144,39 @@ function zoneLabel(zone: string | undefined): string {
   }
 }
 
+/**
+ * The `/aies-run status` view. Scope-specific on purpose: this command is about
+ * autonomy, so it reports autonomy and the ticket and points at the session view
+ * instead of duplicating it. It never prints a row it cannot fill.
+ */
+export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: Paint } = {}): string {
+  const paint = options.paint ?? PLAIN_PAINT;
+  const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
+  const sections: string[][] = [[paint.fg("text", "AIES · autonomía")]];
+
+  const ticket = snapshot.ticket;
+  if (ticket?.active && ticket.identifier) {
+    const value = ticket.status ? `${ticket.identifier} · ${ticket.status}` : ticket.identifier;
+    sections.push([paint.fg("muted", "Ticket"), row("", value)]);
+  }
+
+  const autonomy = snapshot.autonomy;
+  const stage = deriveStage(snapshot);
+  const runRows = [
+    row("stage", autonomy?.enabled ? `${stage} · activa` : `${stage} · pausada`),
+  ];
+  if (autonomy) {
+    runRows.push(row("continuaciones", String(autonomy.continuationCount)));
+    if (autonomy.lastStep) runRows.push(row("último paso", autonomy.lastStep));
+    const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
+    if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
+  }
+  sections.push([paint.fg("muted", "Run"), ...runRows]);
+
+  sections.push([paint.fg("dim", "Estado completo: /aies-status")]);
+  return sections.map((section) => section.join("\n")).join("\n\n");
+}
+
 /** The `/aies-status` human view: grouped by concept, zeros omitted, under ~30 lines. */
 export function renderStatusOverview(snapshot: AiesSnapshot, now: number, options: { paint?: Paint } = {}): string {
   const paint = options.paint ?? PLAIN_PAINT;
@@ -136,14 +191,19 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
     sections.push([paint.fg("muted", "Ticket"), ...rows]);
   }
 
-  if (snapshot.autonomy) {
-    sections.push([
-      paint.fg("muted", "Run"),
-      row("autonomía", snapshot.autonomy.enabled ? "activa" : "pausada"),
-      row("transcurrido", formatDuration(now - snapshot.startedAt)),
-      row("continuaciones", String(snapshot.autonomy.continuationCount)),
-    ]);
+  // Run is always worth a row: the stage is the headline answer to "what is it
+  // doing?", and a stopped autonomy owes the human the reason it stopped.
+  const stage = deriveStage(snapshot);
+  const autonomy = snapshot.autonomy;
+  const runRows = [row("stage", autonomy?.enabled ? `${stage} · autonomía activa` : stage)];
+  if (autonomy) {
+    runRows.push(
+      row("transcurrido", `${formatDuration(now - snapshot.startedAt)} · continuaciones ${autonomy.continuationCount}`),
+    );
+    const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
+    if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
+  sections.push([paint.fg("muted", "Run"), ...runRows]);
 
   const verification = snapshot.verification;
   if (verification && (verification.status !== "none" || verification.attempts > 0 || verification.repairs > 0 || verification.awaiting)) {
@@ -157,12 +217,12 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
 
   const window = snapshot.contextWindow ? ` / ${formatTokens(snapshot.contextWindow)}` : "";
   const zone = snapshot.contextWindow ? zoneLabel(snapshot.contextGovernor?.zone) : "";
-  sections.push([
-    paint.fg("muted", "Contexto"),
+  const contextRows = [
     row("actual", `${formatTokens(snapshot.contextTokens)}${window}${zone ? ` · ${zone}` : ""}`),
     row("peak", formatTokens(snapshot.peakContextTokens)),
     row("compactions", String(snapshot.compactionCount)),
-  ]);
+  ];
+  sections.push([paint.fg("muted", "Contexto"), ...contextRows]);
 
   const delegations = snapshot.delegations;
   if (delegations && delegations.total > 0) {

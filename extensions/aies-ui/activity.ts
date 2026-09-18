@@ -108,13 +108,22 @@ function checksFact(activity: ActivityRecord): string | undefined {
   return isPositive(passed) ? "checks passed" : undefined;
 }
 
+/** `1 archivo`, `3 archivos`: a count of one is not a plural in Spanish. */
+function countLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 /** The muted fact line: the numbers the delegation actually reported. */
 function facts(activity: ActivityRecord): string[] {
   const out: string[] = [];
   if (activity.role === "explore") {
-    if (isPositive(activity.evidenceCount)) out.push(`${activity.evidenceCount} archivos relevantes`);
+    if (isPositive(activity.evidenceCount)) {
+      out.push(countLabel(activity.evidenceCount, "archivo relevante", "archivos relevantes"));
+    }
   } else if (activity.role === "worker") {
-    if (isPositive(activity.changedFiles)) out.push(`${activity.changedFiles} archivos modificados`);
+    if (isPositive(activity.changedFiles)) {
+      out.push(countLabel(activity.changedFiles, "archivo modificado", "archivos modificados"));
+    }
     const checks = checksFact(activity);
     if (checks) out.push(checks);
   } else if (activity.role === "verify") {
@@ -123,8 +132,7 @@ function facts(activity: ActivityRecord): string[] {
       out.push(`${activity.criteriaPassed}/${activity.criteriaTotal} ${noun}`);
     }
     if (isPositive(activity.blockingDefects)) {
-      const noun = activity.blockingDefects === 1 ? "defecto bloqueante" : "defectos bloqueantes";
-      out.push(`${activity.blockingDefects} ${noun}`);
+      out.push(countLabel(activity.blockingDefects, "defecto bloqueante", "defectos bloqueantes"));
     }
     if (!out.length && activity.outcome === "blocked") out.push("la verificación no pudo concluir");
   }

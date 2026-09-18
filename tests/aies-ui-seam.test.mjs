@@ -1,0 +1,394 @@
+/**
+ * AIES-010 UI seam checks.
+ *
+ * Drive the real `extensions/aies-runtime/index.ts` through a fake
+ * `ExtensionAPI` and fake context, and pin the wiring the pure `aies-ui` tests
+ * cannot: the footer, the single activity widget, the single timer, the durable
+ * entries, the autonomy transitions and the headless degradation. No Pi runtime,
+ * no model, no terminal.
+ */
+
+import assert from "node:assert/strict";
+import { afterEach, beforeEach, describe, it } from "node:test";
+
+import aiesRuntime from "../extensions/aies-runtime/index.ts";
+import {
+  ContinuationController,
+  setActiveContinuationController,
+} from "../extensions/aies-agents/autonomy/controller.ts";
+import { ACTIVITY_TTL_MS } from "../extensions/aies-ui/activity.ts";
+
+const ROOT = "/repo";
+const START_MS = 1_700_000_000_000;
+
+/** Fake timers and a frozen clock: the runtime uses the globals, so we swap them. */
+function installFakes() {
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  const realNow = Date.now;
+
+  let now = START_MS;
+  const intervals = [];
+  const cleared = [];
+
+  globalThis.setInterval = (fn, ms) => {
+    const handle = { fn, ms, unref() {} };
+    intervals.push(handle);
+    return handle;
+  };
+  globalThis.clearInterval = (handle) => {
+    cleared.push(handle);
+  };
+  Date.now = () => now;
+
+  return {
+    intervals,
+    cleared,
+    advance(ms) {
+      now += ms;
+    },
+    lastInterval() {
+      return intervals.at(-1);
+    },
+    restore() {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+      Date.now = realNow;
+    },
+  };
+}
+
+function createHost(overrides = {}) {
+  const options = {
+    mode: "tui",
+    hasUI: true,
+    cwd: ROOT,
+    contextUsage: { tokens: 10_000, contextWindow: 200_000, percent: 5 },
+    entries: [],
+    activeTools: ["read", "bash"],
+    sessionId: "session-1",
+    sessionFile: "/profile/sessions/session-1.jsonl",
+    model: { id: "model-a", provider: "anthropic", name: "Model A" },
+    ...overrides,
+  };
+
+  const handlers = new Map();
+  const commands = new Map();
+  const appended = [];
+  const statuses = [];
+  const notifications = [];
+  const widgets = [];
+  const renderers = new Map();
+  const sendMessages = [];
+
+  const pi = {
+    on(event, handler) {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+    registerCommand(name, command) {
+      commands.set(name, command);
+    },
+    getActiveTools() {
+      return options.activeTools;
+    },
+    appendEntry(type, data) {
+      appended.push({ type, data });
+    },
+    registerEntryRenderer(type, renderer) {
+      renderers.set(type, renderer);
+    },
+    sendMessage(...args) {
+      sendMessages.push(args);
+    },
+    sendUserMessage(...args) {
+      sendMessages.push(args);
+    },
+  };
+
+  aiesRuntime(pi);
+
+  const ctx = {
+    mode: options.mode,
+    hasUI: options.hasUI,
+    cwd: options.cwd,
+    get model() {
+      return options.model;
+    },
+    getContextUsage() {
+      return options.contextUsage;
+    },
+    sessionManager: {
+      getSessionId: () => options.sessionId,
+      getSessionFile: () => options.sessionFile,
+      getEntries: () => options.entries,
+    },
+    ui: {
+      theme: { fg: (_color, text) => text },
+      setStatus(key, text) {
+        statuses.push({ key, text });
+      },
+      setWidget(key, content) {
+        widgets.push(content === undefined ? { key, cleared: true } : { key, factory: content });
+      },
+      notify(message, type) {
+        notifications.push({ message, type });
+      },
+    },
+  };
+
+  async function emit(event, payload = {}) {
+    const results = [];
+    for (const handler of handlers.get(event) ?? []) {
+      results.push(await handler({ type: event, ...payload }, ctx));
+    }
+    return results;
+  }
+
+  async function start(reason = "startup") {
+    await emit("session_start", { reason });
+  }
+
+  return { pi, ctx, options, emit, start, handlers, commands, appended, statuses, notifications, widgets, renderers, sendMessages };
+}
+
+const plainTheme = { fg: (_color, text) => text };
+
+describe("AIES UI seam", () => {
+  let timers;
+
+  beforeEach(() => {
+    timers = installFakes();
+  });
+
+  afterEach(() => {
+    timers.restore();
+    setActiveContinuationController(undefined);
+  });
+
+  it("never uses sendMessage or sendUserMessage for UI", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement it" } });
+    await host.emit("tool_result", {
+      toolName: "aies_delegate",
+      input: { role: "worker" },
+      content: "x",
+      details: { status: "done", summary: "ok", changes: [], checks: [] },
+    });
+    await host.emit("session_shutdown", { reason: "quit" });
+
+    assert.deepEqual(host.sendMessages, [], "UI must never reach the conversation");
+  });
+
+  it("pushes a quiet footer under the aies status key", async () => {
+    const host = createHost();
+    await host.start();
+
+    const status = host.statuses.at(-1);
+    assert.equal(status.key, "aies");
+    assert.equal(status.text, "AIES · ready · ctx 10k");
+    assert.match(status.text, /^AIES ·/u);
+    for (const banned of ["peak", "tools", "cmp"]) {
+      assert.equal(status.text.includes(banned), false, status.text);
+    }
+    assert.equal(/\d{2}:\d{2}/u.test(status.text), false, `elapsed clock in footer: ${status.text}`);
+  });
+
+  it("re-pushes the status only when the rendered text changes", async () => {
+    const host = createHost();
+    await host.start();
+    assert.equal(host.statuses.length, 1);
+
+    await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "x" }] });
+    await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "y" }] });
+    assert.equal(host.statuses.length, 1, "identical state must not repaint the footer");
+
+    host.options.contextUsage = { tokens: 20_000, contextWindow: 200_000, percent: 10 };
+    await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "z" }] });
+    assert.equal(host.statuses.length, 2);
+    assert.equal(host.statuses.at(-1).text, "AIES · ready · ctx 20k");
+  });
+
+  it("registers the aies-activity widget and renders the role and task", async () => {
+    const host = createHost();
+    await host.start();
+    assert.deepEqual(host.widgets, []);
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement the seam" } });
+
+    const widget = host.widgets.at(-1);
+    assert.equal(widget.key, "aies-activity");
+    assert.equal(typeof widget.factory, "function");
+
+    const component = widget.factory({ requestRender() {} }, plainTheme);
+    const lines = component.render(80);
+    assert.equal(lines[0], "◆ Worker");
+    assert.equal(lines[1], "  Implement the seam");
+    assert.match(lines.join("\n"), /Worker/u);
+    assert.match(lines.join("\n"), /Implement the seam/u);
+
+    // The same component re-renders the finished card from live state.
+    await host.emit("tool_result", {
+      toolName: "aies_delegate",
+      input: { role: "worker" },
+      details: { status: "done", summary: "ok", changes: [{ file: "a.ts" }], checks: [{ check: "test", result: "passed" }] },
+    });
+    assert.equal(component.render(80)[0], "✓ Worker · 00:00");
+  });
+
+  it("appends one durable entry, clears the widget after the TTL and shows the finished state", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "verify", task: "Check the seam" } });
+    await host.emit("tool_result", {
+      toolName: "aies_delegate",
+      input: { role: "verify" },
+      isError: false,
+      details: {
+        status: "pass",
+        summary: "Verificado",
+        criteria: [{ criterion: "a", status: "pass" }],
+        checks: [{ check: "test", result: "passed" }],
+        defects: [],
+        verification: { status: "pass", valid: true, attempts: 1, repairs: 0, maxRepairs: 2 },
+      },
+    });
+
+    const entries = host.appended.filter((entry) => entry.type === "aies-agent");
+    assert.equal(entries.length, 1, "one finished child, one durable entry");
+    assert.equal(entries[0].data.activity.role, "verify");
+    assert.equal(entries[0].data.activity.outcome, "done");
+
+    assert.equal(host.statuses.at(-1).text, "AIES · DONE · ctx 10k");
+    assert.equal(host.widgets.some((widget) => widget.cleared === true), false, "the finished card lingers for its TTL");
+
+    timers.advance(ACTIVITY_TTL_MS + 1);
+    timers.lastInterval().fn();
+    assert.equal(host.widgets.at(-1).cleared, true, "the widget clears itself once the TTL passed");
+    assert.equal(host.statuses.at(-1).text, "AIES · DONE · ctx 10k");
+  });
+
+  it("renders the durable entry renderers for a finished child", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "explore", task: "Investigar" } });
+    await host.emit("tool_result", {
+      toolName: "aies_delegate",
+      input: { role: "explore" },
+      details: { status: "done", summary: "Encontré el handoff", evidence: [{ file: "a.ts" }, { file: "b.ts" }] },
+    });
+
+    const entry = host.appended.find((item) => item.type === "aies-agent");
+    const render = host.renderers.get("aies-agent");
+    assert.equal(typeof render, "function");
+
+    const collapsed = render(entry, { expanded: false }, plainTheme).render(80);
+    assert.deepEqual(collapsed, ["✓ Explore · 00:00 · 2 archivos relevantes"]);
+
+    const expanded = render(entry, { expanded: true }, plainTheme).render(80);
+    assert.deepEqual(expanded, ["✓ Explore · 00:00 · 2 archivos relevantes", "  Encontré el handoff"]);
+  });
+
+  it("appends exactly one summary on autonomy transitions and none on user_required", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+    const host = createHost();
+    await host.start();
+
+    await controller.enable("EZE-417");
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    assert.equal(host.notifications.some((item) => item.message === "◆ AUTO · EZE-417"), true);
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement it" } });
+    await host.emit("tool_result", {
+      toolName: "aies_delegate",
+      input: { role: "worker" },
+      details: { status: "done", summary: "Implementación lista", changes: [{ file: "a.ts" }], checks: [{ check: "t", result: "passed" }] },
+    });
+
+    await controller.stop("completed");
+    await host.emit("tool_result", { toolName: "read", content: "y" });
+
+    const done = host.appended.filter((item) => item.type === "aies-summary");
+    assert.equal(done.length, 1);
+    assert.equal(done[0].data.kind, "done");
+    assert.equal(done[0].data.ticket, "EZE-417");
+    assert.deepEqual(done[0].data.changes, ["Implementación lista"]);
+    assert.equal(done[0].data.linear, "Done");
+
+    // A second identical event must not fire the transition again.
+    await host.emit("tool_result", { toolName: "read", content: "z" });
+    assert.equal(host.appended.filter((item) => item.type === "aies-summary").length, 1);
+
+    const blockedController = new ContinuationController();
+    setActiveContinuationController(blockedController);
+    const blockedHost = createHost();
+    await blockedHost.start();
+    await blockedController.enable("EZE-8");
+    await blockedHost.emit("tool_result", { toolName: "read", content: "x" });
+    await blockedController.stop("linear_sync_failed");
+    await blockedHost.emit("tool_result", { toolName: "read", content: "y" });
+
+    const blocked = blockedHost.appended.filter((item) => item.type === "aies-summary");
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0].data.kind, "blocked");
+    assert.equal(blocked[0].data.happened, "Linear no pudo sincronizarse.");
+    assert.equal(blocked[0].data.pending, "El código está verificado y no se volverá a ejecutar.");
+    assert.equal("needs" in blocked[0].data, false);
+    assert.equal(JSON.stringify(blocked[0].data).includes("linear_sync_failed"), false, "never a raw reason code");
+
+    const userController = new ContinuationController();
+    setActiveContinuationController(userController);
+    const userHost = createHost();
+    await userHost.start();
+    await userController.enable("EZE-9");
+    await userHost.emit("tool_result", { toolName: "read", content: "x" });
+    await userController.stop("user_required");
+    await userHost.emit("tool_result", { toolName: "read", content: "y" });
+
+    assert.equal(userHost.appended.filter((item) => item.type === "aies-summary").length, 0);
+    assert.equal(
+      userHost.notifications.some((item) => item.type === "warning" && item.message.includes("Autonomía en pausa")),
+      true,
+    );
+  });
+
+  it("stays silent outside the TUI and still records the delegation", async () => {
+    const host = createHost({ mode: "print", hasUI: false });
+    await host.start();
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement it" } });
+    await host.emit("tool_result", {
+      toolName: "aies_delegate",
+      input: { role: "worker" },
+      details: { status: "done", summary: "ok", changes: [], checks: [] },
+    });
+
+    assert.deepEqual(host.statuses, []);
+    assert.deepEqual(host.widgets, []);
+    assert.deepEqual(host.notifications, []);
+    assert.equal(host.appended.filter((item) => item.type === "aies-agent").length, 1);
+  });
+
+  it("uses one interval, re-arms it on the child edge and clears it on shutdown", async () => {
+    const host = createHost();
+    await host.start();
+    assert.equal(timers.intervals.length, 1);
+    assert.equal(timers.intervals[0].ms, 5000);
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement it" } });
+    assert.equal(timers.lastInterval().ms, 1000);
+    assert.equal(timers.cleared.includes(timers.intervals[0]), true);
+
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    assert.equal(timers.intervals.length, 2, "the timer must not be reset on every event");
+
+    const active = timers.lastInterval();
+    await host.emit("session_shutdown", { reason: "quit" });
+    assert.equal(timers.cleared.includes(active), true);
+    assert.equal(host.widgets.at(-1).cleared, true);
+  });
+});

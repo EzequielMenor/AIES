@@ -57,7 +57,13 @@ function buildSegments(snapshot: AiesSnapshot): Segment[] {
   if (stage !== "IDLE") segments.push({ text: stage, color: STAGE_COLOR[stage], drop: "stage" });
 
   const pressure = isContextPressure(snapshot);
-  segments.push({ text: `ctx ${formatTokens(snapshot.contextTokens)}${pressure ? " !" : ""}`, color: pressure ? "warning" : "dim", drop: "ctx" });
+  // Under pressure the segment IS the alarm, so it is never dropped; a very narrow
+  // terminal clips the tail instead of losing the warning.
+  segments.push({
+    text: `ctx ${formatTokens(snapshot.contextTokens)}${pressure ? " !" : ""}`,
+    color: pressure ? "warning" : "dim",
+    ...(pressure ? {} : { drop: "ctx" as DropTag }),
+  });
 
   // Alarms: present only while true, never dropped, in this fixed order.
   if (isCompacting(snapshot)) segments.push({ text: "compactando…", color: "warning" });

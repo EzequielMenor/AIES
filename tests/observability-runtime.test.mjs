@@ -116,6 +116,7 @@ describe("AIES observability runtime", () => {
     const { records } = rpc(env, [
       { id: "1", type: "prompt", message: "/aies-status" },
       { id: "2", type: "get_state" },
+      { id: "3", type: "prompt", message: "/aies-status detalle" },
     ]);
 
     const sessionFile = responseFor(records, "get_state").sessionFile;
@@ -124,19 +125,31 @@ describe("AIES observability runtime", () => {
     const notifications = records.filter(
       (record) => record.type === "extension_ui_request" && record.method === "notify",
     );
-    assert.ok(notifications.length >= 1, "the command produced no notification");
+    assert.ok(notifications.length >= 2, "both /aies-status forms must answer");
 
-    const report = notifications.at(-1).message;
-    assert.match(report, /^AIES — estado de la sesión$/mu);
-    assert.match(report, /^Contexto:$/mu);
-    assert.match(report, /^Context governor:$/mu);
-    assert.match(report, /^Padre:$/mu);
-    assert.match(report, /^Permisos:$/mu);
-    assert.match(report, /^Resultados de tools:$/mu);
-    assert.match(report, /^Runtime:$/mu);
-    assert.match(report, /Mide, no gobierna/u);
-    // Compact on purpose: one section per group, no runaway growth.
-    assert.equal(report.split("\n").length, 48, `unexpected report shape:\n${report}`);
+    // The default answer is the human overview: no telemetry dump, no headings.
+    const overview = notifications.find((record) => record.message.startsWith("AIES\n"));
+    assert.ok(overview, "no overview notification: " + JSON.stringify(notifications));
+    assert.match(overview.message, /^AIES$/mu);
+    assert.match(overview.message, /^Contexto$/mu);
+    assert.equal(overview.message.includes("Context governor:"), false);
+    assert.equal(overview.message.includes("Padre:"), false);
+    assert.equal(overview.message.includes("Resultados de tools:"), false);
+    assert.equal(overview.message.includes("Mide, no gobierna"), false);
+    assert.notEqual(overview.message.split("\n").length, 48);
+
+    // `detalle` keeps every invariant of the old report, end to end.
+    const report = notifications.find((record) => record.message.startsWith("AIES — estado de la sesión"));
+    assert.ok(report, "no full report notification for /aies-status detalle");
+    assert.match(report.message, /^AIES — estado de la sesión$/mu);
+    assert.match(report.message, /^Contexto:$/mu);
+    assert.match(report.message, /^Context governor:$/mu);
+    assert.match(report.message, /^Padre:$/mu);
+    assert.match(report.message, /^Permisos:$/mu);
+    assert.match(report.message, /^Resultados de tools:$/mu);
+    assert.match(report.message, /^Runtime:$/mu);
+    assert.match(report.message, /Mide, no gobierna/u);
+    assert.equal(report.message.split("\n").length, 48, `unexpected report shape:\n${report.message}`);
 
     assert.deepEqual(records.filter((record) => record.type === "extension_error"), []);
   });

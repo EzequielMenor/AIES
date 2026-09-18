@@ -513,12 +513,21 @@ function createHost(overrides = {}) {
     const command = commands.get("aies-status");
     assert.ok(command, "aies-status is not registered");
     notifications.length = 0;
+    await command.handler("detalle", ctx);
+    assert.equal(notifications.length, 1, "the command reports exactly once");
+    return notifications[0].message;
+  }
+
+  async function overview() {
+    const command = commands.get("aies-status");
+    assert.ok(command, "aies-status is not registered");
+    notifications.length = 0;
     await command.handler("", ctx);
     assert.equal(notifications.length, 1, "the command reports exactly once");
     return notifications[0].message;
   }
 
-  return { emit, start, report, handlers, commands, appended, statuses, notifications, ctx, options };
+  return { emit, start, report, overview, handlers, commands, appended, statuses, notifications, ctx, options };
 }
 
 describe("verification observability (AIES-005)", () => {
@@ -754,6 +763,24 @@ describe("observability extension", () => {
     assert.equal(field(report, "tool calls"), "2");
     assert.equal(field(report, "shell inspección"), "1");
     assert.equal(host.notifications.every((entry) => entry.type === "info"), true);
+  });
+
+  it("makes the human overview the default and keeps the full report one argument away", async () => {
+    const host = createHost();
+    await host.start();
+    await host.emit("tool_call", readCall("docs/x.md"));
+
+    const overview = await host.overview();
+    assert.equal(overview.split("\n")[0], "AIES");
+    assert.match(overview, /^Contexto$/mu);
+    assert.equal(overview.includes("más usadas"), false);
+    assert.equal(overview.includes("caracteres"), false);
+    assert.equal(overview.includes("stop reason"), false);
+
+    const report = await host.report();
+    assert.equal(report.split("\n")[0], "AIES — estado de la sesión");
+    assert.equal(field(report, "más usadas"), "read 1");
+    assert.match(report, /Mide, no gobierna/u);
   });
 
   it("never blocks or rewrites, whatever it observes", async () => {
