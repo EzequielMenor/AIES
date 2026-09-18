@@ -198,14 +198,16 @@ linear workflow, and multi-worker execution remain deferred to subsequent phases
 read-only command policy and no mutation primitive at all: `read`, `grep`, `find`,
 `ls`, `tgrep` and a guarded `bash` that refuses mutating git subcommands, file
 deletion or movement, in-place editing, dependency installation and file
-redirection. The role receives facts only - work unit, acceptance criteria,
+redirection, and the command substitution that would hide a command from the
+guard. The role receives facts only - work unit, acceptance criteria,
 changed paths, base ref, suggested checks - and rejects free-form `context`, so a
 Worker transcript has no field to travel in. It answers `pass | fail | blocked`
 with per-criterion evidence, checks and defects, capped like the other handoffs,
 and a `pass` without any evidence is downgraded to `blocked` when the handoff is
-parsed. The parent keeps the record (`verification.ts`): a monotonic revision ties
-a PASS to the artifact it verified, so any parent edit or completed Worker run
-invalidates it by moving the revision, without hashing anything. A FAIL may be
+parsed. The parent keeps the record (`verification.ts`): a monotonic
+behaviour-bearing revision ties a PASS to the artifact it verified, so a relevant
+parent edit or Worker run invalidates it by moving the revision, without hashing
+anything, while a documentation-only change does not expire a PASS. A FAIL may be
 repaired twice; a failure whose signature repeats stops the loop early. The repair
 Worker gets the original work unit, the criteria and the concrete defects, never
 the Verify transcript, and the next verification runs in a fresh session. The

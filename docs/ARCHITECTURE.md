@@ -178,7 +178,7 @@ aies_delegate({
 |---|---|---|---|---|
 | `explore` | Read-only codebase investigation | `read`, `grep`, `find`, `ls`, `tgrep` | `bash`, `edit`, `write` | `agents/explore.md` |
 | `worker` | Concrete work unit implementation | `read`, `grep`, `find`, `ls`, `tgrep`, `edit`, `write`, guarded `bash` | Destructive/remote bash (`git clean`, `reset --hard`, `git push`, `sudo`, mass `rm`) | `agents/worker.md` |
-| `verify` | Independent proof of the real artifact | `read`, `grep`, `find`, `ls`, `tgrep`, read-only guarded `bash` | `edit`, `write`, and every mutating command (mutating git, file deletion or movement, in-place editing, dependency installation, file redirection) | `agents/verify.md` |
+| `verify` | Independent proof of the real artifact | `read`, `grep`, `find`, `ls`, `tgrep`, read-only guarded `bash` | `edit`, `write`, and every mutating command (mutating git, file deletion or movement, in-place editing, dependency installation, file redirection, command substitution) | `agents/verify.md` |
 
 ### Delegation lifecycle and isolation guarantees
 
@@ -269,15 +269,18 @@ for the footer.
 | `status` | `none \| running \| pass \| fail \| blocked` |
 | `attempts` | Verification runs started (ceiling of 4) |
 | `repairs` | Worker runs started while a FAIL was awaiting repair (ceiling of 2) |
-| `revision` | Monotonic work-unit revision: one per parent mutation or Worker run |
+| `revision` | Monotonic behaviour-bearing revision: one per relevant parent mutation or Worker run. A documentation-only change does not move it |
 | `verifiedRevision` | The revision the last PASS verified |
 | `lastFailureSignature` / `repeatedFailures` | The failure identity, and how many times in a row it repeated |
 | `awaitingVerification` | A behaviour-bearing change is waiting for proof |
 
 Invalidation is a counter comparison, not a hash: a PASS is valid only while
-`verifiedRevision === revision`. Any parent `edit` or `write`, and any completed
-Worker run, moves the revision forward, so an old PASS stops describing the
-artifact without anyone having to detect that it did.
+`verifiedRevision === revision`. A parent `edit` or `write` on a behaviour-bearing
+path, and any behaviour-bearing completed Worker run, moves the revision forward,
+so an old PASS stops describing the artifact without anyone having to detect that
+it did. A documentation-only edit is not a behaviour change, so it does not expire
+a PASS; the classification is the same `requiresVerification()` the routing rule
+uses.
 
 ### Repair policy
 

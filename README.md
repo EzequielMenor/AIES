@@ -172,13 +172,14 @@ aies_delegate({
 
 - the child is isolated, has no `edit`/`write`, and its `bash` refuses to mutate
   the workspace (mutating git, deletion, movement, in-place editing, installs,
-  file redirection);
+  file redirection, command substitution);
 - it answers `pass | fail | blocked` with per-criterion evidence, checks and
   defects, never a transcript, and a PASS without evidence is treated as blocked;
 - free-form `context` is rejected for this role, so the implementer's summary and
   reasoning cannot reach the verifier;
-- a PASS is tied to the revision it verified: any later edit or Worker run makes
-  it stale, and the footer says so;
+- a PASS is tied to the behaviour-bearing revision it verified: a later code edit
+  or Worker run makes it stale (the footer says `V:STALE`), a documentation-only
+  edit does not;
 - a FAIL can be repaired twice, and a failure that repeats its signature stops the
   loop early. The repair Worker receives the defects, not the Verify transcript.
 
