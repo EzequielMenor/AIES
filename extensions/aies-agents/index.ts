@@ -31,6 +31,13 @@ import { TicketManager } from "./linear/manager.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
 import type { TicketSnapshot } from "./linear/types.ts";
+import {
+  ContinuationController,
+  getActiveContinuationController,
+  registerAutonomyCommand,
+  setActiveContinuationController,
+  type AutonomySnapshot,
+} from "./autonomy/index.ts";
 
 /** Native tools that change the work unit when the parent uses them directly. */
 const PARENT_MUTATION_TOOLS = ["edit", "write"];
@@ -40,6 +47,9 @@ let activeTicketManager: TicketManager | undefined;
 export function getActiveTicketManager(): TicketManager | undefined {
   return activeTicketManager;
 }
+
+export { getActiveContinuationController };
+
 
 export default function aiesAgents(pi: ExtensionAPI): void {
   let routingState: RoutingState = createRoutingState();
@@ -51,8 +61,18 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   });
   activeTicketManager = ticketManager;
 
+  const controller = new ContinuationController({
+    pi,
+    getRouting: () => routingState,
+    getVerification: () => verification,
+    getGovernor: () => governor,
+    getTicketManager: () => ticketManager,
+  });
+  setActiveContinuationController(controller);
+
   pi.registerTool(createTicketTool(ticketManager));
   registerTicketCommand(pi, ticketManager);
+  registerAutonomyCommand(pi, controller, ticketManager);
 
   pi.registerTool(
     createDelegateTool({
@@ -125,6 +145,16 @@ export default function aiesAgents(pi: ExtensionAPI): void {
       return;
     }
 
+    // Capture Linear errors if aies_ticket was called
+    if (event.toolName === "aies_ticket") {
+      const details = event.details as Record<string, unknown> | undefined;
+      if (details?.error && typeof details.error === "string") {
+        controller.setLinearError(details.error);
+      } else if (!event.isError) {
+        controller.setLinearError(undefined);
+      }
+    }
+
     // Feed current context usage to governor
     try {
       governor.updateUsage(ctx.getContextUsage());
@@ -144,7 +174,12 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     }
   });
 
+  pi.on("turn_start", async () => {
+    controller.notifyTurnStart();
+  });
+
   pi.on("turn_end", async (_event, ctx) => {
+    controller.notifyTurnEnd();
     try {
       governor.updateUsage(ctx.getContextUsage());
     } catch {}
@@ -153,7 +188,10 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   pi.on("agent_settled", async (_event, ctx) => {
     try {
       governor.updateUsage(ctx.getContextUsage());
-      await governor.handleSettled(ctx);
+      if (governor.isCompactPending() || governor.isCompacting()) {
+        await governor.handleSettled(ctx);
+        governor.updateUsage(ctx.getContextUsage());
+      }
     } catch {}
 
     // Persist active ticket snapshot to session entry
@@ -163,6 +201,24 @@ export default function aiesAgents(pi: ExtensionAPI): void {
         pi.appendEntry("aies-ticket", snapshot);
       } catch {}
     }
+
+    // Persist autonomy snapshot to session entry
+    const autonomySnap = controller.toSnapshot();
+    if (autonomySnap) {
+      try {
+        pi.appendEntry("aies-autonomy", autonomySnap);
+      } catch {}
+    }
+
+    // Evaluate and trigger bounded continuation
+    try {
+      await controller.handleSettled(ctx, {
+        ticketManager,
+        verification,
+        routing: routingState,
+        governor,
+      });
+    } catch {}
   });
 
   pi.on("session_compact", async () => {
@@ -179,6 +235,7 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     if (event.reason === "new") {
       governor.reset();
       ticketManager.reset();
+      controller.reset();
     } else if (event.reason === "resume" || event.reason === "reload") {
       try {
         const entries = ctx.sessionManager.getEntries();
@@ -189,7 +246,15 @@ export default function aiesAgents(pi: ExtensionAPI): void {
             break;
           }
         }
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const entry = entries[i];
+          if (entry.type === "custom" && entry.customType === "aies-autonomy" && entry.data) {
+            controller.restoreFromSnapshot(entry.data as AutonomySnapshot);
+            break;
+          }
+        }
       } catch {}
     }
   });
 }
+

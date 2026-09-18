@@ -152,6 +152,15 @@ export interface TicketObservationState {
   validVerify?: boolean;
 }
 
+/** Autonomy state tracked for observability (AIES-009). */
+export interface AutonomyObservationState {
+  enabled: boolean;
+  ticketId?: string | null;
+  continuationCount: number;
+  stopReason?: string | null;
+  lastStep?: string;
+}
+
 /** Everything AIES measures about one parent session. */
 export interface AiesState {
   version: number;
@@ -164,10 +173,12 @@ export interface AiesState {
   permissions: PermissionsState;
   contextGovernor: ContextGovernorState;
   ticket: TicketObservationState;
+  autonomy?: AutonomyObservationState;
   compactionCount: number;
   activeToolCount: number;
   model: { id: string; provider: string; label: string } | undefined;
 }
+
 
 /** Tool call input as far as the observer trusts it: every field is optional. */
 export interface ToolCallLike {
@@ -256,11 +267,13 @@ export function createState(now: number): AiesState {
       lastCompactionError: undefined,
     },
     ticket: { active: false },
+    autonomy: undefined,
     compactionCount: 0,
     activeToolCount: 0,
     model: undefined,
   };
 }
+
 
 function cloneState(state: AiesState): AiesState {
   return {
@@ -573,6 +586,9 @@ export function applyStopReason(state: AiesState, reason: unknown, now: number):
 export function applyResumedAt(state: AiesState, now: number): AiesState {
   const next = cloneState(state);
   next.session.resumedAt = now;
+  if (next.autonomy) {
+    next.autonomy.enabled = false;
+  }
   return next;
 }
 
@@ -657,7 +673,9 @@ export interface AiesSnapshot {
   };
   contextGovernor?: ContextGovernorState;
   ticket?: TicketObservationState;
+  autonomy?: AutonomyObservationState;
 }
+
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
   return {
@@ -699,8 +717,10 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     permissions: { ...state.permissions },
     contextGovernor: { ...state.contextGovernor },
     ticket: state.ticket.active ? { ...state.ticket } : undefined,
+    autonomy: state.autonomy ? { ...state.autonomy } : undefined,
   };
 }
+
 
 /**
  * Rebuild state from a persisted shape, keeping only what is understood. A Pi
@@ -822,8 +842,22 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     validVerify: rawTicket.validVerify === true,
   };
 
+  const rawAutonomy = (source.autonomy && typeof source.autonomy === "object" && !Array.isArray(source.autonomy)
+    ? source.autonomy
+    : undefined) as Record<string, unknown> | undefined;
+  if (rawAutonomy) {
+    state.autonomy = {
+      enabled: rawAutonomy.enabled === true,
+      ticketId: text(rawAutonomy.ticketId),
+      continuationCount: positive(rawAutonomy.continuationCount) ?? 0,
+      stopReason: text(rawAutonomy.stopReason),
+      lastStep: text(rawAutonomy.lastStep),
+    };
+  }
+
   return state;
 }
+
 
 export function applyPermissionDenial(state: AiesState): AiesState {
   const next = cloneState(state);
@@ -885,4 +919,21 @@ export function applyTicketObservationSync(
   };
   return next;
 }
+
+export function applyAutonomySync(
+  state: AiesState,
+  update?: Partial<AutonomyObservationState>,
+): AiesState {
+  if (!update) return state;
+  const next = cloneState(state);
+  next.autonomy = {
+    enabled: typeof update.enabled === "boolean" ? update.enabled : (next.autonomy?.enabled ?? false),
+    ticketId: update.ticketId !== undefined ? update.ticketId : (next.autonomy?.ticketId ?? null),
+    continuationCount: typeof update.continuationCount === "number" ? update.continuationCount : (next.autonomy?.continuationCount ?? 0),
+    stopReason: update.stopReason !== undefined ? update.stopReason : (next.autonomy?.stopReason ?? null),
+    lastStep: update.lastStep ?? next.autonomy?.lastStep,
+  };
+  return next;
+}
+
 

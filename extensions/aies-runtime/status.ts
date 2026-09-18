@@ -120,6 +120,17 @@ export function renderFooter(snapshot: AiesSnapshot, now: number): string {
   if (snapshot.permissions && snapshot.permissions.sandbox !== "active") {
     parts.push("SANDBOX OFF");
   }
+  if (snapshot.autonomy) {
+    if (snapshot.autonomy.enabled) {
+      parts.push("AUTO");
+    } else if (
+      snapshot.autonomy.stopReason === "blocked" ||
+      snapshot.autonomy.stopReason === "linear_conflict" ||
+      snapshot.autonomy.stopReason === "linear_sync_failed"
+    ) {
+      parts.push("AUTO:BLOCKED");
+    }
+  }
   parts.push(formatDuration(now - snapshot.startedAt));
   return parts.join(" · ");
 }
@@ -195,6 +206,15 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
           row("status", snapshot.ticket.status ?? "-"),
           row("work", snapshot.ticket.workState ?? "-"),
           row("verify", snapshot.ticket.validVerify ? "PASS (valid)" : (snapshot.verification?.status?.toUpperCase() ?? "NONE")),
+        ])
+      : []),
+    ...(snapshot.autonomy
+      ? section("Autonomía", [
+          row("activa", snapshot.autonomy.enabled ? "sí" : "no"),
+          row("ticket", snapshot.autonomy.ticketId ?? "-"),
+          row("continuaciones", String(snapshot.autonomy.continuationCount)),
+          row("último paso", snapshot.autonomy.lastStep ?? "-"),
+          row("stop reason", snapshot.autonomy.stopReason ?? "-"),
         ])
       : []),
     ...(snapshot.permissions

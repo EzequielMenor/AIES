@@ -28,6 +28,7 @@ import {
   applySessionMeta,
   applyStopReason,
   applyTicketObservationSync,
+  applyAutonomySync,
   applyToolCall,
   applyToolResult,
   applyVerificationReport,
@@ -41,6 +42,7 @@ import { renderFooter, renderStatusReport } from "./status.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
+import { getActiveContinuationController } from "../aies-agents/autonomy/controller.ts";
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
 const ENTRY_TYPE = "aies-metrics";
@@ -109,6 +111,17 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       sandboxFailures: telemetry.sandboxFailures,
     });
     state = applyContextGovernorSync(state, getContextGovernorTelemetry());
+    const autonomyCtrl = getActiveContinuationController();
+    if (autonomyCtrl) {
+      const s = autonomyCtrl.getState();
+      state = applyAutonomySync(state, {
+        enabled: s.enabled,
+        ticketId: s.ticketId,
+        continuationCount: s.continuationCount,
+        stopReason: s.stopReason,
+        lastStep: s.lastStepDescription,
+      });
+    }
 
     if (ctx.mode !== "tui") return;
 
@@ -310,6 +323,17 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
           sandboxFailures: telemetry.sandboxFailures,
         });
         state = applyContextGovernorSync(state, getContextGovernorTelemetry());
+        const autonomyCtrl = getActiveContinuationController();
+        if (autonomyCtrl) {
+          const s = autonomyCtrl.getState();
+          state = applyAutonomySync(state, {
+            enabled: s.enabled,
+            ticketId: s.ticketId,
+            continuationCount: s.continuationCount,
+            stopReason: s.stopReason,
+            lastStep: s.lastStepDescription,
+          });
+        }
         // Outside TUI and RPC there is no notification channel to report to.
         ctx.ui.notify(renderStatusReport(toSnapshot(state), Date.now()), "info");
       });
