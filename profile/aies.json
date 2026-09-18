@@ -13,5 +13,11 @@
   },
   "permissions": {
     "sandbox": true
+  },
+  "context": {
+    "targetTokens": 80000,
+    "pressureTokens": 100000,
+    "compactTokens": 120000,
+    "ceilingTokens": 150000
   }
 }
