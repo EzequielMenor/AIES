@@ -105,6 +105,9 @@ export function renderFooter(snapshot: AiesSnapshot, now: number): string {
   if (snapshot.delegations?.activeRole && snapshot.delegations.activeRole !== "verify") {
     parts.push(`delegando ${snapshot.delegations.activeRole}`);
   }
+  if (snapshot.permissions && snapshot.permissions.sandbox !== "active") {
+    parts.push("SANDBOX OFF");
+  }
   parts.push(formatDuration(now - snapshot.startedAt));
   return parts.join(" · ");
 }
@@ -159,6 +162,17 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
               : "-",
           ),
           row("cambios tras PASS", String(snapshot.verification.mutationsSincePass)),
+        ])
+      : []),
+    ...(snapshot.permissions
+      ? section("Permisos", [
+          row("sandbox", snapshot.permissions.sandbox),
+          row("worker", snapshot.permissions.worker),
+          row("verify", snapshot.permissions.verify),
+          row("network", snapshot.permissions.network),
+          row("denegaciones", String(snapshot.permissions.denials)),
+          row("aprobaciones", String(snapshot.permissions.approvals)),
+          row("fallos sandbox", String(snapshot.permissions.sandboxFailures)),
         ])
       : []),
     ...section("Resultados de tools", [

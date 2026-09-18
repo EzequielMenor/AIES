@@ -117,6 +117,17 @@ export interface ExplorationState {
   largestOutputChars: number;
 }
 
+/** Permissions state tracked for observability (AIES-006). */
+export interface PermissionsState {
+  sandbox: "active" | "unavailable" | "disabled";
+  worker: "workspace-write";
+  verify: "source-read-only";
+  network: "disabled" | "restricted";
+  denials: number;
+  approvals: number;
+  sandboxFailures: number;
+}
+
 /** Everything AIES measures about one parent session. */
 export interface AiesState {
   version: number;
@@ -126,6 +137,7 @@ export interface AiesState {
   delegations: DelegationsState;
   verification: VerificationState;
   exploration: ExplorationState;
+  permissions: PermissionsState;
   compactionCount: number;
   activeToolCount: number;
   model: { id: string; provider: string; label: string } | undefined;
@@ -196,6 +208,15 @@ export function createState(now: number): AiesState {
       outputChars: 0,
       largestOutputChars: 0,
     },
+    permissions: {
+      sandbox: "active",
+      worker: "workspace-write",
+      verify: "source-read-only",
+      network: "disabled",
+      denials: 0,
+      approvals: 0,
+      sandboxFailures: 0,
+    },
     compactionCount: 0,
     activeToolCount: 0,
     model: undefined,
@@ -215,6 +236,7 @@ function cloneState(state: AiesState): AiesState {
     },
     verification: { ...state.verification },
     exploration: { ...state.exploration, filesInspected: [...state.exploration.filesInspected] },
+    permissions: { ...state.permissions },
   };
 }
 
@@ -583,6 +605,15 @@ export interface AiesSnapshot {
     lastDurationMs: number | undefined;
     mutationsSincePass: number;
   };
+  permissions: {
+    sandbox: "active" | "unavailable" | "disabled";
+    worker: "workspace-write";
+    verify: "source-read-only";
+    network: "disabled" | "restricted";
+    denials: number;
+    approvals: number;
+    sandboxFailures: number;
+  };
 }
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
@@ -622,6 +653,7 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
       lastDurationMs: state.delegations.lastDurationMs,
     },
     verification: { ...state.verification },
+    permissions: { ...state.permissions },
   };
 }
 
@@ -683,6 +715,22 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     mutationsSincePass: positive(rawVerification.mutationsSincePass) ?? 0,
   };
 
+  const rawPerms = (source.permissions && typeof source.permissions === "object" && !Array.isArray(source.permissions)
+    ? source.permissions
+    : {}) as Record<string, unknown>;
+  state.permissions = {
+    sandbox:
+      rawPerms.sandbox === "active" || rawPerms.sandbox === "unavailable" || rawPerms.sandbox === "disabled"
+        ? rawPerms.sandbox
+        : "active",
+    worker: "workspace-write",
+    verify: "source-read-only",
+    network: "disabled",
+    denials: positive(rawPerms.denials) ?? 0,
+    approvals: positive(rawPerms.approvals) ?? 0,
+    sandboxFailures: positive(rawPerms.sandboxFailures) ?? 0,
+  };
+
   state.exploration.filesInspected = stringList(source.filesInspected);
   state.exploration.sourceReads = positive(source.sourceReads) ?? 0;
   state.exploration.searches = positive(source.searchCalls) ?? 0;
@@ -701,4 +749,39 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
   }
 
   return state;
+}
+
+export function applyPermissionDenial(state: AiesState): AiesState {
+  const next = cloneState(state);
+  next.permissions.denials++;
+  return next;
+}
+
+export function applyApprovalRequest(state: AiesState): AiesState {
+  const next = cloneState(state);
+  next.permissions.approvals++;
+  return next;
+}
+
+export function applySandboxFailure(state: AiesState): AiesState {
+  const next = cloneState(state);
+  next.permissions.sandboxFailures++;
+  return next;
+}
+
+export function applyPermissionsSync(
+  state: AiesState,
+  update: {
+    sandbox?: "active" | "unavailable" | "disabled";
+    denials?: number;
+    approvals?: number;
+    sandboxFailures?: number;
+  },
+): AiesState {
+  const next = cloneState(state);
+  if (update.sandbox) next.permissions.sandbox = update.sandbox;
+  if (typeof update.denials === "number") next.permissions.denials = update.denials;
+  if (typeof update.approvals === "number") next.permissions.approvals = update.approvals;
+  if (typeof update.sandboxFailures === "number") next.permissions.sandboxFailures = update.sandboxFailures;
+  return next;
 }

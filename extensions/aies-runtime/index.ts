@@ -22,6 +22,7 @@ import {
   applyDelegationStart,
   applyModel,
   applyParentMutation,
+  applyPermissionsSync,
   applyResumedAt,
   applySessionMeta,
   applyStopReason,
@@ -35,6 +36,8 @@ import {
   type AiesState,
 } from "./state.ts";
 import { renderFooter, renderStatusReport } from "./status.ts";
+import { getSandboxStatus } from "../aies-agents/sandbox.ts";
+import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
 const ENTRY_TYPE = "aies-metrics";
@@ -95,6 +98,13 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   function render(ctx: ExtensionContext): void {
     state = applyContextUsage(state, usageOf(ctx));
     state = applyActiveToolCount(state, activeToolCount());
+    const telemetry = getPermissionTelemetry();
+    state = applyPermissionsSync(state, {
+      sandbox: getSandboxStatus(),
+      denials: telemetry.denials,
+      approvals: telemetry.approvals,
+      sandboxFailures: telemetry.sandboxFailures,
+    });
 
     if (ctx.mode !== "tui") return;
 
@@ -254,6 +264,13 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     handler: async (_args, ctx) => {
       guard(() => {
         state = applyModel(state, ctx.model);
+        const telemetry = getPermissionTelemetry();
+        state = applyPermissionsSync(state, {
+          sandbox: getSandboxStatus(),
+          denials: telemetry.denials,
+          approvals: telemetry.approvals,
+          sandboxFailures: telemetry.sandboxFailures,
+        });
         // Outside TUI and RPC there is no notification channel to report to.
         ctx.ui.notify(renderStatusReport(toSnapshot(state), Date.now()), "info");
       });
