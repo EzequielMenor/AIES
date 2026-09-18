@@ -23,6 +23,7 @@ import {
   type PermissionAction,
   type PermissionGateContext,
 } from "./permissions.ts";
+import type { ApprovalRequest } from "../aies-ui/approval.ts";
 import {
   executeSandboxedCommand,
   type SandboxConfigOptions,
@@ -35,6 +36,8 @@ export interface CommandPermissionResult {
   reason?: string;
   action?: PermissionAction;
   prompt?: string;
+  /** Structured copy for the ASK dialog, propagated unchanged from the policy. */
+  approval?: ApprovalRequest;
 }
 
 export type GuardedBashRunner = (
@@ -355,7 +358,8 @@ function checkPackageAskReason(
   binary: string,
   tokens: string[],
   policy: CommandPolicy,
-): { reason: string; prompt: string } | undefined {
+  command: string,
+): { reason: string; prompt: string; approval: ApprovalRequest } | undefined {
   if (policy !== "worker" || !PACKAGE_MANAGERS.includes(binary)) return undefined;
   const installs = ["install", "i", "add", "uninstall", "remove", "update", "upgrade"];
   const matched = tokens.find((t) => installs.includes(t));
@@ -363,6 +367,11 @@ function checkPackageAskReason(
     return {
       reason: `dependency modification (${binary} ${matched}) crosses a boundary and requires user approval (ASK)`,
       prompt: `Authorize Worker to modify packages: "${tokens.join(" ")}"?`,
+      approval: {
+        action: "Instalar o modificar dependencias",
+        detail: command,
+        effect: "cambia el árbol de dependencias del proyecto",
+      },
     };
   }
   return undefined;
@@ -466,9 +475,15 @@ export function checkCommandPolicy(
     const destructive = destructiveBinaryReason(binary, tokens, policy);
     if (destructive) return { allowed: false, action: "deny", reason: destructive };
 
-    const packageAsk = checkPackageAskReason(binary, tokens, policy);
+    const packageAsk = checkPackageAskReason(binary, tokens, policy, command);
     if (packageAsk) {
-      return { allowed: false, action: "ask", reason: packageAsk.reason, prompt: packageAsk.prompt };
+      return {
+        allowed: false,
+        action: "ask",
+        reason: packageAsk.reason,
+        prompt: packageAsk.prompt,
+        approval: packageAsk.approval,
+      };
     }
 
     // Git commands are read through their subcommand, never as a whole line.
@@ -562,7 +577,7 @@ export function createGuardedBashToolDefinition(
 
       if (permission.action === "ask") {
         const gate = await handlePermissionGate(
-          { action: "ask", reason: permission.reason, prompt: permission.prompt },
+          { action: "ask", reason: permission.reason, prompt: permission.prompt, approval: permission.approval },
           ctx as PermissionGateContext,
         );
         if (!gate.allowed) {

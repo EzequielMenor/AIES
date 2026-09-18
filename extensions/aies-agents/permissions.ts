@@ -19,12 +19,16 @@
  *   authorized roots).
  */
 
+import { renderApprovalPrompt, type ApprovalRequest } from "../aies-ui/approval.ts";
+
 export type PermissionAction = "allow" | "ask" | "deny";
 
 export interface PermissionEvaluation {
   action: PermissionAction;
   reason?: string;
   prompt?: string;
+  /** Structured copy for the ASK dialog. The policy decision is still `action`. */
+  approval?: ApprovalRequest;
 }
 
 export interface PermissionTelemetry {
@@ -98,9 +102,10 @@ export async function handlePermissionGate(
   }
 
   try {
-    const title = "Permission Approval Required";
-    const message = evaluation.prompt ?? evaluation.reason ?? "Do you want to authorize this operation?";
-    const approved = await ctx.ui.confirm(title, message);
+    const prompt = renderApprovalPrompt(
+      evaluation.approval ?? { action: "Confirmar la operación", reason: evaluation.prompt ?? evaluation.reason },
+    );
+    const approved = await ctx.ui.confirm(prompt.title, prompt.message);
 
     if (approved) {
       return { allowed: true };
