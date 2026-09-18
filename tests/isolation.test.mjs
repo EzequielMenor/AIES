@@ -190,7 +190,12 @@ describe("AIES isolation", () => {
     const commands = responseFor(records, "get_commands").commands;
 
     const skills = commands.filter((command) => command.source === "skill");
-    assert.deepEqual(skills, [], `skills leaked into the AIES profile: ${JSON.stringify(skills)}`);
+    const leaked = skills.filter((command) => !command.sourceInfo?.path?.startsWith(REPO));
+    assert.deepEqual(leaked, [], `global cross-harness skills leaked into the AIES profile: ${JSON.stringify(leaked)}`);
+    assert.ok(
+      skills.some((command) => command.name === "skill:linear-ticket"),
+      "repository skill linear-ticket was not loaded via --skill",
+    );
   });
 
   it("does not surface the ambient profile's packages", () => {
