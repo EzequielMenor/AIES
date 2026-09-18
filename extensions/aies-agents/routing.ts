@@ -48,8 +48,13 @@ export interface RoutingState {
 export interface RoutingSignals {
   explorationPressure: "none" | "soft" | "hard";
   toolPressure: "none" | "soft" | "hard";
+  contextPressure?: "none" | "amber" | "pressure" | "compact" | "ceiling";
   recommendedAction: "inline" | "explore" | "worker";
   reason?: string;
+}
+
+export interface ContextGovernorLike {
+  isHeavyWorkAllowed(toolName: string, input?: Record<string, unknown>): { allowed: boolean; reason?: string };
 }
 
 export interface GuardrailCheckResult {
@@ -158,7 +163,10 @@ export function applyRoutingDelegationEnd(
 /**
  * Evaluate current soft pressure signals and recommendations.
  */
-export function evaluateRoutingSignals(state: RoutingState): RoutingSignals {
+export function evaluateRoutingSignals(
+  state: RoutingState,
+  contextZone?: "green" | "amber" | "pressure" | "compact" | "ceiling",
+): RoutingSignals {
   let explorationPressure: "none" | "soft" | "hard" = "none";
   if (state.readsSinceBoundary >= ROUTING_THRESHOLDS.EXPLORATION_READS_HARD) {
     explorationPressure = "hard";
@@ -173,6 +181,11 @@ export function evaluateRoutingSignals(state: RoutingState): RoutingSignals {
     toolPressure = "soft";
   }
 
+  let contextPressure: "none" | "amber" | "pressure" | "compact" | "ceiling" = "none";
+  if (contextZone && contextZone !== "green") {
+    contextPressure = contextZone;
+  }
+
   let recommendedAction: "inline" | "explore" | "worker" = "inline";
   let reason: string | undefined;
 
@@ -185,9 +198,20 @@ export function evaluateRoutingSignals(state: RoutingState): RoutingSignals {
   } else if (state.filesSinceBoundary.length > ROUTING_THRESHOLDS.FILES_INSPECTED_EXPLORE_THRESHOLD) {
     recommendedAction = "explore";
     reason = `More than ${ROUTING_THRESHOLDS.FILES_INSPECTED_EXPLORE_THRESHOLD} files inspected (${state.filesSinceBoundary.length}); delegate Explore.`;
+  } else if (contextPressure === "pressure" || contextPressure === "compact" || contextPressure === "ceiling") {
+    if (state.readsSinceBoundary > 0 || state.filesSinceBoundary.length > 0) {
+      recommendedAction = "explore";
+      reason = `Context pressure is ${contextPressure}; delegate Explore to keep parent context lean.`;
+    } else {
+      recommendedAction = "worker";
+      reason = `Context pressure is ${contextPressure}; delegate Worker to keep parent context lean.`;
+    }
   } else if (explorationPressure === "soft") {
     recommendedAction = "explore";
     reason = `Soft exploration threshold reached (${state.readsSinceBoundary} source reads); consider delegating to Explore.`;
+  } else if (contextPressure === "amber" && state.readsSinceBoundary >= 2) {
+    recommendedAction = "explore";
+    reason = "Amber context threshold reached; favour Explore for further discovery.";
   } else if (toolPressure === "soft") {
     recommendedAction = "worker";
     reason = `Soft tool threshold reached (${state.toolsSinceBoundary} calls); consider delegating to Worker.`;
@@ -196,6 +220,7 @@ export function evaluateRoutingSignals(state: RoutingState): RoutingSignals {
   return {
     explorationPressure,
     toolPressure,
+    contextPressure,
     recommendedAction,
     reason,
   };
@@ -209,10 +234,22 @@ export function evaluateRoutingSignals(state: RoutingState): RoutingSignals {
 export function checkRoutingGuardrail(
   state: RoutingState,
   call: ToolCallInputLike,
+  governor?: ContextGovernorLike,
 ): GuardrailCheckResult {
   // Delegation is always permitted (it is the required escape hatch)
   if (call.toolName === "aies_delegate") {
     return { block: false };
+  }
+
+  // Enforce Context Governor operational ceiling & compaction in progress
+  if (governor) {
+    const heavyCheck = governor.isHeavyWorkAllowed(call.toolName, call.input);
+    if (!heavyCheck.allowed) {
+      return {
+        block: true,
+        reason: heavyCheck.reason ?? "parent context ceiling reached; delegate Explore or Worker, or finalize task",
+      };
+    }
   }
 
   // Hard stop on direct exploratory reads
