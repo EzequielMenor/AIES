@@ -135,10 +135,10 @@ Indicators are never folded into the stage:
 | `AUTO` | on / off | only when autonomy is enabled |
 | context | `ctx 42k` / `ctx 104k !` | always |
 | compaction | `compactando…` | while compacting |
-| verification | `V:PASS`, `V:FAIL`, `V:STALE`, `V:?` | only when it adds information |
+| verification | `V:PASS`, `V:FAIL`, `V:STALE` | only when it adds information |
 | permissions | `PERM` | only after a denial |
 
-`V:BLOCKED` and `V:?` are deliberately **not** footer vocabulary: when a
+`V:BLOCKED`, `V:?` and `V:none` are deliberately **not** footer vocabulary: when a
 verification is blocked or running, the stage already says it.
 
 ## 5. Footer
@@ -146,11 +146,18 @@ verification is blocked or running, the stage already says it.
 ```
 AIES · EZE-417 · WORK · ctx 42k · AUTO
 AIES · EZE-417 · VERIFY · ctx 45k · AUTO
-AIES · EZE-417 · DONE · ctx 46k · V:PASS
+AIES · EZE-417 · DONE · ctx 46k
 AIES · ready · ctx 31k
 ```
 
 - One line. Never a second line, never a panel, never `key=value`.
+- `ready` appears only when the stage is `IDLE`. While work is in flight and there
+  is no ticket, the line simply omits the token (`AIES · EXPLORE · ctx 42k`):
+  `ready` next to `EXPLORE` would read as a contradiction.
+- `V:PASS` is printed when it is the newest thing worth knowing — and suppressed
+  when the stage is already `DONE`, which means exactly the same thing. Once a
+  parent mutation invalidates the PASS, the stage reverts to `IDLE` and the line
+  carries `V:STALE`, which is the state the human actually needs to see.
 - The footer is not `/aies-status`. If a fact needs a label to be understood, it
   belongs in the status report, not here.
 - No percentages, no ceiling, no `peak:`, no tool counts, no elapsed time. Elapsed
@@ -486,6 +493,43 @@ renderers under `lib/`.
 6. Semantic role table per status (`LOOK`), theme colors only, no raw ANSI.
 7. Row/column budget derived from terminal size; label clipped before the number.
 
+### Confirmations from the installed source
+
+The audit was performed against `gentle-pi@3.2.1` on this machine, reading
+`extensions/` and `lib/`. Points that matter for AIES:
+
+- The compact bar is `✿ gentle shell ⟡ path branch ±changes ⟡ model · effort ⟡
+  ctx gauge percent ⟡ cost ⟡ provider statuses`, fed by `ctx.getContextUsage()`,
+  `ctx.model`, `ctx.getThinkingLevel()`, `ctx.sessionManager.getCwd()`,
+  `ctx.sessionManager.getSessionName()`, `ctx.sessionManager.getEntries()` (for
+  session cost) and `footerData.getExtensionStatuses()`
+  (`lib/shell-bar.ts`, `extensions/gentle-shell.ts`).
+- Its responsive order is: session name first, then the location is compacted,
+  then trailing statuses are removed before final truncation. AIES keeps the idea
+  and documents its own order in §5.
+- The gauge is 8 cells (`▰`/`▱`), warning at `>=80%`, error at `>=95%`, dim when
+  unknown (`lib/shell-gauge.ts`).
+- The agents card bounds finished rows to 60 seconds and at most three rows,
+  between 3 and 8 rows total, `25%` of terminal height, with `… N more` on
+  overflow. AIES keeps the TTL idea and drops the table: one child at a time.
+- The startup banner switches between full (at least 30x80), minimal (at least
+  20x40) and skipped. AIES has no banner, but this is the same philosophy as the
+  footer's documented drop order.
+- `ctx.ui.notify`, `setWidget`, `custom`, `setFooter`, `setHeader` and
+  `setEditorComponent` never insert a conversation message; `pi.sendMessage`
+  always uses Pi's message transport even with `display: false`, and
+  `pi.appendEntry` is the durable, context-free channel. This is the mechanic
+  §1 of the no-pollution guarantee depends on.
+- Gentle does render compact tool rows (`read path`, `$ command`, `grep /re/`)
+  through its own quiet-tools extension. AIES does not: Pi's native tool rows
+  already exist, and adding a second, differently-shaped tool list would be
+  duplication. AIES adds the child card on top of them instead.
+
+Audit note: one referenced document (`orchestration/pi.md`, linked from
+`docs/review-integration.md` in the installed package) was not present at the
+path it advertises. Nothing in this document depends on it; it is recorded so the
+next audit does not chase it twice.
+
 ### Comparison table
 
 | Gentle concept | AIES decision | Reason |
@@ -501,6 +545,9 @@ renderers under `lib/`.
 | Finished-row TTL on the widget | Adapt | Solves "ten historical cards" without a history UI. |
 | Pure renderer + theme interface, tested without a TUI | Adapt | This is why the AIES renderers live in a Pi-free module with injected paint. |
 | `ui.select` for closed choices | Reject for approvals | `confirm` already expresses allow/deny with a safe default; a select would add a third option nobody acts on. Reused only where AIES already had it. |
+| Compact tool rows (`read path`, `$ command`) from quiet-tools | Reject | Pi already renders the tool rows. A second, differently-shaped tool list is duplication; AIES puts the child card above the native rows instead. |
+| Startup banner with project, branch, MCP, skills, extensions | Reject | AIES is a harness for one developer on one repository; a banner is startup decoration. `/aies-info` already answers "which profile am I running". |
+| Agent overlay, session scope, transcript export | Reject v1 | Requires a child task store, a process protocol and a thread model. AIES children are in-process sessions with a structured handoff; there is nothing to browse. |
 | ODD/SDD UI (SDD status, review consent, judgment day) | Reject | AIES has no SDD and no review authority. Importing that UI would import a workflow AIES does not run. |
 
 ## 19. Before / after
