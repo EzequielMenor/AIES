@@ -224,6 +224,36 @@ export function findFileRedirection(segment: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Command substitution hides a second command from the segment scanner, which is
+ * exactly how a guard like this gets bypassed. Verify may always run the inner
+ * command directly, where the policy can see it.
+ */
+export function findCommandSubstitution(segment: string): string | undefined {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < segment.length; i++) {
+    const char = segment[i];
+
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+
+    if (char === "`") return "`";
+    if (char === "$" && segment[i + 1] === "(") return "$(";
+    if ((char === "<" || char === ">") && segment[i + 1] === "(") return `${char}(`;
+  }
+
+  return undefined;
+}
+
 function destructiveGitReason(
   tokens: string[],
   subcommand: string,
@@ -368,6 +398,14 @@ export function checkCommandPolicy(
 
   for (const segment of segments) {
     if (policy === "verify") {
+      const substitution = findCommandSubstitution(segment);
+      if (substitution) {
+        return {
+          allowed: false,
+          reason: `command substitution (${substitution}...) hides a command from the ${label} guard; run the inner command directly`,
+        };
+      }
+
       const redirection = findFileRedirection(segment);
       if (redirection) {
         return {

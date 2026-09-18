@@ -152,6 +152,12 @@ describe("AIES-005 Verify command policy (read-only shell)", () => {
     "npm test 2>&1",
   ];
 
+  const substitutionBypasses = [
+    "echo $(rm -rf build)",
+    "echo `git checkout -- .`",
+    "cat <(rm x)",
+  ];
+
   const blocked = [
     "git clean -fd",
     "git reset --hard HEAD~1",
@@ -212,6 +218,17 @@ describe("AIES-005 Verify command policy (read-only shell)", () => {
       assert.ok(result.reason && result.reason.length > 0, `${command} must explain itself`);
       assert.match(result.reason, /Verify/u, `${command} must name the policy that refused it`);
     }
+  });
+
+  it("refuses command substitution, which would hide a command from the guard", () => {
+    for (const command of substitutionBypasses) {
+      const result = isCommandPermittedInVerify(command, REPO_ROOT);
+      assert.equal(result.allowed, false, command);
+      assert.match(result.reason ?? "", /command substitution/u);
+    }
+
+    // The inner command is fine when the guard can see it.
+    assert.equal(isCommandPermittedInVerify("git status", REPO_ROOT).allowed, true);
   });
 
   it("is not identical to the Worker policy: Verify is stricter about writes", () => {
@@ -776,11 +793,18 @@ describe("AIES-005 verification state and policy", () => {
     assert.equal(isVerificationValid(verified), true);
     assert.equal(planVerification(verified).action, "done");
 
-    const edited = applyWorkUnitChange(verified, "parent edit on config.js");
+    const edited = applyWorkUnitChange(verified, ["config.js"], "parent edit on config.js");
     assert.equal(edited.status, "none");
     assert.equal(isVerificationValid(edited), false);
     assert.equal(edited.verifiedRevision, undefined);
-    assert.equal(planVerification(edited).action, "none");
+    assert.equal(planVerification(edited).action, "verify");
+    assert.match(planVerification(edited).reason, /no longer matches the current revision/u);
+
+    // A documentation-only edit is not a behaviour change: the PASS survives.
+    const docsEdit = applyWorkUnitChange(verified, ["README.md"], "parent edit on README.md");
+    assert.equal(docsEdit.status, "pass");
+    assert.equal(isVerificationValid(docsEdit), true);
+    assert.equal(planVerification(docsEdit).action, "done");
   });
 
   it("invalidates a PASS when a Worker run changes the artifact", () => {
@@ -797,6 +821,7 @@ describe("AIES-005 verification state and policy", () => {
 
     const docsOnly = applyWorkerResult(verified, ["README.md"]);
     assert.equal(docsOnly.awaitingVerification, false);
+    assert.equal(isVerificationValid(docsOnly), true, "a documentation run does not expire a PASS");
   });
 
   it("allows a FAIL to be repaired, then verified again", () => {

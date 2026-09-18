@@ -59,10 +59,10 @@ export default function aiesAgents(pi: ExtensionAPI): void {
       return;
     }
 
-    // A direct parent edit changes the artifact: an old PASS stops being valid.
+    // A direct parent edit to a behaviour-bearing path expires an old PASS.
     if (PARENT_MUTATION_TOOLS.includes(event.toolName)) {
       const path = typeof input?.path === "string" ? input.path : "unknown path";
-      verification = applyWorkUnitChange(verification, `parent ${event.toolName} on ${path}`);
+      verification = applyWorkUnitChange(verification, [path], `parent ${event.toolName} on ${path}`);
     }
 
     routingState = applyRoutingToolCall(

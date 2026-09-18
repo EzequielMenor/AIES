@@ -35,7 +35,7 @@ export interface VerificationState {
   attempts: number;
   /** Worker runs started while a FAIL was awaiting repair. */
   repairs: number;
-  /** Monotonic work-unit revision: one per parent mutation or Worker run. */
+  /** Monotonic behaviour-bearing revision: one per parent mutation or Worker run. */
   revision: number;
   /** Revision the last PASS verified, when there is one. */
   verifiedRevision: number | undefined;
@@ -96,36 +96,50 @@ export function isVerificationValid(state: VerificationState): boolean {
 }
 
 /**
- * Record a change to the work unit. This is the invalidation rule: an old PASS
- * never survives a new revision, because `verifiedRevision` lags behind.
+ * Record a behaviour-bearing change to the work unit. This is the invalidation
+ * rule: the revision only counts changes that can alter behaviour, so a
+ * documentation edit never expires a PASS, and a code edit always does.
  */
 export function applyWorkUnitChange(
   state: VerificationState,
-  note: string,
+  changedPaths: string[],
+  note?: string,
 ): VerificationState {
+  const requirement = requiresVerification(changedPaths);
+  const next: VerificationState = { ...state, lastChange: note ?? requirement.reason };
+
+  if (!requirement.required) return next;
+
+  const invalidates = state.status === "pass";
   return {
-    ...state,
+    ...next,
     revision: state.revision + 1,
-    status: state.status === "pass" ? "none" : state.status,
-    verifiedRevision: state.status === "pass" ? undefined : state.verifiedRevision,
-    lastChange: note,
+    status: invalidates ? "none" : state.status,
+    verifiedRevision: invalidates ? undefined : state.verifiedRevision,
   };
 }
 
 /**
  * Record a completed Worker run: the artifact changed, whatever the Worker said
- * about it. A pending FAIL is superseded, and the requirement rule decides
- * whether the new revision waits for verification.
+ * about it. A behaviour-bearing change supersedes any pending verdict and waits
+ * for verification; a documentation-only change leaves the record alone.
  */
 export function applyWorkerResult(
   state: VerificationState,
   changedPaths: string[],
 ): VerificationState {
   const requirement = requiresVerification(changedPaths);
+  if (!requirement.required) {
+    return { ...state, lastChange: requirement.reason };
+  }
+
   return {
-    ...applyWorkUnitChange(state, requirement.reason),
+    ...state,
+    revision: state.revision + 1,
     status: "none",
-    awaitingVerification: requirement.required,
+    verifiedRevision: undefined,
+    awaitingVerification: true,
+    lastChange: requirement.reason,
   };
 }
 
@@ -255,6 +269,15 @@ export function planVerification(state: VerificationState): VerificationDecision
       attempt: state.attempts + 1,
       action: "verify",
       reason: "a behaviour-bearing change requires independent verification",
+    };
+  }
+
+  if (state.lastStatus === "pass") {
+    return {
+      ...base,
+      attempt: state.attempts + 1,
+      action: "verify",
+      reason: "the previous PASS no longer matches the current revision",
     };
   }
 
