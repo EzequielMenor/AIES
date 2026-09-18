@@ -300,6 +300,64 @@ Verify returns evidence; the parent decides. Neither Worker nor Verify can set
 `verified = true`, and a review of the loop is informational: it does not commit,
 push, or close anything.
 
+## Permission boundaries (AIES-006)
+
+AIES enforces a defense-in-depth security model across three independent layers,
+preventing autonomous child agents from escaping workspace boundaries or mutating
+sensitive host state.
+
+```
++-------------------------------------------------------------------------+
+| Layer 1: Capability Surface (tool availability per role)                |
+|   Explore: read, grep, find, ls, tgrep                                  |
+|   Worker:  read, grep, find, ls, tgrep, contained write & edit, bash    |
+|   Verify:  read, grep, find, ls, tgrep, read-only bash                  |
+|   Parent:  delegation, full tool surface, credentials                   |
++-------------------------------------------------------------------------+
+                                    |
+                                    v
++-------------------------------------------------------------------------+
+| Layer 2: Permission Policy Taxonomy (ALLOW / ASK / DENY)                |
+|   ALLOW: safe local development (reads, workspace edits, tests, diff)   |
+|   ASK:   boundary-crossing actions (npm install, package mutation)      |
+|          -> UI available: prompts user confirm                          |
+|          -> Headless / child agent: automatic ASK -> DENY               |
+|   DENY:  destructive or irreversible (sudo, push, reset --hard, clean)  |
++-------------------------------------------------------------------------+
+                                    |
+                                    v
++-------------------------------------------------------------------------+
+| Layer 3: OS / Runtime Sandbox Boundary (@anthropic-ai/sandbox-runtime)  |
+|   Syscall-level containment (Seatbelt on macOS, bubblewrap on Linux)    |
+|   Worker: allowWrite workspaceRoot + /tmp; denyRead credentials         |
+|   Verify: source-read-only; allowWrite designated output roots only     |
+|   Fallback: Worker degrades with warning; Verify strictly halts         |
++-------------------------------------------------------------------------+
+```
+
+### 1. Capability surface
+
+Each role receives only the tools required for its contract:
+- **Explore**: Strictly read-only (`read`, `grep`, `find`, `ls`, `tgrep`). No `edit`, `write`, or `bash`.
+- **Worker**: Workspace-contained `edit` and `write` (which reject path escapes and secret files at the tool boundary), plus guarded, sandboxed `bash`.
+- **Verify**: Strictly read-only tool surface with no `edit` or `write`. Bash tool is restricted to read-only inspection, check execution, and scoped queries.
+- **Parent**: Owns host credentials and model keys. Children never inherit ambient credentials.
+
+### 2. Permission policy taxonomy
+
+Commands executed in child sessions are evaluated before execution:
+- **ALLOW**: Routine, reversible operations inside workspace (file reads, edits, linters, tests, builds, git status/diff/log).
+- **ASK**: Deliberate actions requiring human authorization (package manager installations and additions). When interactive UI is available (`hasUI`), prompts the user with `ui.confirm()`. In headless runs or child sessions, automatically converts to **DENY** (`ASK -> DENY`). Children cannot self-approve.
+- **DENY**: High-risk or irreversible operations blocked without exception (`sudo`, `git push`, `git reset --hard`, `git clean -fd`, `git checkout .`, `git restore .`, `git branch -D`, mass deletions, secret paths).
+
+### 3. OS runtime sandbox boundary
+
+Syscall containment uses `@anthropic-ai/sandbox-runtime` (Apple Seatbelt `sandbox-exec` on macOS, `bubblewrap` on Linux):
+- **No Regex Security Theatre**: Verifier read-only integrity is enforced by the operating system kernel, not regex matching on command strings. Indirect write attempts via `node -e "fs.writeFileSync(...)"`, `python3`, `ruby`, or third-party binaries fail at the OS syscall layer (`EACCES` / `Operation not permitted`).
+- **Verify Output Roots**: Pre-creates permitted output subdirectories (`.cache`, `coverage`, `dist`, `build`, etc.) on the host filesystem before initializing the Seatbelt sandbox, enabling test runners and compilers to emit build artifacts while keeping the entire source tree strictly read-only.
+- **Secret Protection**: `COMMON_DENY_READ` blocks reading `~/.ssh`, `~/.aws`, `~/.gnupg`, and Pi's `auth.json`. Contained tools deny access to `.env*`, `*.pem`, and `*.key`.
+- **Graceful Degradation**: If sandboxing is disabled (`AIES_SANDBOX=0`) or unsupported on the host platform, Worker logs a warning and falls back to unsandboxed execution. Verify strictly refuses execution (`throw new Error(...)`) because independent verification requires OS-level enforcement to guarantee artifact integrity.
+
 ## Verification model
 
 All checks run with a temporary `AIES_HOME` and a deliberately hostile ambient
