@@ -15,8 +15,9 @@ The command is `aies`; underneath it is `pi`.
 > Phase status: isolated bootstrap (AIES-001), session metrics baseline
 > (AIES-002), isolated child delegation (AIES-003 explore, AIES-004 worker and
 > routing, AIES-005 independent verify), permission boundaries and OS sandbox
-> (AIES-006), context governor (AIES-007), Linear ticket workflow (AIES-008), and
-> bounded task autonomy (AIES-009).
+> (AIES-006), context governor (AIES-007), Linear ticket workflow (AIES-008),
+> bounded task autonomy (AIES-009), and the Gentle-inspired presentation layer
+> (AIES-010, see [docs/UX.md](docs/UX.md)).
 > See [Scope](#scope).
 
 ## Requirements
@@ -213,12 +214,20 @@ Phase 8 established the Linear Ticket Workflow:
 - remote conflict detection before completion;
 - snapshot persistence across session boundaries.
 
-Phase 9 (current) establishes Bounded Task Autonomy & Continuation Controller:
+Phase 9 establishes Bounded Task Autonomy & Continuation Controller:
 - single continuation authority (`ContinuationController`) evaluating at `agent_settled`;
 - single-flight follow-up message (`/aies-run [ticketId | stop | status]`);
 - strict ordering with Context Governor: compaction is strictly awaited to `onComplete` before continuation;
 - safe stopping on completion, permission prompt (`ask`), verification stop, or blockers;
 - circuit breakers: 20-continuation ceiling and 3-consecutive-identical-fingerprint progress check;
 - session resume safety: restored sessions restore ticket and metrics but remain paused (`enabled = false`).
+
+Phase 10 (current) establishes the presentation layer (see [docs/UX.md](docs/UX.md)):
+- one workflow vocabulary (`IDLE, EXPLORE, WORK, VERIFY, REPAIR, WAIT, BLOCKED, DONE`) plus independent indicators;
+- a quiet one-line footer (`AIES · EZE-417 · WORK · ctx 42k · AUTO`) that degrades by priority on narrow terminals;
+- one live widget per running child plus one durable, context-free line per finished child;
+- actionable permission prompts, and explicit BLOCKED/DONE summaries;
+- a human `/aies-status` view with the full telemetry dump moved behind `/aies-status detalle`;
+- no new agents, no new subsystems, no own UI framework: UI is a projection of runtime state.
 
 Explicitly out of scope: infinite multi-ticket backlog runners, unmonitored git push/PR, and background auto-polling.

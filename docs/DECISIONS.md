@@ -330,6 +330,32 @@ Parent retains model API keys and coordinates from the host; child tool executio
 
 ---
 
+## D16 - Presentation Layer: UI as a Projection, One Vocabulary, Pi-Owned Rendering, and No Context Pollution
+
+**Decision.**
+1. The UI is a projection of runtime state and never an authority. Every renderer is a pure function of a state snapshot; no widget text is ever read back to infer workflow state.
+2. Presentation lives in one pure module, `extensions/aies-ui/`, with no Pi import and no state. `aies-runtime` owns the Pi surfaces (one footer status key, one widget key, the entry renderers); `aies-agents` owns the approval dialog. No UI framework, no component registry, no second runtime is introduced.
+3. High-level workflow state has exactly one dimension with eight values (`IDLE, EXPLORE, WORK, VERIFY, REPAIR, WAIT, BLOCKED, DONE`). Autonomy, context, verification and permissions are independent indicators and are never folded into the stage.
+4. The footer is one line: identity, ticket, stage, context health, autonomy, and alarms only. Counters, peaks, percentages, ceilings, elapsed time and per-phase telemetry are not footer vocabulary; they live behind `/aies-status`.
+5. A running child is one live widget updated in place, never one message per event; a finished child leaves one compact durable transcript line and its widget expires after 60 seconds.
+6. Progress and completion surfaces must never enter the LLM context. `setStatus`, `setWidget`, `notify` and `appendEntry` + `registerEntryRenderer` are used; `sendMessage` is never used for UI. Pi documents custom entries as not participating in LLM context, which is what makes durable UI free.
+7. Permission policy is untouched: `ASK` keeps its `ASK -> DENY` behaviour without UI, and only its presentation becomes an actionable prompt with action, side effect and reason.
+8. Every surface degrades to silence. A failing projection, a non-TUI mode or a narrow terminal changes what is drawn, never what the workflow does.
+
+**Why.**
+- AIES-002..009 each added a visible surface. The footer accumulated one segment per phase, mixed Spanish and English inside a single line, and ended up closer to a telemetry dump than to an answer to "what is happening?".
+- Deriving state from rendered text would create a second, silent source of truth. That is the failure mode this decision exists to prevent.
+- Progress text sent as conversation messages is billed as context and pollutes the parent that delegation exists to protect. The one-line guarantee keeps observation free.
+- A user-visible framework would be a new subsystem with its own lifecycle, tests and upgrade path, for a product that shows one child at a time.
+
+**Consequence.**
+- The number of always-visible elements decreases while the amount of information available on demand stays the same.
+- All AIES rendering becomes testable without a terminal, because the renderers take a snapshot and return strings.
+- Behavioural authorities (routing, verification, sandbox, Context Governor thresholds, Linear Done Gate, continuation decisions, repair limits, model routing) keep their semantics; only their presentation changes.
+- Related detailed reference: `docs/UX.md`.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

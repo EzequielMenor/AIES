@@ -559,6 +559,81 @@ Mandatory ordering: context compaction takes priority over task continuation. Wh
 
 Session snapshot persistence records `aies-autonomy` state entries across `/resume`. On restart, ticket and metrics are restored, but autonomy is explicitly set to `enabled = false`. Work never continues autonomously without an explicit user command.
 
+## Presentation layer (`extensions/aies-ui/`)
+
+AIES-010 turns the functional phases into one readable experience without adding
+intelligence. The presentation layer is pure and Pi-free; Pi remains the UI
+runtime.
+
+```
+extensions/aies-ui/          pure: snapshot -> strings, no Pi import, no state
+  paint.ts                   semantic colors behind an injected Paint adapter
+  format.ts                  formatTokens, formatDuration, clip, singleLine
+  vocabulary.ts              deriveStage + independent indicators
+  footer.ts                  renderFooter with width degradation
+  activity.ts                live child card, finished line, entry data
+  approval.ts                structured permission prompt
+  summary.ts                 DONE/BLOCKED cards and the /aies-status overview
+extensions/aies-runtime/     the only writer of the footer and the widget
+```
+
+### Authority boundary
+
+The UI is a projection and never an authority:
+
+```
+runtime state  ->  UI projection        (correct)
+widget text    ->  inferred workflow   (never)
+```
+
+Every renderer takes a snapshot and returns strings. `renderStatusReport` (the
+detailed telemetry dump) and the footer read the same snapshot, so they cannot
+disagree. No renderer is a writer, and no renderer is consulted by routing,
+verification, permissions, the governor or the continuation controller.
+
+### Workflow vocabulary
+
+One stage dimension: `IDLE, EXPLORE, WORK, VERIFY, REPAIR, WAIT, BLOCKED, DONE`,
+derived by `deriveStage` from the active delegation, the verification record and
+the autonomy stop reason, in that documented order. Autonomy (`AUTO`), context
+health (`ctx 42k`, `ctx 104k !`, `compactando…`), verification (`V:PASS`,
+`V:FAIL`, `V:STALE`) and permissions (`PERM`, `SANDBOX OFF`) are independent
+indicators and are never folded into the stage.
+
+### Pi surfaces and ownership
+
+| Surface | Pi API | Owner | Lifetime |
+|---|---|---|---|
+| Footer segment `aies` | `ctx.ui.setStatus` | `aies-runtime` | until cleared or session end |
+| Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs, plus a 60s tail |
+| Finished child / DONE / BLOCKED entries | `pi.appendEntry` + `pi.registerEntryRenderer` | `aies-runtime` | persisted in the session file |
+| Permission prompt | `ctx.ui.confirm` | `aies-agents` | until answered |
+
+One timer exists, owned by `aies-runtime`: 1s while a child is active, 5s
+otherwise, cleared on shutdown and unreferenced so it can never hold the process
+open.
+
+### No context pollution
+
+Pi distinguishes a *message* (`pi.sendMessage`, which participates in the LLM
+context) from a *custom entry* (`pi.appendEntry`, documented as not sent to the
+LLM). AIES uses `sendMessage` for zero UI purposes. Progress, the live card, the
+finished-child line and the DONE/BLOCKED summaries use `setStatus`, `setWidget`,
+`notify` and `appendEntry` + `registerEntryRenderer`, so everything the human
+watches stays invisible to the model. `tests/aies-ui-seam.test.mjs` fails if any
+UI path starts sending messages.
+
+### Degradation
+
+- Narrow terminal: the footer drops segments by documented priority
+  (`V:PASS` -> `AUTO` -> stage -> `ctx`) and keeps identity, ticket and alarms;
+  the activity card clips its subtitle.
+- No UI (print, json, RPC without dialogs): no widget, no status, no entries. The
+  workflow is unchanged and `/aies-status` still answers.
+- A failing projection is swallowed: observation is optional, Pi's behaviour is not.
+
+Detailed reference: `docs/UX.md`.
+
 ## Verification model
 
 All checks run with a temporary `AIES_HOME` and a deliberately hostile ambient
@@ -576,6 +651,8 @@ the real Pi profile), so the suite proves both isolation and override.
 | observability invariants | the reducer rules, the classification and both renderings, driven directly and through a fake `ExtensionAPI` (`tests/observability.test.mjs`) |
 | verification invariants (AIES-005) | the read-only command policy, the handoff rules, PASS invalidation, the repair budget and the repeated-failure stop, driven directly (`tests/verify.test.mjs`) |
 | verification end to end | Parent -> Worker leaves a real defect -> Verify FAIL -> repair -> fresh Verify PASS on a fixture (`tests/smoke-verify.test.mjs`) |
+| presentation invariants (AIES-010) | footer vocabulary and width degradation, stage derivation, activity lifecycle, approval prompt and DONE/BLOCKED summaries, driven directly from real snapshots (`tests/aies-ui.test.mjs`) |
+| presentation is context-free (AIES-010) | a fake `ExtensionAPI` records every call; the UI path must use only `setStatus`/`setWidget`/`appendEntry`/`notify` and never `sendMessage` (`tests/aies-ui-seam.test.mjs`) |
 | skills policy | RPC `get_commands` contains zero `source: "skill"` entries |
 | package isolation | `aies list` output excludes every package of the ambient profile |
 | non-regression | sha256 of the ambient profile's `settings.json`, `auth.json`, `models.json` and the session directory listing are unchanged |
