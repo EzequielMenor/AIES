@@ -432,7 +432,8 @@ describe("AIES-003 Isolated Explore (Hardened Read-Only)", () => {
       state = applyDelegationStart(state, "explore", T0 + 100);
 
       const activeFooter = renderFooter(toSnapshot(state), T0 + 5000);
-      assert.match(activeFooter, /delegando explore/u);
+      assert.match(activeFooter, /· EXPLORE ·/u);
+      assert.ok(!activeFooter.includes("delegando"), activeFooter);
 
       state = applyDelegationEnd(state, "done", T0 + 6000);
       const idleFooter = renderFooter(toSnapshot(state), T0 + 7000);

@@ -364,15 +364,20 @@ describe("observability rendering", () => {
     const footer = renderFooter(toSnapshot(filled()), T0 + 134_000);
 
     assert.equal(footer.split("\n").length, 1);
-    assert.equal(footer, "AIES · ctx 34k/peak 34k · tools 1 · files 1 · 02:14");
+    assert.equal(footer, "AIES · ready · ctx 34k");
   });
 
-  it("mentions compaction only after one happened", () => {
+  it("never puts counters, peak or the compaction count in the footer", () => {
     const without = renderFooter(toSnapshot(filled()), T0);
     const withOne = renderFooter(toSnapshot(applyCompaction(filled(), T0)), T0);
 
-    assert.ok(!without.includes("cmp"), without);
-    assert.ok(withOne.includes("cmp 1"), withOne);
+    for (const footer of [without, withOne]) {
+      assert.ok(!footer.includes("cmp"), footer);
+      assert.ok(!footer.includes("peak"), footer);
+      assert.ok(!footer.includes("tools"), footer);
+      assert.ok(!footer.includes("files"), footer);
+      assert.ok(!footer.includes("02:14"), footer);
+    }
   });
 
   it("renders the report with the same numbers", () => {
@@ -532,18 +537,19 @@ describe("verification observability (AIES-005)", () => {
     assert.equal(footer.includes("VERIFY"), false, footer);
   });
 
-  it("names an in-flight verification and reports its verdict", async () => {
+  it("names an in-flight verification and settles to DONE on a valid pass", async () => {
     const host = createHost();
     await host.start();
 
     await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     assert.match(host.statuses.at(-1).text, /· VERIFY ·/u);
-    assert.match(host.statuses.at(-1).text, /V:\?/u);
+    assert.equal(host.statuses.at(-1).text.includes("V:"), false, host.statuses.at(-1).text);
 
     await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
 
     const footer = host.statuses.at(-1).text;
-    assert.match(footer, /V:PASS/u);
+    assert.match(footer, /· DONE ·/u);
+    assert.equal(footer.includes("V:PASS"), false, footer);
     assert.equal(footer.includes("VERIFY"), false);
   });
 
@@ -553,7 +559,7 @@ describe("verification observability (AIES-005)", () => {
 
     await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
-    assert.match(host.statuses.at(-1).text, /V:PASS/u);
+    assert.match(host.statuses.at(-1).text, /· DONE ·/u);
 
     await host.emit("tool_call", toolCall("edit", { path: "config.js" }));
 
@@ -579,7 +585,8 @@ describe("verification observability (AIES-005)", () => {
     await blocked.start();
     await blocked.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     await blocked.emit("tool_result", verifyResult({ status: "blocked", attempts: 1, repairs: 0, maxRepairs: 2, valid: false }));
-    assert.match(blocked.statuses.at(-1).text, /V:BLOCKED/u);
+    assert.match(blocked.statuses.at(-1).text, /· BLOCKED ·/u);
+    assert.equal(blocked.statuses.at(-1).text.includes("V:BLOCKED"), false, blocked.statuses.at(-1).text);
     assert.equal(field(await blocked.report(), "estado"), "BLOCKED");
   });
 
@@ -647,7 +654,7 @@ describe("observability extension", () => {
     const { footer } = await host.start();
 
     assert.equal(footer.key, "aies");
-    assert.match(footer.text, /^AIES · ctx 10k\/peak 10k · tools 0 · files 0 · 00:0\d$/u);
+    assert.match(footer.text, /^AIES · ready · ctx 10k$/u);
   });
 
   it("counts a tool call and leaves the call untouched", async () => {
@@ -717,7 +724,7 @@ describe("observability extension", () => {
     assert.equal(field(report, "actual"), "20k / 200k (10.0%)");
     assert.equal(field(report, "peak"), "120k");
     assert.equal(field(report, "compactions"), "1");
-    assert.match(host.statuses.at(-1).text, /cmp 1/u);
+    assert.equal(host.statuses.at(-1).text.includes("cmp"), false, host.statuses.at(-1).text);
   });
 
   it("tracks model, tool surface and final state", async () => {

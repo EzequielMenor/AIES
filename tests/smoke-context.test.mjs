@@ -155,7 +155,7 @@ describe("AIES-007 Context Governor — Smoke Tests", () => {
 
     // Check footer formatting under pressure
     const footer = renderFooter(toSnapshot(state), Date.now());
-    assert.match(footer, /ctx 104k!/u);
+    assert.match(footer, /ctx 104k !/u);
 
     // Check footer formatting during compaction
     state = applyContextGovernorSync(state, { compacting: true });

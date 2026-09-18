@@ -74,8 +74,33 @@ export interface DelegationsState {
   byOutcome: Record<string, number>;
   activeRole: string | undefined;
   activeStartedAt: number | undefined;
+  /** The delegation task text observed with the active child, when it was reported. */
+  activeTask: string | undefined;
   lastOutcome: string | undefined;
   lastDurationMs: number | undefined;
+}
+
+/**
+ * The child delegation currently running, or the most recent one. Shaped like the
+ * UI's activity record but owned by the runtime: `aies-ui` never imports state and
+ * `state.ts` never imports `aies-ui`. Every fact is optional; a missing one is
+ * omitted by the renderer instead of guessed.
+ */
+export interface ActivityState {
+  role: string;
+  task: string;
+  startedAt: number;
+  finishedAt?: number;
+  outcome?: string;
+  summary?: string;
+  evidenceCount?: number;
+  changedFiles?: number;
+  checksPassed?: number;
+  checksTotal?: number;
+  criteriaPassed?: number;
+  criteriaTotal?: number;
+  blockingDefects?: number;
+  model?: string;
 }
 
 /**
@@ -174,6 +199,8 @@ export interface AiesState {
   contextGovernor: ContextGovernorState;
   ticket: TicketObservationState;
   autonomy?: AutonomyObservationState;
+  /** Active or most recent child activity, absent when none was observed. */
+  activity?: ActivityState;
   compactionCount: number;
   activeToolCount: number;
   model: { id: string; provider: string; label: string } | undefined;
@@ -224,6 +251,7 @@ export function createState(now: number): AiesState {
       byOutcome: {},
       activeRole: undefined,
       activeStartedAt: undefined,
+      activeTask: undefined,
       lastOutcome: undefined,
       lastDurationMs: undefined,
     },
@@ -268,6 +296,7 @@ export function createState(now: number): AiesState {
     },
     ticket: { active: false },
     autonomy: undefined,
+    activity: undefined,
     compactionCount: 0,
     activeToolCount: 0,
     model: undefined,
@@ -291,6 +320,7 @@ function cloneState(state: AiesState): AiesState {
     permissions: { ...state.permissions },
     contextGovernor: { ...state.contextGovernor },
     ticket: { ...state.ticket },
+    activity: state.activity ? { ...state.activity } : undefined,
   };
 }
 
@@ -469,13 +499,16 @@ export function applyCompaction(state: AiesState, now: number): AiesState {
   return next;
 }
 
-/** Record the start of a child agent delegation. */
-export function applyDelegationStart(state: AiesState, role: string, now: number): AiesState {
+/** Record the start of a child agent delegation, with its task text when known. */
+export function applyDelegationStart(state: AiesState, role: string, now: number, task?: string): AiesState {
   const next = cloneState(state);
   next.delegations.total += 1;
   next.delegations.byRole[role] = (next.delegations.byRole[role] ?? 0) + 1;
   next.delegations.activeRole = role;
   next.delegations.activeStartedAt = now;
+  const taskText = typeof task === "string" ? task : undefined;
+  next.delegations.activeTask = taskText;
+  next.activity = { role, task: taskText ?? "", startedAt: now };
   next.session.lastEventAt = now;
   return next;
 }
@@ -489,6 +522,7 @@ export function applyDelegationEnd(state: AiesState, outcome: string, now: numbe
   next.delegations.lastDurationMs = duration;
   next.delegations.activeRole = undefined;
   next.delegations.activeStartedAt = undefined;
+  next.delegations.activeTask = undefined;
   next.delegations.lastOutcome = outcome;
   next.delegations.byOutcome[outcome] = (next.delegations.byOutcome[outcome] ?? 0) + 1;
   next.session.lastEventAt = now;
@@ -497,6 +531,41 @@ export function applyDelegationEnd(state: AiesState, outcome: string, now: numbe
   if (state.delegations.activeRole === "verify") {
     next.verification.lastDurationMs = duration;
   }
+
+  // The active card becomes the finished card the widget keeps for its TTL.
+  if (next.activity && next.activity.finishedAt === undefined) {
+    next.activity = { ...next.activity, finishedAt: now, outcome };
+  }
+  return next;
+}
+
+/**
+ * Store the facts the delegation tool reported on the active (or last) activity
+ * record. Every field is validated: an unreadable report changes nothing.
+ */
+export function applyActivityFacts(state: AiesState, facts: unknown): AiesState {
+  if (!facts || typeof facts !== "object" || Array.isArray(facts) || !state.activity) return state;
+  const source = facts as Record<string, unknown>;
+
+  const next = cloneState(state);
+  const activity: ActivityState = { ...(next.activity as ActivityState) };
+
+  const counts = [
+    "evidenceCount",
+    "changedFiles",
+    "checksPassed",
+    "checksTotal",
+    "criteriaPassed",
+    "criteriaTotal",
+    "blockingDefects",
+  ] as const;
+  for (const key of counts) {
+    const parsed = positive(source[key]);
+    if (parsed !== null) activity[key] = parsed;
+  }
+  if (typeof source.summary === "string" && source.summary) activity.summary = source.summary;
+
+  next.activity = activity;
   return next;
 }
 
@@ -649,6 +718,7 @@ export interface AiesSnapshot {
     byOutcome: Record<string, number>;
     activeRole: string | undefined;
     activeStartedAt: number | undefined;
+    activeTask: string | undefined;
     lastOutcome: string | undefined;
     lastDurationMs: number | undefined;
   };
@@ -674,6 +744,7 @@ export interface AiesSnapshot {
   contextGovernor?: ContextGovernorState;
   ticket?: TicketObservationState;
   autonomy?: AutonomyObservationState;
+  activity?: ActivityState;
 }
 
 
@@ -710,6 +781,7 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
       byOutcome: { ...state.delegations.byOutcome },
       activeRole: state.delegations.activeRole,
       activeStartedAt: state.delegations.activeStartedAt,
+      activeTask: state.delegations.activeTask,
       lastOutcome: state.delegations.lastOutcome,
       lastDurationMs: state.delegations.lastDurationMs,
     },
@@ -718,6 +790,7 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     contextGovernor: { ...state.contextGovernor },
     ticket: state.ticket.active ? { ...state.ticket } : undefined,
     autonomy: state.autonomy ? { ...state.autonomy } : undefined,
+    activity: state.activity ? { ...state.activity } : undefined,
   };
 }
 
@@ -759,6 +832,7 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     byOutcome: countMap(rawDelegations.byOutcome),
     activeRole: text(rawDelegations.activeRole),
     activeStartedAt: positive(rawDelegations.activeStartedAt) ?? undefined,
+    activeTask: text(rawDelegations.activeTask),
     lastOutcome: text(rawDelegations.lastOutcome),
     lastDurationMs: positive(rawDelegations.lastDurationMs) ?? undefined,
   };
@@ -853,6 +927,30 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
       stopReason: text(rawAutonomy.stopReason),
       lastStep: text(rawAutonomy.lastStep),
     };
+  }
+
+  const rawActivity = (source.activity && typeof source.activity === "object" && !Array.isArray(source.activity)
+    ? source.activity
+    : undefined) as Record<string, unknown> | undefined;
+  if (rawActivity) {
+    const role = text(rawActivity.role);
+    const startedAt = positive(rawActivity.startedAt);
+    if (role && startedAt !== null) {
+      const activity: ActivityState = { role, task: typeof rawActivity.task === "string" ? rawActivity.task : "", startedAt };
+      const finishedAt = positive(rawActivity.finishedAt);
+      if (finishedAt !== null) activity.finishedAt = finishedAt;
+      const outcome = text(rawActivity.outcome);
+      if (outcome) activity.outcome = outcome;
+      const summary = text(rawActivity.summary);
+      if (summary) activity.summary = summary;
+      for (const key of ["evidenceCount", "changedFiles", "checksPassed", "checksTotal", "criteriaPassed", "criteriaTotal", "blockingDefects"] as const) {
+        const parsed = positive(rawActivity[key]);
+        if (parsed !== null) activity[key] = parsed;
+      }
+      const model = text(rawActivity.model);
+      if (model) activity.model = model;
+      state.activity = activity;
+    }
   }
 
   return state;

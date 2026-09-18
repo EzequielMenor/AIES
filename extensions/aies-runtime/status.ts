@@ -7,37 +7,18 @@
  */
 
 import type { AiesSnapshot } from "./state.ts";
+import { formatDuration, formatTokens } from "../aies-ui/format.ts";
+import { renderFooter } from "../aies-ui/footer.ts";
 
-/** Below this, token counts are verbatim; above, rounded to thousands (`34k`). */
-const TOKEN_ROUNDING_THRESHOLD = 10_000;
-
-const THOUSAND = 1000;
+// One implementation each: the formatters and the footer live in `aies-ui` and are
+// re-exported here so existing callers and tests keep importing from this module.
+export { formatDuration, formatTokens, renderFooter };
 
 /** Width of the label column in the status report. */
 const LABEL_WIDTH = 18;
 
 /** How many tools to list under "most used". */
 const TOP_TOOLS = 5;
-
-/** Token count as Pi reported it, or `?` when it is not known yet. */
-export function formatTokens(value: number | null | undefined): string {
-  const tokens = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-  if (tokens === null) return "?";
-  if (tokens < TOKEN_ROUNDING_THRESHOLD) return `${tokens}`;
-  const thousands = Math.round(tokens / THOUSAND);
-  if (thousands < THOUSAND) return `${thousands}k`;
-  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
-}
-
-/** Duration as `mm:ss`, or `h:mm:ss` past an hour. */
-export function formatDuration(milliseconds: number): string {
-  const total = Math.max(0, Math.floor((Number.isFinite(milliseconds) ? milliseconds : 0) / 1000));
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
-}
 
 function group(value: number): string {
   return value.toLocaleString("en-US");
@@ -58,81 +39,6 @@ function peakLabel(snapshot: AiesSnapshot): string {
   const peak = formatTokens(snapshot.peakContextTokens);
   const ownedWindow = snapshot.peakContextWindow && snapshot.peakContextWindow !== snapshot.contextWindow;
   return ownedWindow ? `${peak} (ventana ${formatTokens(snapshot.peakContextWindow)})` : peak;
-}
-
-/**
- * The verification segment of the footer, or nothing when this session never
- * verified anything. `V:?` means a verification run is in flight, `V:STALE`
- * means its PASS no longer describes the artifact.
- */
-function verificationSegment(snapshot: AiesSnapshot): string | undefined {
-  const verification = snapshot.verification;
-  if (!verification) return undefined;
-  if (snapshot.delegations?.activeRole === "verify") return "V:?";
-
-  switch (verification.status) {
-    case "pass":
-      return verification.valid ? "V:PASS" : "V:STALE";
-    case "fail":
-      return "V:FAIL";
-    case "blocked":
-      return "V:BLOCKED";
-    default:
-      return verification.attempts > 0 ? "V:none" : undefined;
-  }
-}
-
-/**
- * The footer line: `AIES · ctx 34k/peak 41k · tools 8 · files 4 · V:PASS · 02:14`.
- *
- * One line, no panel. An in-flight verification names itself (`VERIFY`) and the
- * segments that have nothing to report stay out: compaction only appears once
- * there is one, and verification only once this session verified something.
- */
-export function renderFooter(snapshot: AiesSnapshot, now: number): string {
-  const parts = ["AIES"];
-  if (snapshot.ticket?.active && snapshot.ticket.identifier) parts.push(snapshot.ticket.identifier);
-  if (snapshot.delegations?.activeRole === "verify") parts.push("VERIFY");
-  if (snapshot.contextGovernor?.compacting) parts.push("compactando");
-
-  const isPressure =
-    snapshot.contextGovernor?.zone === "pressure" ||
-    snapshot.contextGovernor?.zone === "compact" ||
-    snapshot.contextGovernor?.zone === "ceiling";
-
-  const ctxText = isPressure
-    ? `ctx ${formatTokens(snapshot.contextTokens)}!`
-    : `ctx ${formatTokens(snapshot.contextTokens)}`;
-
-  parts.push(
-    `${ctxText}/peak ${formatTokens(snapshot.peakContextTokens)}`,
-    `tools ${snapshot.toolCalls}`,
-    `files ${snapshot.filesInspected.length}`,
-  );
-  if (snapshot.compactionCount > 0) parts.push(`cmp ${snapshot.compactionCount}`);
-
-  const verification = verificationSegment(snapshot);
-  if (verification) parts.push(verification);
-
-  if (snapshot.delegations?.activeRole && snapshot.delegations.activeRole !== "verify") {
-    parts.push(`delegando ${snapshot.delegations.activeRole}`);
-  }
-  if (snapshot.permissions && snapshot.permissions.sandbox !== "active") {
-    parts.push("SANDBOX OFF");
-  }
-  if (snapshot.autonomy) {
-    if (snapshot.autonomy.enabled) {
-      parts.push("AUTO");
-    } else if (
-      snapshot.autonomy.stopReason === "blocked" ||
-      snapshot.autonomy.stopReason === "linear_conflict" ||
-      snapshot.autonomy.stopReason === "linear_sync_failed"
-    ) {
-      parts.push("AUTO:BLOCKED");
-    }
-  }
-  parts.push(formatDuration(now - snapshot.startedAt));
-  return parts.join(" · ");
 }
 
 /** The `/aies-status` report: the same numbers, unfolded for a human. */
