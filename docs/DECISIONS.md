@@ -192,6 +192,45 @@ linear workflow, and multi-worker execution remain deferred to subsequent phases
 
 ---
 
+## D11 - Independent verification, bounded repair, and a PASS that expires (AIES-005)
+
+**Decision.** AIES adds a third child role, `verify`, with its own prompt, its own
+read-only command policy and no mutation primitive at all: `read`, `grep`, `find`,
+`ls`, `tgrep` and a guarded `bash` that refuses mutating git subcommands, file
+deletion or movement, in-place editing, dependency installation and file
+redirection. The role receives facts only - work unit, acceptance criteria,
+changed paths, base ref, suggested checks - and rejects free-form `context`, so a
+Worker transcript has no field to travel in. It answers `pass | fail | blocked`
+with per-criterion evidence, checks and defects, capped like the other handoffs,
+and a `pass` without any evidence is downgraded to `blocked` when the handoff is
+parsed. The parent keeps the record (`verification.ts`): a monotonic revision ties
+a PASS to the artifact it verified, so any parent edit or completed Worker run
+invalidates it by moving the revision, without hashing anything. A FAIL may be
+repaired twice; a failure whose signature repeats stops the loop early. The repair
+Worker gets the original work unit, the criteria and the concrete defects, never
+the Verify transcript, and the next verification runs in a fresh session. The
+verdict never authorises delivery.
+
+**Why.** A Worker reporting "tests pass" is a claim, not evidence, and a parent
+that accepts it has no independent signal that the change it believes it made is
+the change that exists. Independence here is cheapest in context, not in model:
+a fresh session, a different prompt, the real artifact and the absence of the
+implementer's narrative. Bounding the repair loop and stopping on a repeated
+failure signature keeps a broken premise from burning unbounded tokens, which is
+the failure mode a verification gate creates when it is added without a budget.
+Tying the verdict to a revision counter rather than a content hash keeps the
+invalidation rule small enough to test directly.
+
+**Consequence.** "This work unit is verified" is now a claim the parent can only
+support with a valid PASS, and an old PASS stops being valid the moment the
+artifact changes. Verify is read-only as a matter of tool surface and policy, not
+of sandbox: caches, build artifacts, coverage files and temp files produced by
+running the repository's own checks are tolerated, and the full permission layer
+is explicitly AIES-006. Verification measures and reports; it does not commit,
+push, merge, deploy or close anything.
+
+---
+
 
 ## Open issues
 

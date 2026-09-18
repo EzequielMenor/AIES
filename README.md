@@ -13,8 +13,9 @@ AIES is a personal AI engineering environment built **on top of Pi**.
 The command is `aies`; underneath it is `pi`.
 
 > Phase status: isolated bootstrap (AIES-001), session metrics baseline
-> (AIES-002), and isolated child exploration delegation (AIES-003) via
-> `aies_delegate`. See [Scope](#scope).
+> (AIES-002), isolated child delegation (AIES-003 explore, AIES-004 worker and
+> routing, AIES-005 independent verify with bounded repair) via `aies_delegate`.
+> See [Scope](#scope).
 
 ## Requirements
 
@@ -109,14 +110,20 @@ Only these arguments are interpreted by AIES:
 | `profile/settings.json` | seed for the profile's `settings.json`, copied once |
 | `profile/aies.json` | seed configuration for AIES agents, copied once |
 | `agents/explore.md` | role prompt for the isolated explore child agent |
+| `agents/worker.md` | role prompt for the isolated worker child agent |
+| `agents/verify.md` | role prompt for the isolated read-only verify child agent |
 | `extensions/` | AIES extensions, linked into the isolated profile |
 | `extensions/aies-identity.ts` | profile visibility: startup notice and `/aies-info` |
 | `extensions/aies-runtime/` | session metrics: footer line, `/aies-status`, no behavior changes |
-| `extensions/aies-agents/` | agent delegation: `aies_delegate` tool, child session runner |
+| `extensions/aies-agents/` | agent delegation: the `aies_delegate` tool, the three child runners, routing and the verification record |
 | `tests/isolation.test.mjs` | deterministic isolation checks (no credentials) |
 | `tests/observability.test.mjs` | metric rules and rendering, driven through a fake `ExtensionAPI` |
 | `tests/observability-runtime.test.mjs` | the observer inside a real Pi process, over RPC |
 | `tests/explore.test.mjs` | child exploration isolation, tool surface, handoff & execution |
+| `tests/worker.test.mjs` | worker isolation, mutation, command guard, routing handoff |
+| `tests/routing.test.mjs` | the deterministic routing policy and its guardrails |
+| `tests/verify.test.mjs` | verify read-only policy, independence, verdicts, invalidation, repair budget |
+| `tests/smoke-verify.test.mjs` | Parent -> Worker defect -> Verify FAIL -> repair -> Verify PASS |
 | `scripts/check-isolation.sh` | one-command entry point for the checks |
 | `docs/ARCHITECTURE.md` | how the launcher and the profile actually work |
 | `docs/DECISIONS.md` | decisions taken, with their rationale |
@@ -135,14 +142,48 @@ Then, by hand:
 
 ```bash
 aies          # one footer line: AIES · ctx 34k/peak 41k · tools 8 · files 4 · 02:14
+aies          # while verifying:  AIES · VERIFY · ctx 44k · V:? · 02:11
+aies          # after a verdict:  AIES · ctx 46k · V:PASS · 02:28
 /aies-info    # prints the extension path, agent dir, project config dir, cwd, mode
-/aies-status  # the same metrics unfolded: context, tools, exploration, delegations, runtime
+/aies-status  # the same metrics unfolded: context, tools, exploration, delegations, verification, runtime
 pi            # your normal Pi must still start exactly as before
 ```
 
 The metrics line and `/aies-status` come from
 `extensions/aies-runtime/`. They measure and never govern: no counter, ratio or
 threshold changes what Pi does with a tool call, a delegation or a compaction.
+`V:` is the verification segment: `?` in flight, `PASS`, `STALE` (a PASS the
+artifact outgrew), `FAIL`, `BLOCKED`.
+
+## Independent verification
+
+`aies_delegate` has a third role. Worker changes the repository; Verify proves
+whether the change actually works, from the repository itself:
+
+```ts
+aies_delegate({
+  role: "verify",
+  task: "Bring the request timeout to 2000ms",
+  criteria: ["TIMEOUT_MS in config.js is 2000", "npm test passes"],
+  changedPaths: ["config.js"],
+  baseRef: "HEAD~1",
+})
+```
+
+- the child is isolated, has no `edit`/`write`, and its `bash` refuses to mutate
+  the workspace (mutating git, deletion, movement, in-place editing, installs,
+  file redirection);
+- it answers `pass | fail | blocked` with per-criterion evidence, checks and
+  defects, never a transcript, and a PASS without evidence is treated as blocked;
+- free-form `context` is rejected for this role, so the implementer's summary and
+  reasoning cannot reach the verifier;
+- a PASS is tied to the revision it verified: any later edit or Worker run makes
+  it stale, and the footer says so;
+- a FAIL can be repaired twice, and a failure that repeats its signature stops the
+  loop early. The repair Worker receives the defects, not the Verify transcript.
+
+Suggested checks run through the guarded shell; a check that cannot run is
+`blocked`, which is not the same as a defect.
 
 ## Scope
 
@@ -153,11 +194,17 @@ Phase 2 shipped the observability baseline: one footer line and one diagnostic
 command, measuring context, parent tool activity, exploration, tool output
 volume, session runtime and tool surface.
 
-Phase 3 (current) ships the isolated explore delegation primitive:
-`aies_delegate` tool for parent sessions, isolated child `AgentSession` with
-fresh context and strictly read-only tools (`read`, `grep`, `find`, `ls`, guarded
-`bash`), defensive handoff capping, and parent metrics isolation.
+Phase 3 shipped the isolated explore delegation primitive. Phase 4 shipped the
+isolated Worker and the parent routing policy (Inline Direct, Explore, Worker)
+with soft signals and hard guardrails. Phase 5 (current) closes the core loop:
 
-Explicitly out of scope for this phase: automatic routing, planner or worker
-roles, proactive compaction policies, dashboards, review pipelines, memory, and
-autopilot.
+- a third role, `verify`, isolated and read-only, that inspects the real
+  repository artifact and answers `pass | fail | blocked` with evidence;
+- a verification record with a bounded repair policy (two cycles, early stop on a
+  repeated failure signature) and PASS invalidation by revision;
+- observability for both, in the footer and in `/aies-status`.
+
+Explicitly out of scope for this phase: Linear, automatic done, automatic commits,
+push, PR, merge or deploy, memory, the full context governor, proactive
+compaction, autopilot, background or parallel agents, a permanent reviewer,
+mandatory multi-model review, and a complete permission sandbox (AIES-006).

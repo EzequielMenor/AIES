@@ -111,7 +111,17 @@ What it reads, from `session_start`, `tool_call`, `tool_result`, `turn_end`,
 - **output volume**: approximate characters Pi handed back to the model, plus the
   largest single result;
 - **runtime**: model and provider, elapsed, session id and file, last stop
-  reason, active tool count.
+  reason, active tool count;
+- **verification** (AIES-005): the verdict the delegation tool reported, the runs
+  it counted, the duration it measured, and the parent mutations seen since a
+  PASS - which is what turns an old `V:PASS` into `V:STALE` in the footer.
+
+The footer names an in-flight verification as well:
+
+```
+AIES · VERIFY · ctx 44k/peak 46k · tools 6 · files 3 · V:? · 02:11
+AIES · ctx 46k/peak 46k · tools 8 · files 3 · V:PASS · 02:28
+```
 
 Two invariants, both under test: no handler ever returns a value (nothing can
 block a call or patch a result), and every measurement sits behind a guard (the
@@ -147,13 +157,18 @@ checkpointed yet, and a `/new` starts clean by definition. Known limits:
 
 ## Child agent delegation (`extensions/aies-agents/`, `agents/`)
 
-AIES-003 and AIES-004 provide two isolated child roles via `aies_delegate`:
+AIES-003, AIES-004 and AIES-005 provide three isolated child roles via
+`aies_delegate`:
 
 ```ts
 aies_delegate({
-  role: "explore" | "worker",
-  task: "Investigate architecture or implement a specific work unit",
-  context?: "Background context, acceptance criteria, or explore findings"
+  role: "explore" | "worker" | "verify",
+  task:   "Investigate, implement a work unit, or verify one",
+  context?:      "Explore or Worker only: background context and findings",
+  criteria?:     "Verify only, required: the acceptance criteria to judge",
+  changedPaths?: "Verify only: the paths the change touched, as facts",
+  baseRef?:      "Verify only: the commit or ref to compare against",
+  checks?:       "Verify only: checks worth running to reproduce the behaviour",
 })
 ```
 
@@ -163,15 +178,16 @@ aies_delegate({
 |---|---|---|---|---|
 | `explore` | Read-only codebase investigation | `read`, `grep`, `find`, `ls`, `tgrep` | `bash`, `edit`, `write` | `agents/explore.md` |
 | `worker` | Concrete work unit implementation | `read`, `grep`, `find`, `ls`, `tgrep`, `edit`, `write`, guarded `bash` | Destructive/remote bash (`git clean`, `reset --hard`, `git push`, `sudo`, mass `rm`) | `agents/worker.md` |
+| `verify` | Independent proof of the real artifact | `read`, `grep`, `find`, `ls`, `tgrep`, read-only guarded `bash` | `edit`, `write`, and every mutating command (mutating git, file deletion or movement, in-place editing, dependency installation, file redirection) | `agents/verify.md` |
 
 ### Delegation lifecycle and isolation guarantees
 
 ```
 Parent Session (AgentSession)
   │
-  ├─ Decides route: Inline Direct | Explore | Worker
+  ├─ Decides route: Inline Direct | Explore | Worker | Verify
   │
-  ├─ Calls aies_delegate({ role: "explore" | "worker", task, context })
+  ├─ Calls aies_delegate({ role, task, ... })
   │
   ├─ Spawns Child AgentSession (via session.ts)
   │    ├── Fresh context (no parent history, sentinels, or reasoning)
@@ -180,7 +196,7 @@ Parent Session (AgentSession)
   │    ├── Extensions: noExtensions: true (parent metrics unaffected)
   │    └── Session: in-memory (no disk clutter)
   │
-  ├─ Child investigates or implements, concluding with structured JSON
+  ├─ Child investigates, implements or verifies, concluding with structured JSON
   │
   ├─ Child session disposed (session.dispose())
   │
@@ -191,23 +207,31 @@ Parent Session (AgentSession)
 |---|---|
 | `agents/explore.md` | Role prompt defining progressive disclosure and read-only search rules |
 | `agents/worker.md` | Role prompt defining scoped implementation, worktree protection, and checks |
+| `agents/verify.md` | Role prompt defining independent verification and the three verdicts |
 | `extensions/aies-agents/session.ts` | Shared isolated child `AgentSession` creation and disposal lifecycle |
 | `extensions/aies-agents/tgrep.ts` | Scoped code search tool with path containment, output limits, and fallback |
-| `extensions/aies-agents/worker-guard.ts` | Command security validator and guarded bash tool definition |
-| `extensions/aies-agents/handoff.ts` | Structured parser and defensive formatter for Explore and Worker handoffs |
+| `extensions/aies-agents/command-guard.ts` | The command mechanics and rules Worker and Verify share, parameterised by role |
+| `extensions/aies-agents/worker-guard.ts` | Worker command policy and guarded bash tool definition |
+| `extensions/aies-agents/verify-guard.ts` | Verify read-only command policy and guarded bash tool definition |
+| `extensions/aies-agents/handoff.ts` | Structured parsers and defensive formatters for the three handoffs, plus the failure signature |
+| `extensions/aies-agents/verification.ts` | Verification record, PASS invalidation, requirement rule, repair policy and prompts |
 | `extensions/aies-agents/model.ts` | Model resolution: env (`AIES_<ROLE>_MODEL`) > `aies.json` (`agents.<role>.model`) > parent model |
 | `extensions/aies-agents/explore.ts` | Isolated Explore child agent runner |
 | `extensions/aies-agents/worker.ts` | Isolated Worker child agent runner |
+| `extensions/aies-agents/verify.ts` | Isolated Verify child agent runner |
 | `extensions/aies-agents/routing.ts` | Parent routing policy, soft signals, and hard guardrails |
-| `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool supporting `explore` and `worker` |
-| `extensions/aies-agents/index.ts` | Extension entry point registering `aies_delegate` and routing hooks with Pi |
+| `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool supporting the three roles |
+| `extensions/aies-agents/index.ts` | Extension entry point: registers `aies_delegate`, the routing hooks, and the verification record |
 
 ### Parent routing policy and guardrails
 
-Three routes:
+Four routes:
 - **INLINE DIRECT**: Trivial changes (typos, single comments, localized edits, 1-2 source reads).
 - **EXPLORE**: Unknown scope, broad code search, or reading >2 files.
 - **WORKER**: Non-trivial multi-file changes (>= 2 files), iterative test/check cycles.
+- **VERIFY**: Independent proof that a behaviour-bearing change actually works.
+  It is not driven by the pressure counters: `requiresVerification()` decides from
+  the changed paths, and a documentation-only change does not need it.
 
 Guardrails:
 - **Soft signals** inform model decisions:
@@ -218,6 +242,60 @@ Guardrails:
   - 5 exploratory reads -> direct reads blocked (`parent exploration budget exceeded; delegate Explore`).
   - 12 tool calls since boundary -> direct tools blocked (`parent tool budget exceeded; re-evaluation required`).
 - Delegation resets boundary counters (`toolsSinceBoundary = 0`, `readsSinceBoundary = 0`, `filesSinceBoundary = []`) while global AIES-002 telemetry accumulates.
+
+## Independent verification (AIES-005)
+
+Worker and Verify are not the same role. Worker optimises for making the change
+work; Verify optimises for demonstrating whether it works. Verify never receives
+the Worker's conclusion: its prompt is composed from the work unit, the acceptance
+criteria, the changed paths, the base ref, the suggested checks and the cwd, and
+passing free-form `context` to the role is rejected with an error. The same
+command, run under two policies, is the difference between implementing and
+proving: Verify has no `edit`, no `write`, and a shell that refuses to write.
+
+| Verdict | Meaning |
+|---|---|
+| `pass` | Every verifiable criterion is satisfied, the relevant checks pass, and no blocking defect is known. A PASS requires evidence: a verdict without any evidence is downgraded to `blocked` when the handoff is parsed |
+| `fail` | The repository violates a criterion, or a reproducible defect related to the change exists, with its path and evidence |
+| `blocked` | The verdict cannot be reached for a cause external to the change: missing credential, unreachable service, unavailable dependency, unrunnable check, persistent infrastructure flake, or a genuinely ambiguous criterion |
+
+### Verification state and invalidation
+
+The parent-side record is `verification.ts`; the observer keeps a projection of it
+for the footer.
+
+| Field | Meaning |
+|---|---|
+| `status` | `none \| running \| pass \| fail \| blocked` |
+| `attempts` | Verification runs started (ceiling of 4) |
+| `repairs` | Worker runs started while a FAIL was awaiting repair (ceiling of 2) |
+| `revision` | Monotonic work-unit revision: one per parent mutation or Worker run |
+| `verifiedRevision` | The revision the last PASS verified |
+| `lastFailureSignature` / `repeatedFailures` | The failure identity, and how many times in a row it repeated |
+| `awaitingVerification` | A behaviour-bearing change is waiting for proof |
+
+Invalidation is a counter comparison, not a hash: a PASS is valid only while
+`verifiedRevision === revision`. Any parent `edit` or `write`, and any completed
+Worker run, moves the revision forward, so an old PASS stops describing the
+artifact without anyone having to detect that it did.
+
+### Repair policy
+
+```
+Worker -> Verify #1 FAIL -> repair #1 -> Verify #2 FAIL -> repair #2 -> Verify #3
+                                        PASS -> verified, FAIL -> stop
+```
+
+Two repair cycles at most, plus an early stop when the same failure signature
+repeats. A repair Worker receives the original work unit, the acceptance criteria
+and the concrete defects (`buildRepairContext`), never the Verify transcript, and
+the next verification always runs in a fresh session.
+
+### Authority
+
+Verify returns evidence; the parent decides. Neither Worker nor Verify can set
+`verified = true`, and a review of the loop is informational: it does not commit,
+push, or close anything.
 
 ## Verification model
 
@@ -234,6 +312,8 @@ the real Pi profile), so the suite proves both isolation and override.
 | extension loading | RPC `get_commands` shows the identity extension with `baseDir` = isolated agent dir, and nothing from the ambient profile |
 | observability wiring | RPC `get_commands` lists `/aies-status` from `extensions/aies-runtime/index.ts`, and RPC `prompt "/aies-status"` returns the report |
 | observability invariants | the reducer rules, the classification and both renderings, driven directly and through a fake `ExtensionAPI` (`tests/observability.test.mjs`) |
+| verification invariants (AIES-005) | the read-only command policy, the handoff rules, PASS invalidation, the repair budget and the repeated-failure stop, driven directly (`tests/verify.test.mjs`) |
+| verification end to end | Parent -> Worker leaves a real defect -> Verify FAIL -> repair -> fresh Verify PASS on a fixture (`tests/smoke-verify.test.mjs`) |
 | skills policy | RPC `get_commands` contains zero `source: "skill"` entries |
 | package isolation | `aies list` output excludes every package of the ambient profile |
 | non-regression | sha256 of the ambient profile's `settings.json`, `auth.json`, `models.json` and the session directory listing are unchanged |
