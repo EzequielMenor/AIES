@@ -8,11 +8,57 @@
  * - `/aies-run`: Toggles or starts autonomy on the currently active ticket.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { TicketManager } from "../linear/manager.ts";
 import type { ContinuationController } from "./controller.ts";
-import { AIES_CONTINUATION_PROMPT, MAX_AUTO_CONTINUATIONS } from "./policy.ts";
+import { AIES_CONTINUATION_PROMPT } from "./policy.ts";
+import {
+  applyAutonomySync,
+  applyModel,
+  applyTicketObservationSync,
+  createState,
+  toSnapshot,
+} from "../../aies-runtime/state.ts";
+import { renderAutonomyStatus } from "../../aies-ui/summary.ts";
+
+/**
+ * The same projection the runtime observer maintains: autonomy state from the
+ * controller, the ticket from the manager, the model from the command context.
+ * Verification is not available in this file, so its section is omitted rather
+ * than guessed.
+ */
+function autonomyStatusSnapshot(
+  controller: ContinuationController,
+  ticketManager: TicketManager,
+  ctx: ExtensionContext,
+): ReturnType<typeof toSnapshot> {
+  const now = Date.now();
+  let state = createState(now);
+  state = applyModel(state, ctx.model);
+
+  const autonomy = controller.getState();
+  state = applyAutonomySync(state, {
+    enabled: autonomy.enabled,
+    ticketId: autonomy.ticketId,
+    continuationCount: autonomy.continuationCount,
+    stopReason: autonomy.stopReason,
+    lastStep: autonomy.lastStepDescription,
+  });
+
+  const active = ticketManager.getActiveTicket();
+  if (active) {
+    state = applyTicketObservationSync(state, {
+      active: true,
+      identifier: active.identifier,
+      title: active.title,
+      status: active.status,
+      workState: ticketManager.getWorkState(),
+    });
+  }
+
+  return toSnapshot(state);
+}
 
 export function registerAutonomyCommand(
   pi: ExtensionAPI,
@@ -33,18 +79,7 @@ export function registerAutonomyCommand(
 
       // Case 2: `/aies-run status`
       if (rawArg?.toLowerCase() === "status") {
-        const state = controller.getState();
-        const active = ticketManager.getActiveTicket();
-        const report = [
-          "AIES — Estado de Autonomía",
-          "",
-          `  Activa:          ${state.enabled ? "sí" : "no"}`,
-          `  Ticket:          ${state.ticketId ?? active?.identifier ?? "ninguno"}`,
-          `  Continuaciones:  ${state.continuationCount} / ${MAX_AUTO_CONTINUATIONS}`,
-          `  Último paso:     ${state.lastStepDescription ?? "-"}`,
-          `  Stop reason:     ${state.stopReason ?? "—"}`,
-        ].join("\n");
-        ctx.ui.notify(report, "info");
+        ctx.ui.notify(renderAutonomyStatus(autonomyStatusSnapshot(controller, ticketManager, ctx)), "info");
         return;
       }
 
