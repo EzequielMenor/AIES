@@ -91,6 +91,7 @@ function verificationSegment(snapshot: AiesSnapshot): string | undefined {
  */
 export function renderFooter(snapshot: AiesSnapshot, now: number): string {
   const parts = ["AIES"];
+  if (snapshot.ticket?.active && snapshot.ticket.identifier) parts.push(snapshot.ticket.identifier);
   if (snapshot.delegations?.activeRole === "verify") parts.push("VERIFY");
   if (snapshot.contextGovernor?.compacting) parts.push("compactando");
 
@@ -185,6 +186,15 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
               : "-",
           ),
           row("cambios tras PASS", String(snapshot.verification.mutationsSincePass)),
+        ])
+      : []),
+    ...(snapshot.ticket && snapshot.ticket.active && snapshot.ticket.identifier
+      ? section("Ticket", [
+          row("identifier", snapshot.ticket.identifier),
+          row("title", snapshot.ticket.title ? (snapshot.ticket.title.length > 35 ? `${snapshot.ticket.title.slice(0, 32)}...` : snapshot.ticket.title) : "-"),
+          row("status", snapshot.ticket.status ?? "-"),
+          row("work", snapshot.ticket.workState ?? "-"),
+          row("verify", snapshot.ticket.validVerify ? "PASS (valid)" : (snapshot.verification?.status?.toUpperCase() ?? "NONE")),
         ])
       : []),
     ...(snapshot.permissions

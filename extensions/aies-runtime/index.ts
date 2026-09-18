@@ -27,6 +27,7 @@ import {
   applyResumedAt,
   applySessionMeta,
   applyStopReason,
+  applyTicketObservationSync,
   applyToolCall,
   applyToolResult,
   applyVerificationReport,
@@ -148,9 +149,29 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];
-      if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
-      state = applyResumedAt(fromSnapshot(entry.data, state.session.startedAt), now);
-      return;
+      if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
+        state = applyResumedAt(fromSnapshot(entry.data, state.session.startedAt), now);
+        break;
+      }
+    }
+
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry.type === "custom" && entry.customType === "aies-ticket" && entry.data) {
+        const data = entry.data as Record<string, unknown>;
+        const t = data.activeTicket as Record<string, unknown> | undefined;
+        if (t) {
+          state = applyTicketObservationSync(state, {
+            active: true,
+            identifier: typeof t.identifier === "string" ? t.identifier : undefined,
+            title: typeof t.title === "string" ? t.title : undefined,
+            status: typeof t.status === "string" ? t.status : undefined,
+            workState: typeof data.workState === "string" ? (data.workState as any) : undefined,
+            validVerify: data.workState === "complete",
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -219,6 +240,20 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         // The delegation tool reports the verification facts; the observer records them.
         const details = event.details as Record<string, unknown> | undefined;
         if (details?.verification) state = applyVerificationReport(state, details.verification);
+      }
+      if (event.toolName === "aies_ticket") {
+        const details = event.details as Record<string, unknown> | undefined;
+        if (details?.ticket) {
+          const t = details.ticket as Record<string, unknown>;
+          state = applyTicketObservationSync(state, {
+            active: true,
+            identifier: typeof t.identifier === "string" ? t.identifier : undefined,
+            title: typeof t.title === "string" ? t.title : undefined,
+            status: typeof t.status === "string" ? t.status : undefined,
+            workState: typeof details.workState === "string" ? (details.workState as any) : undefined,
+            validVerify: details.workState === "complete",
+          });
+        }
       }
       render(ctx);
     });

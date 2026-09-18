@@ -142,6 +142,16 @@ export interface ContextGovernorState {
   lastCompactionError?: string;
 }
 
+/** Linear ticket state tracked for observability (AIES-008). */
+export interface TicketObservationState {
+  active: boolean;
+  identifier?: string;
+  title?: string;
+  status?: string;
+  workState?: "loaded" | "working" | "verification_required" | "verified" | "blocked" | "complete";
+  validVerify?: boolean;
+}
+
 /** Everything AIES measures about one parent session. */
 export interface AiesState {
   version: number;
@@ -153,6 +163,7 @@ export interface AiesState {
   exploration: ExplorationState;
   permissions: PermissionsState;
   contextGovernor: ContextGovernorState;
+  ticket: TicketObservationState;
   compactionCount: number;
   activeToolCount: number;
   model: { id: string; provider: string; label: string } | undefined;
@@ -244,6 +255,7 @@ export function createState(now: number): AiesState {
       truncatedChars: 0,
       lastCompactionError: undefined,
     },
+    ticket: { active: false },
     compactionCount: 0,
     activeToolCount: 0,
     model: undefined,
@@ -265,6 +277,7 @@ function cloneState(state: AiesState): AiesState {
     exploration: { ...state.exploration, filesInspected: [...state.exploration.filesInspected] },
     permissions: { ...state.permissions },
     contextGovernor: { ...state.contextGovernor },
+    ticket: { ...state.ticket },
   };
 }
 
@@ -643,6 +656,7 @@ export interface AiesSnapshot {
     sandboxFailures: number;
   };
   contextGovernor?: ContextGovernorState;
+  ticket?: TicketObservationState;
 }
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
@@ -684,6 +698,7 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     verification: { ...state.verification },
     permissions: { ...state.permissions },
     contextGovernor: { ...state.contextGovernor },
+    ticket: state.ticket.active ? { ...state.ticket } : undefined,
   };
 }
 
@@ -795,6 +810,18 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     state.model = applyModel(state, entry).model;
   }
 
+  const rawTicket = (source.ticket && typeof source.ticket === "object" && !Array.isArray(source.ticket)
+    ? source.ticket
+    : {}) as Record<string, unknown>;
+  state.ticket = {
+    active: rawTicket.active === true,
+    identifier: text(rawTicket.identifier),
+    title: text(rawTicket.title),
+    status: text(rawTicket.status),
+    workState: typeof rawTicket.workState === "string" ? (rawTicket.workState as any) : undefined,
+    validVerify: rawTicket.validVerify === true,
+  };
+
   return state;
 }
 
@@ -845,3 +872,17 @@ export function applyContextGovernorSync(
   };
   return next;
 }
+
+export function applyTicketObservationSync(
+  state: AiesState,
+  update?: Partial<TicketObservationState>,
+): AiesState {
+  if (!update) return state;
+  const next = cloneState(state);
+  next.ticket = {
+    ...next.ticket,
+    ...update,
+  };
+  return next;
+}
+
