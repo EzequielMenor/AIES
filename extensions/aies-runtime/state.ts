@@ -128,6 +128,20 @@ export interface PermissionsState {
   sandboxFailures: number;
 }
 
+/** Context Governor state tracked for observability (AIES-007). */
+export interface ContextGovernorState {
+  zone: "green" | "amber" | "pressure" | "compact" | "ceiling";
+  currentTokens: number | null;
+  compactAtTokens: number;
+  ceilingTokens: number;
+  compactPending: boolean;
+  compacting: boolean;
+  compactionCount: number;
+  oversizedResults: number;
+  truncatedChars: number;
+  lastCompactionError?: string;
+}
+
 /** Everything AIES measures about one parent session. */
 export interface AiesState {
   version: number;
@@ -138,6 +152,7 @@ export interface AiesState {
   verification: VerificationState;
   exploration: ExplorationState;
   permissions: PermissionsState;
+  contextGovernor: ContextGovernorState;
   compactionCount: number;
   activeToolCount: number;
   model: { id: string; provider: string; label: string } | undefined;
@@ -217,6 +232,18 @@ export function createState(now: number): AiesState {
       approvals: 0,
       sandboxFailures: 0,
     },
+    contextGovernor: {
+      zone: "green",
+      currentTokens: null,
+      compactAtTokens: 120_000,
+      ceilingTokens: 150_000,
+      compactPending: false,
+      compacting: false,
+      compactionCount: 0,
+      oversizedResults: 0,
+      truncatedChars: 0,
+      lastCompactionError: undefined,
+    },
     compactionCount: 0,
     activeToolCount: 0,
     model: undefined,
@@ -237,6 +264,7 @@ function cloneState(state: AiesState): AiesState {
     verification: { ...state.verification },
     exploration: { ...state.exploration, filesInspected: [...state.exploration.filesInspected] },
     permissions: { ...state.permissions },
+    contextGovernor: { ...state.contextGovernor },
   };
 }
 
@@ -614,6 +642,7 @@ export interface AiesSnapshot {
     approvals: number;
     sandboxFailures: number;
   };
+  contextGovernor?: ContextGovernorState;
 }
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
@@ -654,6 +683,7 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     },
     verification: { ...state.verification },
     permissions: { ...state.permissions },
+    contextGovernor: { ...state.contextGovernor },
   };
 }
 
@@ -742,6 +772,23 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
   state.activeToolCount = positive(source.activeToolCount) ?? 0;
   state.version = positive(source.version) ?? STATE_VERSION;
 
+  const rawGov = (source.contextGovernor && typeof source.contextGovernor === "object" && !Array.isArray(source.contextGovernor)
+    ? source.contextGovernor
+    : {}) as Record<string, unknown>;
+  const validZones = ["green", "amber", "pressure", "compact", "ceiling"];
+  state.contextGovernor = {
+    zone: typeof rawGov.zone === "string" && validZones.includes(rawGov.zone) ? (rawGov.zone as any) : "green",
+    currentTokens: positive(rawGov.currentTokens),
+    compactAtTokens: positive(rawGov.compactAtTokens) ?? 120_000,
+    ceilingTokens: positive(rawGov.ceilingTokens) ?? 150_000,
+    compactPending: rawGov.compactPending === true,
+    compacting: rawGov.compacting === true,
+    compactionCount: positive(rawGov.compactionCount) ?? state.compactionCount,
+    oversizedResults: positive(rawGov.oversizedResults) ?? 0,
+    truncatedChars: positive(rawGov.truncatedChars) ?? 0,
+    lastCompactionError: text(rawGov.lastCompactionError),
+  };
+
   const model = source.model;
   if (model && typeof model === "object") {
     const entry = model as Record<string, unknown>;
@@ -783,5 +830,18 @@ export function applyPermissionsSync(
   if (typeof update.denials === "number") next.permissions.denials = update.denials;
   if (typeof update.approvals === "number") next.permissions.approvals = update.approvals;
   if (typeof update.sandboxFailures === "number") next.permissions.sandboxFailures = update.sandboxFailures;
+  return next;
+}
+
+export function applyContextGovernorSync(
+  state: AiesState,
+  update?: Partial<ContextGovernorState>,
+): AiesState {
+  if (!update) return state;
+  const next = cloneState(state);
+  next.contextGovernor = {
+    ...next.contextGovernor,
+    ...update,
+  };
   return next;
 }

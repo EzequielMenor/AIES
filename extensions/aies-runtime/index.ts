@@ -22,6 +22,7 @@ import {
   applyDelegationStart,
   applyModel,
   applyParentMutation,
+  applyContextGovernorSync,
   applyPermissionsSync,
   applyResumedAt,
   applySessionMeta,
@@ -38,6 +39,7 @@ import {
 import { renderFooter, renderStatusReport } from "./status.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
+import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
 const ENTRY_TYPE = "aies-metrics";
@@ -105,6 +107,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       approvals: telemetry.approvals,
       sandboxFailures: telemetry.sandboxFailures,
     });
+    state = applyContextGovernorSync(state, getContextGovernorTelemetry());
 
     if (ctx.mode !== "tui") return;
 
@@ -271,6 +274,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
           approvals: telemetry.approvals,
           sandboxFailures: telemetry.sandboxFailures,
         });
+        state = applyContextGovernorSync(state, getContextGovernorTelemetry());
         // Outside TUI and RPC there is no notification channel to report to.
         ctx.ui.notify(renderStatusReport(toSnapshot(state), Date.now()), "info");
       });

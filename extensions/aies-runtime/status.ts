@@ -92,8 +92,19 @@ function verificationSegment(snapshot: AiesSnapshot): string | undefined {
 export function renderFooter(snapshot: AiesSnapshot, now: number): string {
   const parts = ["AIES"];
   if (snapshot.delegations?.activeRole === "verify") parts.push("VERIFY");
+  if (snapshot.contextGovernor?.compacting) parts.push("compactando");
+
+  const isPressure =
+    snapshot.contextGovernor?.zone === "pressure" ||
+    snapshot.contextGovernor?.zone === "compact" ||
+    snapshot.contextGovernor?.zone === "ceiling";
+
+  const ctxText = isPressure
+    ? `ctx ${formatTokens(snapshot.contextTokens)}!`
+    : `ctx ${formatTokens(snapshot.contextTokens)}`;
+
   parts.push(
-    `ctx ${formatTokens(snapshot.contextTokens)}/peak ${formatTokens(snapshot.peakContextTokens)}`,
+    `${ctxText}/peak ${formatTokens(snapshot.peakContextTokens)}`,
     `tools ${snapshot.toolCalls}`,
     `files ${snapshot.filesInspected.length}`,
   );
@@ -129,6 +140,18 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
       row("peak", peakLabel(snapshot)),
       row("compactions", String(snapshot.compactionCount)),
     ]),
+    ...(snapshot.contextGovernor
+      ? section("Context governor", [
+          row("zone", snapshot.contextGovernor.zone),
+          row("current", formatTokens(snapshot.contextGovernor.currentTokens)),
+          row("compact at", formatTokens(snapshot.contextGovernor.compactAtTokens)),
+          row("ceiling", formatTokens(snapshot.contextGovernor.ceilingTokens)),
+          row("pending", snapshot.contextGovernor.compactPending ? "yes" : "no"),
+          row("compacting", snapshot.contextGovernor.compacting ? "yes" : "no"),
+          row("compactions", String(snapshot.contextGovernor.compactionCount)),
+          row("oversized", String(snapshot.contextGovernor.oversizedResults)),
+        ])
+      : []),
     ...section("Padre", [
       row("tool calls", String(snapshot.toolCalls)),
       row("reads", String(snapshot.sourceReads)),
