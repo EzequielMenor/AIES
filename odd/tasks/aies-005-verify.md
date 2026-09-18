@@ -40,7 +40,7 @@ review, and a complete permission sandbox (that is AIES-006).
 
 | Task | Commit | Subject |
 |------|--------|---------|
-| T1 Shared command guard and Verify read-only policy | `3831dc0`, `7cfb34a` | `feat(agents): add independent verification workflow` |
+| T1 Shared command guard and Verify read-only policy | `3831dc0`, `7cfb34a`, `dc32b9f` | `feat(agents): add independent verification workflow` |
 | T2 Verify handoff schema, defect list and failure signature | `3831dc0` | same commit |
 | T3 Verification state, PASS invalidation and repair policy | `3831dc0`, `7cfb34a` | same commit, refined by the review fix |
 | T4 Verify role prompt and isolated child runner | `3831dc0` | same commit |
@@ -60,8 +60,8 @@ review, and a complete permission sandbox (that is AIES-006).
 | Shell syntax | `bash -n bin/aies scripts/*.sh` | clean |
 | Extension loadability | dynamic import of both extension entry points; RPC `get_commands` under a temporary `AIES_HOME` | both export a function, no `extension_error` |
 | Fresh context | `tests/verify.test.mjs` | parent/Worker sentinel absent unless it is part of the criteria; the same assertion is proven non-vacuous |
-| Guard bypass | `tests/verify.test.mjs` | command substitution refused; a Write policy hole found in review and closed before closing the phase |
-| No mutation tools | `tests/verify.test.mjs` | `VERIFY_TOOLS` and the child session contain no `edit`/`write`; 43 blocked command forms plus 3 command-substitution bypasses asserted |
+| Guard bypass | `tests/verify.test.mjs` | command substitution, `find -delete`/`-exec` and `xargs` refused; three policy holes found in review and closed before closing the phase |
+| No mutation tools | `tests/verify.test.mjs` | `VERIFY_TOOLS` and the child session contain no `edit`/`write`; 46 blocked command forms plus 3 command-substitution bypasses asserted |
 | Checks available | `tests/verify.test.mjs` | the child reads the real file and runs the real check inside its session transcript |
 | Git inspection | `tests/verify.test.mjs` | `status`, `diff`, `diff --stat`, `show`, `log`, `blame`, `ls-files` allowed; every mutating subcommand blocked |
 | PASS real | `tests/smoke-verify.test.mjs` | PASS only after the artifact actually holds 2000 |

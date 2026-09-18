@@ -374,6 +374,16 @@ function verifyMutationReason(binary: string, args: string[]): string | undefine
     return `${binary} mutates the workspace and is not permitted in Verify`;
   }
 
+  // `find -delete` and `find -exec` are mutations wearing an inspection command,
+  // and `xargs` runs a command the guard cannot read.
+  if (binary === "find" && args.some((a) => ["-delete", "-exec", "-execdir", "-ok"].includes(a))) {
+    return "find with -delete/-exec mutates the workspace and is not permitted in Verify";
+  }
+
+  if (binary === "xargs") {
+    return "xargs runs a command the Verify guard cannot inspect; run the command directly";
+  }
+
   if (binary === "sed" && args.some((a) => a === "-i" || (a.startsWith("-i") && !a.startsWith("--")))) {
     return "in-place editing (sed -i) is not permitted in Verify";
   }

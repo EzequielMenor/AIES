@@ -202,6 +202,9 @@ describe("AIES-005 Verify command policy (read-only shell)", () => {
     "npm publish",
     "vercel deploy",
     "cd ../..",
+    "find . -name '*.ts' -delete",
+    "find . -name '*.ts' -exec rm {} \\;",
+    "find . -name '*.log' | xargs rm",
   ];
 
   it("permits the checks and the read-only git inspection a verifier needs", () => {
