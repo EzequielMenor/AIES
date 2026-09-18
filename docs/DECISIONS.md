@@ -281,6 +281,31 @@ Parent retains model API keys and coordinates from the host; child tool executio
 
 ---
 
+## D14 - Linear Ticket Workflow: Parent Ownership, Compact Contract, Transport Abstraction, and Programmatic Done Gate
+
+**Decision.**
+1. The Parent session is the sole owner of Linear workflow. Children (Explore, Worker, Verify) have no Linear tools, no Linear MCP schemas, and no direct issue mutations.
+2. Linear serves strictly as the source of truth for active ticket ID, status, acceptance criteria, and project metadata; it never serves as memory, repo context, backlog dump, or giant prompt.
+3. Raw Linear issue payloads are normalized into a compact contract strictly bounded under 2,500 characters (`formatCompactContract`), extracting explicit checklist criteria and flagging ambiguities.
+4. Transport mechanics are abstracted behind `LinearTransport` (`FakeLinearTransport` for deterministic, offline testing; `McpLinearTransport` with typed error classification for runtime).
+5. Done Gate is enforced programmatically by the verification authority: behavior-bearing changes require a fresh, valid Verify PASS (`verifiedRevision === revision && verification.status === "pass"`). Stale PASS, fail, blocked, or running strictly deny marking Done. Docs-only changes complete without Verify.
+6. `completeTicket()` refreshes remote issue state before updating; if remote state changed externally to completed or canceled, a remote conflict is raised and completion is blocked to prevent overwriting remote work.
+7. Autonomy and multi-ticket continuation are strictly deferred to AIES-009.
+
+**Why.**
+- Exposing Linear tools or schemas to child agents wastes tokens, risks accidental status transitions or comment spam, and introduces ambient credential leakage into untrusted child contexts.
+- Raw issue payloads often exceed 30k+ characters with HTML, image links, and thread discussions. Injecting raw issues directly into the parent causes instant context bloat.
+- Testing against live Linear or relying on ambient credentials in test environments creates flaky tests, risks mutating real production backlogs, and breaks when offline or in CI.
+- Human or LLM self-reporting of "I tested it and it works" cannot be trusted to mark tickets Done; only the independent Verify authority (AIES-005) executing real repository checks with OS-level containment (AIES-006) provides trustworthy verification evidence.
+
+**Consequence.**
+- The parent tool surface expands by exactly one tool: `aies_ticket`. A single ergonomics command `/aies-ticket` is provided for developers.
+- Children remain cleanly isolated with zero Linear exposure.
+- All test suites execute deterministically without network calls or credentials.
+- Linear state stays in sync with real verified repository state without spam or premature completion.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

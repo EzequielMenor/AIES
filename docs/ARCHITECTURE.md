@@ -434,6 +434,78 @@ Parent tool results exceeding 32,000 characters are sanitized before being commi
 - **Head + Tail Truncation**: Retains the first 8,000 characters and last 4,000 characters, joined by a structured marker: `[... AIES Context Governor: X characters omitted ...]`.
 - **Handoff Protection**: Results from `aies_delegate` are strictly exempt from truncation, ensuring that structured child handoffs (verdicts, defects, evidence, diffs) arrive intact.
 
+## Linear ticket workflow (AIES-008)
+
+AIES-008 establishes Linear tickets as the **operational unit of work** for an AIES parent session.
+Linear acts as the external source of truth for active ticket identifiers, status, acceptance criteria,
+and project metadata, while never serving as memory, repository context, backlog dump, or giant prompt.
+
+### Parent ownership and child isolation
+
+```
++-------------------------------------------------------------------------+
+| Parent Session (Sole Owner of Linear Workflow)                          |
+|   - aies_ticket tool (load, start, complete, block, comment, show)      |
+|   - /aies-ticket [id] command for developer ergonomics                  |
+|   - Normalizes raw issue into compact contract (< 2,500 chars)          |
+|   - Evaluates Done Gate against independent verification state          |
++-------------------------------------------------------------------------+
+       |                                  |                        |
+       | minimal goal & question          | work unit & ACs        | exact criteria & diff
+       v                                  v                        v
++------------------+             +------------------+    +-------------------+
+| Explore Agent    |             | Worker Agent     |    | Verify Agent      |
+|   NO Linear tools|             |   NO Linear tools|    |   NO Linear tools |
+|   NO Linear MCP  |             |   NO Linear MCP  |    |   NO Linear MCP   |
++------------------+             +------------------+    +-------------------+
+```
+
+- **Single Active Ticket per Session**: 1 ticket = 1 logical unit of work. Attempting to switch tickets while another is in progress requires explicit completion or forced confirmation.
+- **Strict Child Isolation**: Explore, Worker, and Verify sessions receive minimal child contracts derived from the active ticket. Their tool surfaces, prompts, and permissions contain zero Linear tools or schemas.
+
+### Compact operational contract
+
+Linear issues frequently contain tens of thousands of characters of issue descriptions, screenshots, HTML, and discussions. Injecting raw payloads into the Parent session causes instant context bloat.
+`extensions/aies-agents/linear/contract.ts` extracts:
+1. **Explicit Acceptance Criteria**: Parsed from checklist items (`- [ ]`, `- [x]`) and explicit criteria sections.
+2. **Derived Expectations**: Fallback bullet points and imperative requirements (`must`, `shall`, `ensure`).
+3. **Ambiguity Flagging**: Highlights uncertain (`TBD`, `TODO`, `?`) items for parent clarification.
+4. **Context Hygiene Cap**: Bounded strictly under 2,500 characters, summarizing long descriptions and truncating safely.
+
+### Transport abstraction
+
+`LinearTransport` decouples workflow policy from transport mechanics:
+- `FakeLinearTransport`: In-memory, deterministic fake implementing full issue state tracking, comment history, status queries, conflict simulation, and synthetic errors for testing without network or credentials.
+- `McpLinearTransport`: Bridges Linear operations via registered MCP tool callers, translating API responses and classifying failures into typed `LinearTransportError` codes (`not_found`, `auth_unavailable`, `mcp_unavailable`, `network_failure`, `remote_conflict`).
+
+### Programmatic Done Gate
+
+Marking a ticket as Done in Linear is governed strictly by the verification authority (`extensions/aies-agents/linear/policy.ts`):
+
+```
+Request Linear complete
+          │
+  requiresVerification?
+          │
+         yes ──► valid fresh Verify PASS?
+          │               │           │
+          │              no          yes
+          │               │           │
+          │             DENY        ALLOW
+          │
+         no ──► ALLOW (docs-only / trivial changes)
+```
+
+- **Behavior-Bearing Changes**: Changes touching code or configuration strictly require a valid, fresh Verify PASS (`verifiedRevision === revision && verification.status === "pass"`). Any other status (`none`, `fail`, `blocked`, `running`, or stale PASS) programmatically denies completion.
+- **Documentation Changes**: Changes touching only documentation (`.md`, `.txt`, docs directories) complete without requiring a Verify child session.
+- **Remote Refresh & Conflict Detection**: `completeTicket()` always queries the remote issue immediately before updating status. If the remote ticket was marked `completed` or `canceled` externally, completion is blocked to avoid overwriting remote work.
+- **Preserved PASS on Network Error**: If Linear is unreachable during completion, the operation reports a sync error, but the local verified PASS remains intact; the Worker is never asked to re-run.
+
+### State persistence and observability
+
+- **Pi Session Snapshot**: On `agent_settled`, `TicketManager` persists an `aies-ticket` entry to the Pi session, storing active ticket identifier, work state, and touched paths. On session resume or reload, ticket state is restored without remote network calls.
+- **Status & Footer**: The footer displays the active ticket identifier (`AIES · EZE-123 · ...`), and `/aies-status` renders a dedicated `Ticket:` report section displaying ticket status, criteria progress, and Done Gate readiness.
+
 ## Verification model
 
 All checks run with a temporary `AIES_HOME` and a deliberately hostile ambient

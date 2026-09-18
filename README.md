@@ -14,7 +14,8 @@ The command is `aies`; underneath it is `pi`.
 
 > Phase status: isolated bootstrap (AIES-001), session metrics baseline
 > (AIES-002), isolated child delegation (AIES-003 explore, AIES-004 worker and
-> routing, AIES-005 independent verify with bounded repair) via `aies_delegate`.
+> routing, AIES-005 independent verify), permission boundaries and OS sandbox
+> (AIES-006), context governor (AIES-007), and Linear ticket workflow (AIES-008).
 > See [Scope](#scope).
 
 ## Requirements
@@ -197,15 +198,19 @@ volume, session runtime and tool surface.
 
 Phase 3 shipped the isolated explore delegation primitive. Phase 4 shipped the
 isolated Worker and the parent routing policy (Inline Direct, Explore, Worker)
-with soft signals and hard guardrails. Phase 5 (current) closes the core loop:
+with soft signals and hard guardrails. Phase 5 closed the verification loop with
+an independent, isolated Verify role. Phase 6 shipped permission boundaries and
+OS-level sandboxing with Darwin Seatbelt. Phase 7 established the Context
+Governor with operational budgets, proactive single-flight compaction, and
+tool-output hygiene.
 
-- a third role, `verify`, isolated and read-only, that inspects the real
-  repository artifact and answers `pass | fail | blocked` with evidence;
-- a verification record with a bounded repair policy (two cycles, early stop on a
-  repeated failure signature) and PASS invalidation by revision;
-- observability for both, in the footer and in `/aies-status`.
+Phase 8 (current) establishes the Linear Ticket Workflow:
+- the Parent session is the sole owner of Linear workflow; child agents have zero Linear tools or schemas;
+- raw issue payloads normalize into compact contracts (< 2,500 chars) with explicit criteria extraction;
+- transport abstraction with deterministic in-memory fakes and typed MCP integration;
+- programmatic Done Gate strictly requiring fresh valid Verify PASS for behavior-bearing changes;
+- remote conflict detection before completion;
+- snapshot persistence across session boundaries.
 
-Explicitly out of scope for this phase: Linear, automatic done, automatic commits,
-push, PR, merge or deploy, memory, the full context governor, proactive
-compaction, autopilot, background or parallel agents, a permanent reviewer,
-mandatory multi-model review, and a complete permission sandbox (AIES-006).
+Explicitly out of scope for this phase: autonomous multi-ticket continuation,
+automated backlog polling, automatic push, PR, merge or deploy (deferred to AIES-009).
