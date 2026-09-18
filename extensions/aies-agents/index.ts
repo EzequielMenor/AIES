@@ -27,14 +27,32 @@ import {
   getContextGovernor,
   type ContextGovernor,
 } from "./context-governor.ts";
+import { TicketManager } from "./linear/manager.ts";
+import { createTicketTool } from "./linear/tool.ts";
+import { registerTicketCommand } from "./linear/command.ts";
+import type { TicketSnapshot } from "./linear/types.ts";
 
 /** Native tools that change the work unit when the parent uses them directly. */
 const PARENT_MUTATION_TOOLS = ["edit", "write"];
+
+let activeTicketManager: TicketManager | undefined;
+
+export function getActiveTicketManager(): TicketManager | undefined {
+  return activeTicketManager;
+}
 
 export default function aiesAgents(pi: ExtensionAPI): void {
   let routingState: RoutingState = createRoutingState();
   let verification: VerificationState = createVerificationState();
   const governor: ContextGovernor = getContextGovernor();
+
+  const ticketManager = new TicketManager({
+    getVerification: () => verification,
+  });
+  activeTicketManager = ticketManager;
+
+  pi.registerTool(createTicketTool(ticketManager));
+  registerTicketCommand(pi, ticketManager);
 
   pi.registerTool(
     createDelegateTool({
@@ -73,6 +91,9 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     if (PARENT_MUTATION_TOOLS.includes(event.toolName)) {
       const path = typeof input?.path === "string" ? input.path : "unknown path";
       verification = applyWorkUnitChange(verification, [path], `parent ${event.toolName} on ${path}`);
+      if (path !== "unknown path") {
+        ticketManager.recordChangedPaths([path]);
+      }
     }
 
     routingState = applyRoutingToolCall(
@@ -92,6 +113,15 @@ export default function aiesAgents(pi: ExtensionAPI): void {
         outcome,
         Date.now(),
       );
+
+      // When Worker completes, record modified paths in active ticket manager
+      if (delegationRole(input) === "worker" && !event.isError) {
+        const details = event.details as Record<string, unknown> | undefined;
+        if (Array.isArray(details?.changes)) {
+          const files = (details.changes as Array<{ file?: string }>).map((c) => c.file).filter((f): f is string => Boolean(f));
+          ticketManager.recordChangedPaths(files);
+        }
+      }
       return;
     }
 
@@ -125,6 +155,14 @@ export default function aiesAgents(pi: ExtensionAPI): void {
       governor.updateUsage(ctx.getContextUsage());
       await governor.handleSettled(ctx);
     } catch {}
+
+    // Persist active ticket snapshot to session entry
+    const snapshot = ticketManager.toSnapshot();
+    if (snapshot) {
+      try {
+        pi.appendEntry("aies-ticket", snapshot);
+      } catch {}
+    }
   });
 
   pi.on("session_compact", async () => {
@@ -135,11 +173,23 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     governor.onCompactionFailure(event.errorMessage ?? "Compaction failed");
   });
 
-  pi.on("session_start", async (event) => {
+  pi.on("session_start", async (event, ctx) => {
     routingState = createRoutingState();
     verification = createVerificationState();
     if (event.reason === "new") {
       governor.reset();
+      ticketManager.reset();
+    } else if (event.reason === "resume" || event.reason === "reload") {
+      try {
+        const entries = ctx.sessionManager.getEntries();
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const entry = entries[i];
+          if (entry.type === "custom" && entry.customType === "aies-ticket" && entry.data) {
+            ticketManager.restoreFromSnapshot(entry.data as TicketSnapshot);
+            break;
+          }
+        }
+      } catch {}
     }
   });
 }
