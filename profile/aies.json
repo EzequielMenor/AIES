@@ -10,5 +10,8 @@
     "verify": {
       "model": null
     }
+  },
+  "permissions": {
+    "sandbox": true
   }
 }
