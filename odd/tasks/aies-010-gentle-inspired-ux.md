@@ -1,10 +1,21 @@
 # AIES-010 - Gentle-inspired Pi UX & TUI
 
-Status: in progress
+Status: complete (one interactive check handed to the user)
 Branch: `feat/aies-010-gentle-inspired-ux`
 Scope: Phase 10 of AIES (visual/product layer only: information hierarchy, workflow
 vocabulary, footer, agent activity components, permission-ask presentation,
 BLOCKED/DONE summaries, human `/aies-status`, command audit, UI-only rendering)
+
+## Handed over
+
+Every automated check is green and the real-terminal smoke covers the footer, the
+narrow-terminal degradation, the headless path and all four commands through a real
+Pi process. What an agent cannot observe is a human watching a child work: the live
+card, the TTL tail, the permission dialog and the DONE/BLOCKED entries were verified
+through the real renderers and a real extension host, but the interactive flow
+(child + approval at a real terminal) needs a model credential that the isolated
+profile deliberately does not have. `docs/UX.md` §6-§12 states the exact strings to
+expect; the checklist is in the final report of this phase.
 
 ## Goal
 
@@ -50,31 +61,48 @@ accounting. All of that is out of scope for AIES-010.
 
 | Task | Commit | Subject |
 |------|--------|---------|
-| T1 Audit gentle-pi UI surface | T1 | `docs(ux): audit gentle-pi visual surface and AIES current UX` |
-| T2 Design: hierarchy, vocabulary, components | T1 | (same commit as T1) |
-| T3 `extensions/aies-ui/` presentation module + unit tests | T2 | `feat(ui): add a pure AIES presentation module` |
-| T4 Footer redesign + width degradation | T3 | `feat(ui): redesign the footer as a projection of workflow state` |
-| T5 Agent activity widget + finished-child entries | T3 | (same commit as T4) |
-| T6 Verify/repair presentation | T3 | (same commit as T4) |
-| T7 Permission ASK presentation | T4 | `feat(ui): present permission requests as an actionable approval card` |
-| T8 BLOCKED and DONE summaries | T4 | (same commit as T7) |
-| T9 Human `/aies-status` + command audit | T5 | `feat(ui): make /aies-status a human view and audit the command set` |
-| T10 Tests: invariants, headless, no-pollution | T6 | `test(ui): cover footer, activity, approval, summaries and headless degradation` |
-| T11 Docs: ARCHITECTURE, DECISIONS, UX | T7 | `docs(ux): document the AIES visual system and its boundaries` |
-| T12 Manual visual smoke | - | manual, evidence in this file |
+| T1 Audit gentle-pi UI surface | `dc0bcc4` | `docs(ux): audit gentle-pi's visual surface and freeze the AIES-010 design` |
+| T2 Design: hierarchy, vocabulary, components | `dc0bcc4` | (same commit as T1) |
+| T3 `extensions/aies-ui/` presentation module + unit tests | `f8441ac` | `feat(ui): add the pure AIES presentation module and the new footer contract` |
+| T4 Footer redesign + width degradation | `1f20c7f` | `feat(ui): wire the footer, the activity card and the session view into the runtime` |
+| T5 Agent activity widget + finished-child entries | `1f20c7f` | (same commit as T4) |
+| T6 Verify/repair presentation | `1f20c7f` | (same commit as T4) |
+| T7 Permission ASK presentation | `a445fe4` | `feat(ui): present permission requests as an actionable approval card` |
+| T8 BLOCKED and DONE summaries | `1f20c7f` | (same commit as T4) |
+| T9 Human `/aies-status` + command audit | `1f20c7f`, `9535fe6` | `feat(ui): put /aies-run status on the shared vocabulary` |
+| T10 Tests: invariants, headless, no-pollution | `f8441ac`, `1f20c7f` | `tests/aies-ui.test.mjs` (29) + `tests/aies-ui-seam.test.mjs` (9) |
+| T11 Docs: ARCHITECTURE, DECISIONS, UX | `dc0bcc4`, `4e7d08e` | `docs(ux): record the gentle-pi audit confirmations and the footer ready rule` |
+| T12 Manual visual smoke | - | real pty capture + real RPC runs, evidence below |
 
 ## Verification evidence
 
 | Check | Command | Result |
 |-------|---------|--------|
 | Baseline before the phase | `npm test` | 260/260 pass on `feat/aies-009-bounded-autonomy` |
-| Full test suite | `npm test` | pending |
-| Isolation script | `npm run check:isolation` | pending |
-| Shell syntax | `bash -n bin/aies scripts/*.sh` | pending |
-| Manual visual smoke | `aies` in a real terminal | pending |
+| Full test suite | `npm test` | **299/299 pass**, 0 fail, 78 suites |
+| Isolation script | `npm run check:isolation` | 299/299 pass under a temporary `AIES_HOME` |
+| Shell syntax | `bash -n bin/aies scripts/*.sh` | clean |
+| UI imports nothing from Pi | `grep -rn "@earendil-works\|sendMessage" extensions/aies-ui/` | no match |
+| No raw ANSI in the module | `grep -rn "x1b\[" extensions/aies-ui/` | no match |
+| No `pi-tui` dependency added | `grep -rn "@earendil-works/pi-tui" extensions/` | no match |
+| Real TUI footer (pty) | `PI_TUI_WRITE_LOG` over a real `script` pty | `AIES · ready · ctx 0` rendered as one line |
+| Real TUI at 40 columns (pty) | same, with `stty cols 40` | `AIES · ready · ctx 0`, no wrap, no break |
+| Real `/aies-status` | RPC `prompt "/aies-status"` through `bin/aies` | human view: `Run`/`Contexto`/`Permisos` |
+| Real `/aies-status detalle` | RPC `prompt "/aies-status detalle"` | full 48-line report intact |
+| Real `/aies-run status` | RPC `prompt "/aies-run status"` | autonomy view + pointer to `/aies-status` |
+| Full-flow surface dump | real appliers + real renderers, throwaway driver | footer/card/entry/DONE/BLOCKED/approval/narrow text captured in `docs/UX.md` §5-§13 |
 
 ## Findings (reported, not fixed here)
 
 - `odd/tasks/` has no `aies-009-*.md`: AIES-009 is documented in
   `docs/ARCHITECTURE.md` and by decision D15, but the phase task record is
   missing. Recorded here as an observation; this phase does not rewrite AIES-009.
+- The child model a user configured per role (`aies.json` -> `agents.<role>.model`)
+  is resolved inside the child session and is not observable by the parent. The
+  activity card therefore shows no model. Exposing it needs a getter on
+  `extensions/aies-agents/session.ts`, which is a wiring change, not a UX one.
+- `ContinuationController` exposes no activation timestamp, so `/aies-run status`
+  cannot print how long autonomy has been running. Same category as above.
+- Pi's native footer already renders a context percentage next to the AIES
+  segment. AIES shows absolute tokens instead, so the two are complementary
+  rather than duplicated, but a reader now sees both. Recorded, not changed.

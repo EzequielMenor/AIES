@@ -175,7 +175,12 @@ segment until the line fits, then truncates as a last resort.
 | `AUTO` | next |
 | stage | next |
 | `ctx N` | next (the bare number is tried before dropping) |
-| `AIES`, ticket, alarms (`ctx !`, `compactando…`, `V:FAIL`, `V:STALE`, `PERM`) | never dropped |
+| `AIES`, ticket, alarms (`ctx N !`, `compactando…`, `V:FAIL`, `V:STALE`, `PERM`, `SANDBOX OFF`) | never dropped |
+
+A segment that is itself an alarm is never dropped, and the pressured context
+segment stops being droppable: at 32 columns the line reads
+`AIES · EZE-417 · ctx 104k ! · c…` rather than silently losing the warning. Below
+that, the tail is clipped; identity, ticket and the leading alarm survive.
 
 Width is measured on the plain text before painting, so no ANSI dependency is
 needed to decide what fits.
@@ -365,32 +370,54 @@ zeros omitted, no duplicated fact.
 AIES
 
 Ticket
-  EZE-417 · In Progress
-  Implement first-run guidance
+  identifier        EZE-417
+  status            In Progress
+  title             Implement first-run guidance
 
 Run
-  WORK · autonomía activa
-  transcurrido 06:42 · continuaciones 3
+  stage             DONE · autonomía activa
+  transcurrido      04:20 · continuaciones 3
 
 Verificación
-  pendiente · intentos 0 · repairs 0
+  estado            PASS
+  intentos          1
+  repairs           1 / 2
 
 Contexto
-  43k / 150k · verde
-  peak 51k · compactions 0
+  actual            42k / 150k · verde
+  peak              51k
+  compactions       0
 
 Agentes
-  explore  done    12s
-  worker   activo  31s
-  verify   —
+  explore           done
+  worker            done
+  verify            done
 
 Permisos
-  sandbox activo · aprobaciones 0
+  sandbox           active
+  denegaciones      1
 ```
 
-Technical labels stay in English in code and telemetry keys; the visible labels
-are Spanish, consistent with the rest of AIES. Internal telemetry is not deleted
-because it is not shown — `/aies-status` reads the same snapshot the footer does.
+Rules:
+
+- Sections are omitted when they have no value (`Ticket` without a ticket,
+  `Verificación` before anything ran, `Agentes` with no delegations). `Run` is the
+  one exception: the stage is the headline answer to "what is it doing?", so it
+  is always printed, and a stopped autonomy always carries why it stopped.
+- Rows keep the `  <label><value>` layout so the same reader works in the terminal
+  and in tests.
+- Autonomy stop reasons are printed in Spanish (`necesita tu intervención`), never
+  as a raw code such as `user_required`.
+- Labels are Spanish, consistent with the rest of AIES; technical keys stay in
+  English in code and in the telemetry payloads.
+
+### The full telemetry stays one argument away
+
+`/aies-status detalle` (also `all`) prints the complete report — every counter,
+phase, tool tally, peak, session id and provider — exactly as it was before this
+phase. The human view is the default, not a replacement: telemetry is never
+deleted because it is not shown. Both views read the same snapshot the footer
+does, so they cannot disagree.
 
 ## 14. Commands
 
@@ -398,15 +425,20 @@ Unchanged and audited. Four primitives, no more:
 
 | Command | Role | Visibility |
 |---|---|---|
-| `/aies-status` | the human view of the session | normal |
+| `/aies-status` | the human view of the session; `detalle` (or `all`) prints the full telemetry | normal |
 | `/aies-ticket [id]` | activate or inspect the Linear ticket | normal |
-| `/aies-run [id\|stop\|status]` | bounded autonomy | normal |
+| `/aies-run [id\|stop\|status]` | bounded autonomy; `status` prints the autonomy view | normal |
 | `/aies-info` | resolved profile paths, mode, extension path | diagnostic |
 
 `/aies-info` stays registered but is deliberately demoted: it is a
 diagnostic/dev command and must not compete with `/aies-status`. No new command
 is added for agents, context, verify, permissions, Linear or autonomy: the UI
 reduces the need for commands instead of multiplying them.
+
+`/aies-run status` deliberately does **not** reprint the session view. It is the
+autonomy command, so it reports the stage, the continuation count, the last step
+and why autonomy stopped, and points at `/aies-status` for everything else. Two
+commands printing the same report is the duplication this phase removes.
 
 ## 15. Model, time, cost
 
