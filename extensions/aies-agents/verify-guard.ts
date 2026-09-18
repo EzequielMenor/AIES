@@ -18,6 +18,7 @@ import {
   type GuardedBashRunner,
   type GuardedBashSchema,
 } from "./command-guard.ts";
+import type { SandboxConfigOptions } from "./sandbox.ts";
 
 export type VerifyBashRunner = GuardedBashRunner;
 
@@ -36,12 +37,13 @@ export function isCommandPermittedInVerify(
  */
 export function createVerifyBashToolDefinition(
   cwd: string,
-  options?: { runner?: VerifyBashRunner },
+  options?: { runner?: VerifyBashRunner; sandboxOptions?: SandboxConfigOptions },
 ): ToolDefinition<typeof GuardedBashSchema> {
   return createGuardedBashToolDefinition({
     workspaceRoot: cwd,
     policy: "verify",
     runner: options?.runner,
+    sandboxOptions: options?.sandboxOptions,
     description:
       "Execute read-only commands within the workspace: tests, typecheck, lint, build and git inspection (status, diff, show, log, blame, ls-files). Mutating commands and file writes are blocked.",
     promptSnippet: "bash: Run the checks that produce evidence, and inspect git safely.",

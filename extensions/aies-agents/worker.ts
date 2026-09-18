@@ -9,8 +9,13 @@
  * - Defensively parses and caps handoff output.
  */
 
+import {
+  createContainedEditToolDefinition,
+  createContainedWriteToolDefinition,
+} from "./contained-tools.ts";
 import { parseWorkerHandoff, type WorkerHandoff } from "./handoff.ts";
 import { resolveWorkerModel } from "./model.ts";
+import type { SandboxConfigOptions } from "./sandbox.ts";
 import { executeChildSession, resolveRoleSystemPrompt } from "./session.ts";
 import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 import { createWorkerBashToolDefinition, type WorkerBashRunner } from "./worker-guard.ts";
@@ -28,6 +33,7 @@ export interface RunWorkerOptions {
   sessionManager?: any;
   tgrepRunner?: TgrepRunner;
   bashRunner?: WorkerBashRunner;
+  sandboxOptions?: SandboxConfigOptions;
 }
 
 /**
@@ -53,7 +59,11 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
 
   const guardedBash = createWorkerBashToolDefinition(cwd, {
     runner: options.bashRunner,
+    sandboxOptions: options.sandboxOptions,
   });
+
+  const containedWrite = createContainedWriteToolDefinition(cwd);
+  const containedEdit = createContainedEditToolDefinition(cwd);
 
   try {
     const rawOutput = await executeChildSession({
@@ -65,7 +75,7 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
       model,
       modelRuntime,
       tools: ["read", "grep", "find", "ls", "tgrep", "edit", "write", "bash"],
-      customTools: [customTgrep, guardedBash],
+      customTools: [customTgrep, guardedBash, containedWrite, containedEdit],
       signal,
       sessionManager: options.sessionManager,
     });

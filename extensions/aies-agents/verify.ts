@@ -13,6 +13,7 @@
 
 import { parseVerifyHandoff, type VerifyHandoff } from "./handoff.ts";
 import { resolveVerifyModel } from "./model.ts";
+import type { SandboxConfigOptions } from "./sandbox.ts";
 import { executeChildSession, resolveRoleSystemPrompt } from "./session.ts";
 import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 import { buildVerifyTaskInput } from "./verification.ts";
@@ -39,6 +40,7 @@ export interface RunVerifyOptions {
   sessionManager?: any;
   tgrepRunner?: TgrepRunner;
   bashRunner?: VerifyBashRunner;
+  sandboxOptions?: SandboxConfigOptions;
 }
 
 /**
@@ -60,7 +62,10 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyH
   });
 
   const customTgrep = createTgrepToolDefinition(cwd, { runner: options.tgrepRunner });
-  const guardedBash = createVerifyBashToolDefinition(cwd, { runner: options.bashRunner });
+  const guardedBash = createVerifyBashToolDefinition(cwd, {
+    runner: options.bashRunner,
+    sandboxOptions: options.sandboxOptions,
+  });
 
   try {
     const rawOutput = await executeChildSession({

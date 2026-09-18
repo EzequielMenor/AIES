@@ -15,13 +15,26 @@
 
 import { resolve } from "node:path";
 import { Type } from "typebox";
-import { createBashToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  handlePermissionGate,
+  recordPermissionDenial,
+  recordSandboxFailure,
+  type PermissionAction,
+  type PermissionGateContext,
+} from "./permissions.ts";
+import {
+  executeSandboxedCommand,
+  type SandboxConfigOptions,
+} from "./sandbox.ts";
 
 export type CommandPolicy = "worker" | "verify";
 
 export interface CommandPermissionResult {
   allowed: boolean;
   reason?: string;
+  action?: PermissionAction;
+  prompt?: string;
 }
 
 export type GuardedBashRunner = (
@@ -338,6 +351,23 @@ function destructiveBinaryReason(
   return undefined;
 }
 
+function checkPackageAskReason(
+  binary: string,
+  tokens: string[],
+  policy: CommandPolicy,
+): { reason: string; prompt: string } | undefined {
+  if (policy !== "worker" || !PACKAGE_MANAGERS.includes(binary)) return undefined;
+  const installs = ["install", "i", "add", "uninstall", "remove", "update", "upgrade"];
+  const matched = tokens.find((t) => installs.includes(t));
+  if (matched) {
+    return {
+      reason: `dependency modification (${binary} ${matched}) crosses a boundary and requires user approval (ASK)`,
+      prompt: `Authorize Worker to modify packages: "${tokens.join(" ")}"?`,
+    };
+  }
+  return undefined;
+}
+
 function massDeletionReason(tokens: string[]): string | undefined {
   const hasRecursive = tokens.some(
     (t) => /^-[a-zA-Z]*r[a-zA-Z]*$/u.test(t) || t === "--recursive",
@@ -434,7 +464,12 @@ export function checkCommandPolicy(
     const { binary, args, tokens } = head;
 
     const destructive = destructiveBinaryReason(binary, tokens, policy);
-    if (destructive) return { allowed: false, reason: destructive };
+    if (destructive) return { allowed: false, action: "deny", reason: destructive };
+
+    const packageAsk = checkPackageAskReason(binary, tokens, policy);
+    if (packageAsk) {
+      return { allowed: false, action: "ask", reason: packageAsk.reason, prompt: packageAsk.prompt };
+    }
 
     // Git commands are read through their subcommand, never as a whole line.
     if (binary === "git") {
@@ -442,18 +477,18 @@ export function checkCommandPolicy(
       const subcommand = tokens[subIndex];
       if (subcommand) {
         const reason = destructiveGitReason(tokens, subcommand, policy);
-        if (reason) return { allowed: false, reason };
+        if (reason) return { allowed: false, action: "deny", reason };
       }
     }
 
     const massDeletion = massDeletionReason(tokens);
     if (massDeletion) {
-      return { allowed: false, reason: `${massDeletion} is not permitted in ${label}` };
+      return { allowed: false, action: "deny", reason: `${massDeletion} is not permitted in ${label}` };
     }
 
     if (policy === "verify") {
       const mutation = verifyMutationReason(binary, args);
-      if (mutation) return { allowed: false, reason: mutation };
+      if (mutation) return { allowed: false, action: "deny", reason: mutation };
     }
 
     // Navigation is bounded to the workspace for every child role.
@@ -464,6 +499,7 @@ export function checkCommandPolicy(
         if (!resolved.startsWith(workspaceRoot)) {
           return {
             allowed: false,
+            action: "deny",
             reason: `navigating outside workspace root is not permitted in ${label}`,
           };
         }
@@ -478,6 +514,7 @@ export function checkCommandPolicy(
         if (token === sensitive || token.startsWith(`${sensitive}/`)) {
           return {
             allowed: false,
+            action: "deny",
             reason: `accessing system path (${sensitive}) outside workspace root is not permitted in ${label}`,
           };
         }
@@ -485,7 +522,7 @@ export function checkCommandPolicy(
     }
   }
 
-  return { allowed: true };
+  return { allowed: true, action: "allow" };
 }
 
 export const GuardedBashSchema = Type.Object({
@@ -500,6 +537,7 @@ export interface GuardedBashOptions {
   promptSnippet: string;
   promptGuidelines: string[];
   runner?: GuardedBashRunner;
+  sandboxOptions?: SandboxConfigOptions;
 }
 
 /**
@@ -510,7 +548,6 @@ export function createGuardedBashToolDefinition(
   options: GuardedBashOptions,
 ): ToolDefinition<typeof GuardedBashSchema> {
   const { workspaceRoot, policy, runner } = options;
-  const nativeBash = runner ? undefined : createBashToolDefinition(workspaceRoot);
 
   return {
     name: "bash",
@@ -523,7 +560,24 @@ export function createGuardedBashToolDefinition(
       const command = params.command;
       const permission = checkCommandPolicy(command, workspaceRoot, policy);
 
-      if (!permission.allowed) {
+      if (permission.action === "ask") {
+        const gate = await handlePermissionGate(
+          { action: "ask", reason: permission.reason, prompt: permission.prompt },
+          ctx as PermissionGateContext,
+        );
+        if (!gate.allowed) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Command blocked by ${POLICY_LABEL[policy]} permission policy: ${gate.reason}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      } else if (!permission.allowed) {
+        recordPermissionDenial();
         return {
           content: [
             {
@@ -551,14 +605,28 @@ export function createGuardedBashToolDefinition(
         }
       }
 
-      if (nativeBash) {
-        return (await nativeBash.execute(toolCallId, params, signal, onUpdate, ctx)) as any;
+      try {
+        const result = await executeSandboxedCommand(command, workspaceRoot, {
+          role: policy,
+          timeout: params.timeout,
+          signal,
+          configOptions: options.sandboxOptions,
+        });
+        if (result.sandboxDenied) {
+          recordSandboxFailure();
+        }
+        const isError = (result.exitCode ?? 0) !== 0;
+        return {
+          content: [{ type: "text", text: result.stdout || result.stderr || "" }],
+          isError,
+        };
+      } catch (err: any) {
+        recordSandboxFailure();
+        return {
+          content: [{ type: "text", text: err?.message ?? String(err) }],
+          isError: true,
+        };
       }
-
-      return {
-        content: [{ type: "text", text: "Bash execution environment not available." }],
-        isError: true,
-      };
     },
   };
 }

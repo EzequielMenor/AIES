@@ -16,6 +16,7 @@ import {
   type GuardedBashRunner,
   type GuardedBashSchema,
 } from "./command-guard.ts";
+import type { SandboxConfigOptions } from "./sandbox.ts";
 
 export type WorkerBashRunner = GuardedBashRunner;
 
@@ -34,12 +35,13 @@ export function isCommandPermittedInWorker(
  */
 export function createWorkerBashToolDefinition(
   cwd: string,
-  options?: { runner?: WorkerBashRunner },
+  options?: { runner?: WorkerBashRunner; sandboxOptions?: SandboxConfigOptions },
 ): ToolDefinition<typeof GuardedBashSchema> {
   return createGuardedBashToolDefinition({
     workspaceRoot: cwd,
     policy: "worker",
     runner: options?.runner,
+    sandboxOptions: options?.sandboxOptions,
     description:
       "Execute bash commands within the workspace (e.g. tests, linters, git status/diff, builds). Destructive commands (git clean, reset --hard, push, sudo) are strictly blocked.",
     promptSnippet: "bash: Execute tests, builds, and development checks safely.",
