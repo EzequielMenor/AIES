@@ -359,6 +359,81 @@ Syscall containment uses `@anthropic-ai/sandbox-runtime` (Apple Seatbelt `sandbo
 - **Symlink Escape Protection**: Symlink traversals are resolved to canonical target paths by the OS kernel. Symlinks inside permitted output roots pointing to source, or inside the workspace pointing outside, fail on write with OS-level permission denial (`Operation not permitted`), leaving target files untouched.
 - **Graceful Degradation**: If sandboxing is disabled (`AIES_SANDBOX=0`) or unsupported on the host platform, Worker logs a warning and falls back to unsandboxed execution. Verify strictly refuses execution (`throw new Error(...)`) because independent verification requires OS-level enforcement to guarantee artifact integrity.
 
+## Context governor (AIES-007)
+
+AIES-007 establishes the **Context Governor** (`extensions/aies-agents/context-governor.ts`)
+as the single conceptual authority governing the Parent session context size and lifecycle.
+
+### Operational budget versus provider window
+
+Modern model providers offer context windows of 1M tokens or more. That capacity
+is an upper physical limit, not a healthy working memory size. An unmanaged parent
+session accumulating hundreds of thousands of tokens suffers from:
+- **Severe tool output bloat**: Raw outputs, file reads, and search dumps dominate tokens.
+- **Context saturation and reasoning degradation**: Needles get lost in haystacks; model focus degrades.
+- **Cost and latency inflation**: Every subsequent turn incurs massive processing overhead.
+
+Pi's native compaction activates only when approaching the provider's physical limit.
+AIES decouples the **AIES operational budget** from the **provider context window**:
+delegation is the primary prevention mechanism, and proactive compaction is the secondary
+safety net.
+
+### Delegation as primary prevention, compaction as secondary mechanism
+
+```
++-------------------------------------------------------------------------+
+| Prevention (Primary): Child Agent Delegation (aies_delegate)            |
+|   - Explore investigates codebases (read-only)                          |
+|   - Worker implements changes in isolated sub-sessions                  |
+|   - Verify tests artifacts with independent OS containment              |
+|   => Large tool outputs stay inside disposable child sessions           |
++-------------------------------------------------------------------------+
+                                    |
+                                    v (Parent context grows from conversations & decisions)
++-------------------------------------------------------------------------+
+| Hygiene: Tool-Output Hygiene (Parent Session)                           |
+|   - Outputs > 32k chars truncated with head+tail retention (12k chars)  |
+|   - aies_delegate handoffs STRICTLY exempt (verdict/defect protection)  |
++-------------------------------------------------------------------------+
+                                    |
+                                    v (If Parent reaches operational compaction threshold)
++-------------------------------------------------------------------------+
+| Safe Compaction (Secondary): Single-Flight Compaction at agent_settled  |
+|   - Triggers at settled boundary (never mid-turn or during tools)       |
+|   - Wraps Pi's callback-based ctx.compact() into an async Promise       |
+|   - Curated prompt preserves decisions, architecture, tasks & contracts |
++-------------------------------------------------------------------------+
+```
+
+### Context budgets and zones
+
+Configured in `profile/aies.json` under `context`:
+
+| Zone | Condition | Behavior |
+|---|---|---|
+| `green` | `< 80k` tokens | Normal operation. |
+| `amber` | `>= 80k` tokens | Target threshold reached. Routing signals encourage delegation. |
+| `pressure` | `>= 100k` tokens | Context pressure active. Footer displays warning (`ctx ...!`). Soft pressure to delegate. |
+| `compact` | `>= 120k` tokens | Scheduled for compaction at next `agent_settled`. |
+| `ceiling` | `>= 150k` tokens | Hard operational ceiling. Direct heavy tools (`read`, `edit`, `write`, search, heavy bash) blocked; `aies_delegate` remains strictly allowed. |
+
+For models with smaller context windows (e.g. 128k), budgets adapt dynamically:
+`effectiveThreshold = min(absoluteThreshold, floor(ratio * contextWindow))`.
+
+### Proactive compaction at safe boundary
+
+Compaction in the parent session obeys strict lifecycle invariants:
+1. **Safe Boundary (`agent_settled`)**: Compaction is never triggered mid-turn or during tool execution. When tokens cross `compactTokens` (120k), a compaction request is scheduled and executed once the agent has fully settled.
+2. **Async Serialization (Single-Flight)**: Pi's `ctx.compact({ customInstructions, onComplete, onError })` executes an asynchronous IIFE. The governor wraps this callback contract into a Promise (`compactingPromise`) and tracks `isCompacting`, preventing concurrent or overlapping compactions.
+3. **Structured Instruction Retention (`AIES_COMPACTION_INSTRUCTIONS`)**: Instead of generic summarization, compaction is instructed to preserve architectural decisions, completed work, active tasks, verification status, file paths, and external constraints, while eliminating verbose intermediate tool outputs.
+4. **Resilience**: If compaction fails, the governor records the failure, enters a cool-down state (`compactionCooldownUntil`), and allows conversation to continue without crashing Pi.
+
+### Tool-output hygiene
+
+Parent tool results exceeding 32,000 characters are sanitized before being committed to conversation history:
+- **Head + Tail Truncation**: Retains the first 8,000 characters and last 4,000 characters, joined by a structured marker: `[... AIES Context Governor: X characters omitted ...]`.
+- **Handoff Protection**: Results from `aies_delegate` are strictly exempt from truncation, ensuring that structured child handoffs (verdicts, defects, evidence, diffs) arrive intact.
+
 ## Verification model
 
 All checks run with a temporary `AIES_HOME` and a deliberately hostile ambient
