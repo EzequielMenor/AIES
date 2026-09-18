@@ -306,6 +306,30 @@ Parent retains model API keys and coordinates from the host; child tool executio
 
 ---
 
+## D15 - Bounded Task Autonomy: ContinuationController at Safe Settled Boundary, Strict Compaction Ordering, and Circuit Breakers
+
+**Decision.**
+1. Bounded task autonomy is controlled continuation of an active Linear ticket workflow (`LOAD -> START -> PLAN/ROUTE -> EXPLORE -> WORKER -> VERIFY -> REPAIR? -> PASS -> LINEAR COMPLETE -> DONE`). It is NOT an infinite autopilot, multi-ticket runner, or backlog crawler.
+2. A single conceptual authority (`ContinuationController`) decides whether to continue automatically. It evaluates exclusively at the `agent_settled` boundary (the Pi lifecycle event fired when an agent run has fully settled and no automatic retry, compaction, or queued continuation will run).
+3. Continuation is single-flight: exactly one follow-up message (`pi.sendUserMessage(AIES_CONTINUATION_PROMPT, { deliverAs: "followUp" })`) is dispatched per settled event. Duplicate settled events while a continuation turn is pending are ignored.
+4. Compaction takes strict priority over continuation: when compaction is pending at settled boundary, `governor.handleSettled(ctx)` is awaited to `onComplete` BEFORE `controller.handleSettled` evaluates. Compaction and continuation never run concurrently.
+5. Circuit breakers: maximum 20 continuations per ticket (`continuation_limit`), and automatic stop if 3 consecutive settled states produce the exact same fingerprint (`no_progress`).
+6. Safety pauses: user permission prompts (`ask`), substantial task scope changes, or blockers halt autonomy safely and return control to the developer.
+7. Session resume safety: session snapshots persist autonomy metrics and ticket state across `/resume`, but `state.enabled` is unconditionally restored as `false`.
+
+**Why.**
+- An unconstrained agent loop risks spinning endlessly, consuming tokens and API quotas on failing repairs or unrecognized deadlocks. Bounding continuation to a single active ticket with hard limits (20 turns, 3 identical fingerprints) guarantees bounded execution.
+- Pi's `agent_settled` hook is the only structurally safe boundary for extension-initiated turn continuations. Triggering follow-ups mid-turn or during tool execution creates race conditions with Pi's internal turn management.
+- Firing follow-up turns while compaction is in progress risks corrupting session context or compacting while the LLM is responding. Awaiting compaction to `onComplete` ensures clean, serial context transitions.
+- Automatic resume after session restore risks unmonitored code execution in background terminals. Explicit user activation via `/aies-run` ensures human oversight.
+
+**Consequence.**
+- Developers can activate bounded autonomy via `/aies-run [ticketId]` and safely let AIES progress through explore, implement, verify, repair, and complete phases.
+- Autonomy halts cleanly upon reaching Done or facing a real blocker, with zero infinite loops.
+- Existing routing, verification, permission, context governor, and Linear gate invariants remain strictly enforced.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

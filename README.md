@@ -15,7 +15,8 @@ The command is `aies`; underneath it is `pi`.
 > Phase status: isolated bootstrap (AIES-001), session metrics baseline
 > (AIES-002), isolated child delegation (AIES-003 explore, AIES-004 worker and
 > routing, AIES-005 independent verify), permission boundaries and OS sandbox
-> (AIES-006), context governor (AIES-007), and Linear ticket workflow (AIES-008).
+> (AIES-006), context governor (AIES-007), Linear ticket workflow (AIES-008), and
+> bounded task autonomy (AIES-009).
 > See [Scope](#scope).
 
 ## Requirements
@@ -204,7 +205,7 @@ OS-level sandboxing with Darwin Seatbelt. Phase 7 established the Context
 Governor with operational budgets, proactive single-flight compaction, and
 tool-output hygiene.
 
-Phase 8 (current) establishes the Linear Ticket Workflow:
+Phase 8 established the Linear Ticket Workflow:
 - the Parent session is the sole owner of Linear workflow; child agents have zero Linear tools or schemas;
 - raw issue payloads normalize into compact contracts (< 2,500 chars) with explicit criteria extraction;
 - transport abstraction with deterministic in-memory fakes and typed MCP integration;
@@ -212,5 +213,12 @@ Phase 8 (current) establishes the Linear Ticket Workflow:
 - remote conflict detection before completion;
 - snapshot persistence across session boundaries.
 
-Explicitly out of scope for this phase: autonomous multi-ticket continuation,
-automated backlog polling, automatic push, PR, merge or deploy (deferred to AIES-009).
+Phase 9 (current) establishes Bounded Task Autonomy & Continuation Controller:
+- single continuation authority (`ContinuationController`) evaluating at `agent_settled`;
+- single-flight follow-up message (`/aies-run [ticketId | stop | status]`);
+- strict ordering with Context Governor: compaction is strictly awaited to `onComplete` before continuation;
+- safe stopping on completion, permission prompt (`ask`), verification stop, or blockers;
+- circuit breakers: 20-continuation ceiling and 3-consecutive-identical-fingerprint progress check;
+- session resume safety: restored sessions restore ticket and metrics but remain paused (`enabled = false`).
+
+Explicitly out of scope: infinite multi-ticket backlog runners, unmonitored git push/PR, and background auto-polling.

@@ -506,6 +506,59 @@ Request Linear complete
 - **Pi Session Snapshot**: On `agent_settled`, `TicketManager` persists an `aies-ticket` entry to the Pi session, storing active ticket identifier, work state, and touched paths. On session resume or reload, ticket state is restored without remote network calls.
 - **Status & Footer**: The footer displays the active ticket identifier (`AIES · EZE-123 · ...`), and `/aies-status` renders a dedicated `Ticket:` report section displaying ticket status, criteria progress, and Done Gate readiness.
 
+## Bounded task autonomy (`extensions/aies-agents/autonomy/`)
+
+AIES-009. Bounded autonomy is controlled continuation of an active Linear ticket workflow (`LOAD -> START -> PLAN/ROUTE -> EXPLORE -> WORKER -> VERIFY -> REPAIR? -> PASS -> LINEAR COMPLETE -> DONE`). It is NOT an infinite autopilot, multi-ticket runner, or backlog crawler.
+
+```
++-------------------------------------------------------------------------+
+| ContinuationController (extensions/aies-agents/autonomy/)               |
+|   - Evaluates at agent_settled boundary only                            |
+|   - Coordinates strictly with Context Governor (awaits onComplete)      |
+|   - Single-flight deduplication: exactly one follow-up per settle       |
+|   - Stops on completion, blockers, permission prompt, or no-progress    |
+|   - Circuit breaker: MAX_AUTO_CONTINUATIONS = 20                        |
++-------------------------------------------------------------------------+
+        |
+        v pi.sendUserMessage(AIES_CONTINUATION_PROMPT, { deliverAs: "followUp" })
++-------------------------------------------------------------------------+
+| Parent Agent Turn (Pi Session)                                          |
+|   - Follows Linear ticket contract, routing guardrails & Done Gate      |
+|   - Child delegations (Explore, Worker, Verify) run in isolated context |
++-------------------------------------------------------------------------+
+```
+
+### Components
+
+| Module | Responsibility |
+|---|---|
+| `types.ts` | State interfaces (`AutonomyState`, `ContinuationDecision`, `AutonomyTelemetry`, `AutonomySnapshot`) |
+| `policy.ts` | Pure evaluation (`evaluateContinuation`) and state fingerprinting (`computeStateFingerprint`) |
+| `controller.ts` | Runtime authority (`ContinuationController`): lifecycle hooks, single-flight deduplication, Pi message dispatch |
+| `command.ts` | Developer command (`/aies-run [ticketId \| stop \| status]`) |
+| `index.ts` | Barrel export |
+
+### Coordination with Context Governor (AIES-007)
+
+Mandatory ordering: context compaction takes priority over task continuation. When context pressure enters the `compact` zone at the end of a turn:
+1. `governor.handleSettled(ctx)` wraps Pi's callback-based `ctx.compact()` in a Promise and awaits completion.
+2. `controller.handleSettled(ctx)` runs only after `onComplete` is reached.
+3. If compaction fails at ceiling, the controller halts autonomy with `context_failure` to prevent runaway token exhaustion.
+
+### Stop and Pause Conditions
+
+- `completed`: Ticket marked Done in Linear through Done Gate. Autonomy halts cleanly with 0 additional follow-ups.
+- `user_required`: Permission prompt (`ask`) or substantial task scope change pauses autonomy safely for human input.
+- `blocked`: Verification blocked, OS sandbox unavailable, Linear remote conflict, or Linear network failure post-PASS.
+- `repair_limit` / `verification_failed`: Verification policy exhausted repair attempts or repeated failure signatures.
+- `no_progress`: 3 consecutive settled states produce the exact same fingerprint.
+- `continuation_limit`: Circuit breaker triggers after 20 consecutive autonomous continuations on a ticket.
+- `user_stopped`: Manually cancelled via `/aies-run stop`.
+
+### Session Resume Safety
+
+Session snapshot persistence records `aies-autonomy` state entries across `/resume`. On restart, ticket and metrics are restored, but autonomy is explicitly set to `enabled = false`. Work never continues autonomously without an explicit user command.
+
 ## Verification model
 
 All checks run with a temporary `AIES_HOME` and a deliberately hostile ambient
