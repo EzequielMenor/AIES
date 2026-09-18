@@ -96,6 +96,18 @@ const VERIFY_ALLOWED_OUTPUT_SUBDIRS = [
   ".tmp",
 ];
 
+export function buildWorkspaceSecretPatterns(workspaceRoot: string): string[] {
+  return [
+    join(workspaceRoot, ".env"),
+    join(workspaceRoot, ".env.*"),
+    join(workspaceRoot, "**/.env*"),
+    join(workspaceRoot, "*.pem"),
+    join(workspaceRoot, "**/*.pem"),
+    join(workspaceRoot, "*.key"),
+    join(workspaceRoot, "**/*.key"),
+  ];
+}
+
 /**
  * Build sandbox configuration for Worker role.
  */
@@ -104,9 +116,11 @@ export function buildWorkerSandboxConfig(
   options?: SandboxConfigOptions,
 ): SandboxRuntimeConfig {
   const agentDir = getAgentDir();
+  const workspaceSecrets = buildWorkspaceSecretPatterns(workspaceRoot);
   const denyReadPaths = [
     ...COMMON_DENY_READ,
     join(agentDir, "auth.json"),
+    ...workspaceSecrets,
     ...(options?.extraDenyRead ?? []),
   ];
 
@@ -126,10 +140,7 @@ export function buildWorkerSandboxConfig(
       denyRead: denyReadPaths,
       allowWrite: allowWritePaths,
       denyWrite: [
-        ".env",
-        ".env.*",
-        "*.pem",
-        "*.key",
+        ...workspaceSecrets,
         ...(options?.extraDenyWrite ?? []),
       ],
     },
@@ -145,9 +156,11 @@ export function buildVerifySandboxConfig(
   options?: SandboxConfigOptions,
 ): SandboxRuntimeConfig {
   const agentDir = getAgentDir();
+  const workspaceSecrets = buildWorkspaceSecretPatterns(workspaceRoot);
   const denyReadPaths = [
     ...COMMON_DENY_READ,
     join(agentDir, "auth.json"),
+    ...workspaceSecrets,
     ...(options?.extraDenyRead ?? []),
   ];
 
@@ -183,8 +196,7 @@ export function buildVerifySandboxConfig(
       denyRead: denyReadPaths,
       allowWrite: allowedOutputRoots,
       denyWrite: [
-        ".env",
-        ".env.*",
+        ...workspaceSecrets,
         ...(options?.extraDenyWrite ?? []),
       ],
     },

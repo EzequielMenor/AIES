@@ -46,21 +46,26 @@ PR opening, and persistent memory across sessions.
 | T8 Unit test suite: `tests/permissions.test.mjs` | this branch | `test(permissions): add unit test suite for permission boundaries` |
 | T9 Smoke E2E test: `tests/smoke-permissions.test.mjs` | this branch | `test(permissions): add real smoke test for permission boundaries` |
 | T10 Documentation: architecture, locked decisions, and task record | this branch | `docs: document permission boundaries and record AIES-006 task` |
+| T11 Hardening: symlink escape & workspace secret containment | this branch | `fix(permissions): harden OS sandbox against symlink escapes and workspace secrets` |
 
 ## Verification evidence
 
 | Check | Command | Result |
 |-------|---------|--------|
-| Full test suite | `npm test` | 170/170 pass across 40 test suites |
-| Isolation script | `npm run check:isolation` | pass (same 170 checks under temporary `AIES_HOME`) |
+| Full test suite | `npm test` | 175/175 pass across 40 test suites |
+| Isolation script | `npm run check:isolation` | pass (same 175 checks under temporary `AIES_HOME`) |
 | Shell syntax | `bash -n bin/aies scripts/*.sh` | clean |
 | Explore unchanged | `tests/permissions.test.mjs` | Explore session has only read/search tools; no bash, edit, or write |
 | Worker workspace write | `tests/permissions.test.mjs` | Worker can write and edit files inside workspace root |
 | Worker path escape denied | `tests/permissions.test.mjs` | Contained tools reject writes outside workspace root |
 | Worker secret files denied | `tests/permissions.test.mjs` | Contained tools reject writes to `.env`, `.env.*`, `*.pem`, `*.key` |
+| Worker symlink escape denied | `tests/permissions.test.mjs` | Symlinks inside workspace pointing outside are blocked by Seatbelt syscall denial |
+| Worker secrets via bash denied | `tests/permissions.test.mjs` | Indirect read/write of `.env*`, `*.pem`, `*.key` via Node denied by Seatbelt sandbox |
 | Verify indirect write denied | `tests/permissions.test.mjs` | `node -e "fs.writeFileSync(...)"` in Verify denied by Seatbelt sandbox (`EACCES` / `Operation not permitted`) |
 | Verify checks allowed | `tests/permissions.test.mjs` | Read-only inspection and checks succeed under sandbox in Verify |
 | Verify output roots allowed | `tests/permissions.test.mjs` | Writes to `.cache/test.json` succeed in Verify while source remains read-only |
+| Verify symlink escape denied | `tests/permissions.test.mjs` | Symlinks inside output roots pointing to `src/` are blocked by Seatbelt syscall denial |
+| Verify secrets via bash denied | `tests/permissions.test.mjs` | Indirect read/write of workspace secrets denied by Seatbelt sandbox in Verify |
 | Secret paths unreadable | `tests/permissions.test.mjs` | Sandbox filesystem denyRead contains `~/.ssh`, `~/.aws`, and `auth.json` |
 | Destructive git denied | `tests/permissions.test.mjs` | `git push`, `git reset --hard`, `git clean -fd`, `git checkout .`, `git branch -D` denied |
 | ASK behavior (UI vs no-UI) | `tests/permissions.test.mjs` | Package mutations prompt confirm with UI; auto-deny (`ASK -> DENY`) without UI |

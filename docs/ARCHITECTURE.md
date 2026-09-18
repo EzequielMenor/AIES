@@ -355,7 +355,8 @@ Commands executed in child sessions are evaluated before execution:
 Syscall containment uses `@anthropic-ai/sandbox-runtime` (Apple Seatbelt `sandbox-exec` on macOS, `bubblewrap` on Linux):
 - **No Regex Security Theatre**: Verifier read-only integrity is enforced by the operating system kernel, not regex matching on command strings. Indirect write attempts via `node -e "fs.writeFileSync(...)"`, `python3`, `ruby`, or third-party binaries fail at the OS syscall layer (`EACCES` / `Operation not permitted`).
 - **Verify Output Roots**: Pre-creates permitted output subdirectories (`.cache`, `coverage`, `dist`, `build`, etc.) on the host filesystem before initializing the Seatbelt sandbox, enabling test runners and compilers to emit build artifacts while keeping the entire source tree strictly read-only.
-- **Secret Protection**: `COMMON_DENY_READ` blocks reading `~/.ssh`, `~/.aws`, `~/.gnupg`, and Pi's `auth.json`. Contained tools deny access to `.env*`, `*.pem`, and `*.key`.
+- **Secret Protection**: `COMMON_DENY_READ` blocks reading `~/.ssh`, `~/.aws`, `~/.gnupg`, and Pi's `auth.json`. Workspace secrets (`.env*`, `*.pem`, `*.key`) are anchored in both `denyRead` and `denyWrite` at the sandbox level and blocked by contained tools.
+- **Symlink Escape Protection**: Symlink traversals are resolved to canonical target paths by the OS kernel. Symlinks inside permitted output roots pointing to source, or inside the workspace pointing outside, fail on write with OS-level permission denial (`Operation not permitted`), leaving target files untouched.
 - **Graceful Degradation**: If sandboxing is disabled (`AIES_SANDBOX=0`) or unsupported on the host platform, Worker logs a warning and falls back to unsandboxed execution. Verify strictly refuses execution (`throw new Error(...)`) because independent verification requires OS-level enforcement to guarantee artifact integrity.
 
 ## Verification model

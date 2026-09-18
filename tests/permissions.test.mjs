@@ -17,8 +17,8 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -198,6 +198,31 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(res3.isError, true);
       assert.match(res3.content[0].text, /protected file.*cannot be modified directly/i);
     });
+
+    it("blocks symlink escape from workspace to outside paths in Worker", async () => {
+      if (!isSandboxSupported()) {
+        return;
+      }
+
+      const outsideDir = mkdtempSync(join(homedir(), "aies-outside-symlink-"));
+      try {
+        const outsideFile = join(outsideDir, "target.txt");
+        writeFileSync(outsideFile, "original outside");
+
+        symlinkSync(outsideDir, join(fixtureDir, "outside_link"));
+
+        const script = "const fs = require('fs'); fs.writeFileSync('outside_link/pwned.txt', 'escaped');";
+        const result = await executeSandboxedCommand(`node -e "${script}"`, fixtureDir, {
+          role: "worker",
+        });
+
+        assert.notEqual(result.exitCode, 0, "Symlink write outside workspace must fail");
+        assert.ok(result.sandboxDenied, "Result should flag sandbox denial");
+        assert.equal(existsSync(join(outsideDir, "pwned.txt")), false, "No file escaped outside workspace");
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("3. Verify Source Protection via OS Sandbox", () => {
@@ -255,6 +280,44 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(result.stdout.trim(), "CACHED");
       assert.equal(readFileSync(join(fixtureDir, ".cache", "test.json"), "utf8"), '{"ok":true}');
     });
+
+    it("blocks symlink escape from allowed output root to source in Verify", async () => {
+      if (!isSandboxSupported()) {
+        return;
+      }
+
+      const distDir = join(fixtureDir, "dist");
+      mkdirSync(distDir, { recursive: true });
+      symlinkSync(join(fixtureDir, "src"), join(distDir, "leak_src"));
+
+      const script = "const fs = require('fs'); fs.writeFileSync('dist/leak_src/hacked.txt', 'pwned');";
+      const result = await executeSandboxedCommand(`node -e "${script}"`, fixtureDir, {
+        role: "verify",
+      });
+
+      assert.notEqual(result.exitCode, 0, "Symlink write to source must fail in Verify");
+      assert.ok(result.sandboxDenied, "Result should flag sandbox denial");
+      assert.equal(existsSync(join(fixtureDir, "src", "hacked.txt")), false, "No file created in src/");
+    });
+
+    it("blocks symlink overwrite of source files in Verify", async () => {
+      if (!isSandboxSupported()) {
+        return;
+      }
+
+      const distDir = join(fixtureDir, "dist");
+      mkdirSync(distDir, { recursive: true });
+      symlinkSync(join(fixtureDir, "src", "index.js"), join(distDir, "file_link.js"));
+
+      const script = "const fs = require('fs'); fs.writeFileSync('dist/file_link.js', 'OVERWRITTEN');";
+      const result = await executeSandboxedCommand(`node -e "${script}"`, fixtureDir, {
+        role: "verify",
+      });
+
+      assert.notEqual(result.exitCode, 0, "Symlink overwrite of source file must fail in Verify");
+      assert.ok(result.sandboxDenied, "Result should flag sandbox denial");
+      assert.equal(readFileSync(join(fixtureDir, "src", "index.js"), "utf8"), "console.log('original');\n");
+    });
   });
 
   describe("4. Secret and Host Credentials Protection", () => {
@@ -269,6 +332,74 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.ok(verifyConfig.filesystem.denyRead.some((p) => p.includes(".ssh")));
       assert.ok(verifyConfig.filesystem.denyRead.some((p) => p.includes(".aws")));
       assert.ok(verifyConfig.filesystem.denyRead.some((p) => p.includes("auth.json")));
+    });
+
+    it("blocks reading and writing workspace secrets (.env, *.pem, *.key) via bash in Worker", async () => {
+      if (!isSandboxSupported()) {
+        return;
+      }
+
+      writeFileSync(join(fixtureDir, ".env"), "SECRET_ENV=42\n");
+      writeFileSync(join(fixtureDir, "fixture.pem"), "CERT_DATA\n");
+      writeFileSync(join(fixtureDir, "fixture.key"), "KEY_DATA\n");
+      mkdirSync(join(fixtureDir, "config"), { recursive: true });
+      writeFileSync(join(fixtureDir, "config", ".env.local"), "SUB_SECRET=99\n");
+
+      // 1. Worker read attempts
+      const readEnv = await executeSandboxedCommand("node -e \"require('fs').readFileSync('.env', 'utf8')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(readEnv.exitCode, 0, "Reading .env must fail in Worker");
+      assert.ok(readEnv.sandboxDenied, "Reading .env must trigger sandbox denial");
+
+      const readPem = await executeSandboxedCommand("node -e \"require('fs').readFileSync('fixture.pem', 'utf8')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(readPem.exitCode, 0, "Reading fixture.pem must fail in Worker");
+      assert.ok(readPem.sandboxDenied, "Reading fixture.pem must trigger sandbox denial");
+
+      const readKey = await executeSandboxedCommand("node -e \"require('fs').readFileSync('fixture.key', 'utf8')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(readKey.exitCode, 0, "Reading fixture.key must fail in Worker");
+      assert.ok(readKey.sandboxDenied, "Reading fixture.key must trigger sandbox denial");
+
+      const readSubEnv = await executeSandboxedCommand("node -e \"require('fs').readFileSync('config/.env.local', 'utf8')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(readSubEnv.exitCode, 0, "Reading config/.env.local must fail in Worker");
+      assert.ok(readSubEnv.sandboxDenied, "Reading config/.env.local must trigger sandbox denial");
+
+      // 2. Worker write attempts
+      const writeEnv = await executeSandboxedCommand("node -e \"require('fs').writeFileSync('.env', 'HACKED')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(writeEnv.exitCode, 0, "Writing .env must fail in Worker");
+      assert.ok(writeEnv.sandboxDenied, "Writing .env must trigger sandbox denial");
+      assert.equal(readFileSync(join(fixtureDir, ".env"), "utf8"), "SECRET_ENV=42\n");
+
+      const writePem = await executeSandboxedCommand("node -e \"require('fs').writeFileSync('fixture.pem', 'HACKED')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(writePem.exitCode, 0, "Writing fixture.pem must fail in Worker");
+      assert.ok(writePem.sandboxDenied, "Writing fixture.pem must trigger sandbox denial");
+      assert.equal(readFileSync(join(fixtureDir, "fixture.pem"), "utf8"), "CERT_DATA\n");
+
+      const writeKey = await executeSandboxedCommand("node -e \"require('fs').writeFileSync('fixture.key', 'HACKED')\"", fixtureDir, { role: "worker" });
+      assert.notEqual(writeKey.exitCode, 0, "Writing fixture.key must fail in Worker");
+      assert.ok(writeKey.sandboxDenied, "Writing fixture.key must trigger sandbox denial");
+      assert.equal(readFileSync(join(fixtureDir, "fixture.key"), "utf8"), "KEY_DATA\n");
+    });
+
+    it("blocks reading and writing workspace secrets (.env, *.pem, *.key) via bash in Verify", async () => {
+      if (!isSandboxSupported()) {
+        return;
+      }
+
+      writeFileSync(join(fixtureDir, ".env"), "SECRET_ENV=42\n");
+      writeFileSync(join(fixtureDir, "fixture.pem"), "CERT_DATA\n");
+      writeFileSync(join(fixtureDir, "fixture.key"), "KEY_DATA\n");
+
+      const readEnv = await executeSandboxedCommand("node -e \"require('fs').readFileSync('.env', 'utf8')\"", fixtureDir, { role: "verify" });
+      assert.notEqual(readEnv.exitCode, 0, "Reading .env must fail in Verify");
+      assert.ok(readEnv.sandboxDenied, "Reading .env must trigger sandbox denial");
+
+      const writeEnv = await executeSandboxedCommand("node -e \"require('fs').writeFileSync('.env', 'HACKED')\"", fixtureDir, { role: "verify" });
+      assert.notEqual(writeEnv.exitCode, 0, "Writing .env must fail in Verify");
+      assert.ok(writeEnv.sandboxDenied, "Writing .env must trigger sandbox denial");
+      assert.equal(readFileSync(join(fixtureDir, ".env"), "utf8"), "SECRET_ENV=42\n");
+
+      const readKey = await executeSandboxedCommand("node -e \"require('fs').readFileSync('fixture.key', 'utf8')\"", fixtureDir, { role: "verify" });
+      assert.notEqual(readKey.exitCode, 0, "Reading fixture.key must fail in Verify");
+      assert.ok(readKey.sandboxDenied, "Reading fixture.key must trigger sandbox denial");
     });
 
     it("identifies secret paths correctly via isProtectedFile helper", () => {
