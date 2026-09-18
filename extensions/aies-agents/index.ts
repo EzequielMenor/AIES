@@ -1,9 +1,10 @@
 /**
- * AIES agents extension (AIES-004, AIES-005).
+ * AIES agents extension (AIES-004, AIES-005, AIES-007).
  *
- * Registers the `aies_delegate` tool, enforces parent routing guardrails, and
- * owns the verification record: a parent edit or write invalidates a PASS, and
- * the delegate tool itself records Worker runs and verification verdicts.
+ * Registers the `aies_delegate` tool, enforces parent routing guardrails,
+ * governs parent context budgets and compaction, and owns the verification record:
+ * a parent edit or write invalidates a PASS, and the delegate tool itself records
+ * Worker runs and verification verdicts.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -22,6 +23,10 @@ import {
   createVerificationState,
   type VerificationState,
 } from "./verification.ts";
+import {
+  getContextGovernor,
+  type ContextGovernor,
+} from "./context-governor.ts";
 
 /** Native tools that change the work unit when the parent uses them directly. */
 const PARENT_MUTATION_TOOLS = ["edit", "write"];
@@ -29,6 +34,7 @@ const PARENT_MUTATION_TOOLS = ["edit", "write"];
 export default function aiesAgents(pi: ExtensionAPI): void {
   let routingState: RoutingState = createRoutingState();
   let verification: VerificationState = createVerificationState();
+  const governor: ContextGovernor = getContextGovernor();
 
   pi.registerTool(
     createDelegateTool({
@@ -44,11 +50,15 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const input = event.input as Record<string, unknown> | undefined;
 
-    // Check hard guardrails before tool execution
-    const guard = checkRoutingGuardrail(routingState, {
-      toolName: event.toolName,
-      input,
-    });
+    // Check hard guardrails before tool execution (routing limits + context governor ceiling)
+    const guard = checkRoutingGuardrail(
+      routingState,
+      {
+        toolName: event.toolName,
+        input,
+      },
+      governor,
+    );
 
     if (guard.block) {
       return { block: true, reason: guard.reason };
@@ -72,7 +82,7 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     );
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (event.toolName === "aies_delegate") {
       const input = event.input as Record<string, unknown> | undefined;
       const outcome = event.isError ? "failed" : "done";
@@ -82,11 +92,54 @@ export default function aiesAgents(pi: ExtensionAPI): void {
         outcome,
         Date.now(),
       );
+      return;
+    }
+
+    // Feed current context usage to governor
+    try {
+      governor.updateUsage(ctx.getContextUsage());
+    } catch {
+      // Degrade silently if context is unavailable
+    }
+
+    // Apply tool output hygiene and oversized truncation (handoffs already bypassed)
+    const filter = governor.processToolResult({
+      toolName: event.toolName,
+      content: event.content,
+      isError: event.isError,
+    });
+
+    if (filter.modified) {
+      return { content: filter.content };
     }
   });
 
-  pi.on("session_start", async () => {
+  pi.on("turn_end", async (_event, ctx) => {
+    try {
+      governor.updateUsage(ctx.getContextUsage());
+    } catch {}
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    try {
+      governor.updateUsage(ctx.getContextUsage());
+      await governor.handleSettled(ctx);
+    } catch {}
+  });
+
+  pi.on("session_compact", async () => {
+    governor.onCompactionSuccess();
+  });
+
+  pi.on("session_compact_failed", async (event) => {
+    governor.onCompactionFailure(event.errorMessage ?? "Compaction failed");
+  });
+
+  pi.on("session_start", async (event) => {
     routingState = createRoutingState();
     verification = createVerificationState();
+    if (event.reason === "new") {
+      governor.reset();
+    }
   });
 }
