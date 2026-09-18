@@ -129,13 +129,14 @@ describe("AIES observability runtime", () => {
     const report = notifications.at(-1).message;
     assert.match(report, /^AIES — estado de la sesión$/mu);
     assert.match(report, /^Contexto:$/mu);
+    assert.match(report, /^Context governor:$/mu);
     assert.match(report, /^Padre:$/mu);
     assert.match(report, /^Permisos:$/mu);
     assert.match(report, /^Resultados de tools:$/mu);
     assert.match(report, /^Runtime:$/mu);
     assert.match(report, /Mide, no gobierna/u);
     // Compact on purpose: one section per group, no runaway growth.
-    assert.equal(report.split("\n").length, 38, `unexpected report shape:\n${report}`);
+    assert.equal(report.split("\n").length, 48, `unexpected report shape:\n${report}`);
 
     assert.deepEqual(records.filter((record) => record.type === "extension_error"), []);
   });
