@@ -18,6 +18,8 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import type { AgentRole } from "./model.ts";
+
 export interface ChildSessionOptions {
   task: string;
   context?: string;
@@ -36,7 +38,7 @@ export interface ChildSessionOptions {
  * Resolve system prompt for a role from agentDir or repo fallback.
  */
 export function resolveRoleSystemPrompt(
-  role: "explore" | "worker",
+  role: AgentRole,
   agentDir: string,
   override?: string,
 ): string {
@@ -59,6 +61,10 @@ export function resolveRoleSystemPrompt(
 
   if (role === "worker") {
     return "You are an isolated worker agent. Implement the assigned work unit and conclude with structured JSON.";
+  }
+
+  if (role === "verify") {
+    return "You are an isolated verification agent. Inspect the real repository state against the acceptance criteria and conclude with structured JSON.";
   }
 
   return "You are an isolated read-only explore agent. Investigate the codebase and conclude with structured JSON.";

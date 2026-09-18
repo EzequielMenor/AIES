@@ -1,0 +1,960 @@
+/**
+ * Test suite for AIES-005: Independent verification.
+ *
+ * Verifies:
+ * 1. Verify has no mutation primitive: no `edit`, no `write`, and a bash policy
+ *    that refuses git mutations, file mutation, in-place editing, dependency
+ *    installation and file redirection.
+ * 2. Verify can inspect: read-only git, repository checks and scoped search.
+ * 3. Fresh context: parent/Worker sentinels never reach the Verify child, and the
+ *    role refuses free-form context, so a Worker narrative has no path in.
+ * 4. Verify reads the real artifact and reports PASS, FAIL or BLOCKED from it.
+ * 5. A Worker claim that contradicts the repository produces FAIL, never PASS.
+ * 6. Verify never repairs: the fixture is byte-identical before and after.
+ * 7. Verification state: PASS invalidation by revision, bounded repair, early stop
+ *    on a repeated failure signature, and the requirement rule.
+ * 8. Metrics isolation: Verify's internal tools never touch parent counters.
+ */
+
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
+import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRuntime,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
+
+import { createDelegateTool } from "../extensions/aies-agents/delegate.ts";
+import {
+  MAX_HANDOFF_CHARS,
+  formatRepairBrief,
+  formatVerifyHandoff,
+  parseVerifyHandoff,
+  verifyFailureSignature,
+} from "../extensions/aies-agents/handoff.ts";
+import { resolveVerifyModel } from "../extensions/aies-agents/model.ts";
+import { createTgrepToolDefinition } from "../extensions/aies-agents/tgrep.ts";
+import {
+  applyToolCall,
+  applyToolResult,
+  createState,
+} from "../extensions/aies-runtime/state.ts";
+import {
+  MAX_REPAIR_CYCLES,
+  applyVerifyResult,
+  applyVerifyStart,
+  applyWorkerRepairStart,
+  applyWorkerResult,
+  applyWorkUnitChange,
+  buildRepairContext,
+  buildVerifyTaskInput,
+  createVerificationState,
+  isVerificationValid,
+  planVerification,
+  requiresVerification,
+  toVerificationReport,
+} from "../extensions/aies-agents/verification.ts";
+import {
+  createVerifyBashToolDefinition,
+  isCommandPermittedInVerify,
+} from "../extensions/aies-agents/verify-guard.ts";
+import { VERIFY_TOOLS, runVerifyAgent } from "../extensions/aies-agents/verify.ts";
+
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
+
+/** The sentinel the parent session carries; Verify must never see it. */
+const PARENT_SECRET = "WORKER_SECRET_SENTINEL_987";
+
+function fixtureDir(files) {
+  const dir = mkdtempSync(join(tmpdir(), "aies-verify-"));
+  for (const [name, content] of Object.entries(files)) {
+    const target = join(dir, name);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content);
+  }
+  return dir;
+}
+
+/** sha256 of every file in the tree, so "Verify did not touch it" is provable. */
+function treeHash(root) {
+  const digest = createHash("sha256");
+  const walk = (current) => {
+    for (const entry of readdirSync(current).sort()) {
+      const full = join(current, entry);
+      const stats = statSync(full);
+      if (stats.isDirectory()) walk(full);
+      else digest.update(`${relative(root, full)}:${readFileSync(full, "utf8")}\n`);
+    }
+  };
+  walk(root);
+  return digest.digest("hex");
+}
+
+async function fauxRuntime() {
+  const faux = fauxProvider();
+  const runtime = await ModelRuntime.create();
+  runtime.registerNativeProvider(faux.provider);
+  return { faux, runtime, model: faux.models[0] };
+}
+
+function transcriptOf(sessionManager) {
+  return JSON.stringify(sessionManager.getEntries());
+}
+
+function verifyHandoffJson(overrides = {}) {
+  return `\`\`\`json
+${JSON.stringify(
+  {
+    status: "pass",
+    summary: "Inspected the artifact.",
+    criteria: [{ criterion: "c", status: "pass", evidence: "file.js:1 shows 2000" }],
+    checks: [],
+    defects: [],
+    next: [],
+    ...overrides,
+  },
+  null,
+  2,
+)}
+\`\`\``;
+}
+
+describe("AIES-005 Verify command policy (read-only shell)", () => {
+  const allowed = [
+    "npm test",
+    "pnpm test",
+    "npm run lint",
+    "npm run typecheck",
+    "npm run build",
+    "pytest",
+    "cargo test",
+    "go test ./...",
+    "node --test tests/x.test.mjs",
+    "git status --porcelain",
+    "git diff",
+    "git diff --stat",
+    "git show HEAD~1",
+    "git log -n 5 --oneline",
+    "git blame src/a.ts",
+    "git ls-files",
+    "grep -rn timeout src/",
+    "sed -n '1,40p' src/a.ts",
+    "cat config.json",
+    "ls -la src/",
+    "npm test 2>&1",
+  ];
+
+  const blocked = [
+    "git clean -fd",
+    "git reset --hard HEAD~1",
+    "git checkout -- .",
+    "git checkout main",
+    "git switch main",
+    "git restore .",
+    "git commit -m x",
+    "git add -A",
+    "git stash",
+    "git apply patch.diff",
+    "git push origin main",
+    "git merge feature",
+    "git rebase main",
+    "git branch -D old",
+    "git tag v1",
+    "git fetch origin",
+    "git pull",
+    "git mv a.ts b.ts",
+    "git rm a.ts",
+    "rm -rf build",
+    "rm build/x.js",
+    "mv a.ts b.ts",
+    "cp a.ts b.ts",
+    "touch new.ts",
+    "mkdir new-dir",
+    "tee out.txt",
+    "truncate -s 0 a.ts",
+    "chmod 777 a.ts",
+    "dd if=/dev/zero of=x bs=1 count=1",
+    "sed -i 's/1000/2000/' config.js",
+    "perl -pi -e 's/1000/2000/' config.js",
+    "npm install",
+    "npm ci",
+    "pnpm add left-pad",
+    "yarn install",
+    "bun install",
+    "echo done > out.txt",
+    "npm test >> log.txt",
+    "sudo rm -rf /var/log",
+    "cat /etc/shadow",
+    "npm publish",
+    "vercel deploy",
+    "cd ../..",
+  ];
+
+  it("permits the checks and the read-only git inspection a verifier needs", () => {
+    for (const command of allowed) {
+      const result = isCommandPermittedInVerify(command, REPO_ROOT);
+      assert.equal(result.allowed, true, `${command} must be permitted: ${result.reason}`);
+    }
+  });
+
+  it("refuses every mutation vector a verifier must not have", () => {
+    for (const command of blocked) {
+      const result = isCommandPermittedInVerify(command, REPO_ROOT);
+      assert.equal(result.allowed, false, `${command} must be blocked`);
+      assert.ok(result.reason && result.reason.length > 0, `${command} must explain itself`);
+      assert.match(result.reason, /Verify/u, `${command} must name the policy that refused it`);
+    }
+  });
+
+  it("is not identical to the Worker policy: Verify is stricter about writes", () => {
+    for (const command of ["rm build/x.js", "cp a.ts b.ts", "git commit -m x", "npm install", "echo x > f"]) {
+      assert.equal(isCommandPermittedInVerify(command, REPO_ROOT).allowed, false, command);
+    }
+  });
+
+  it("blocks a mutation at the tool boundary, not only in the helper", async () => {
+    const tool = createVerifyBashToolDefinition(REPO_ROOT);
+    const result = await tool.execute(
+      "call-1",
+      { command: "git commit -m x" },
+      undefined,
+      undefined,
+      { cwd: REPO_ROOT },
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Command blocked by Verify safety guard/u);
+  });
+});
+
+describe("AIES-005 Verify tool surface", () => {
+  it("exposes no mutation tool at all", () => {
+    assert.ok(VERIFY_TOOLS.includes("read"));
+    assert.ok(VERIFY_TOOLS.includes("grep"));
+    assert.ok(VERIFY_TOOLS.includes("find"));
+    assert.ok(VERIFY_TOOLS.includes("ls"));
+    assert.ok(VERIFY_TOOLS.includes("tgrep"));
+    assert.ok(VERIFY_TOOLS.includes("bash"));
+    assert.equal(VERIFY_TOOLS.includes("edit"), false);
+    assert.equal(VERIFY_TOOLS.includes("write"), false);
+  });
+
+  it("builds a session whose active tools exclude edit and write", async () => {
+    const { runtime, model } = await fauxRuntime();
+
+    const loader = new DefaultResourceLoader({
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      systemPrompt: "Verify",
+    });
+    await loader.reload();
+
+    const { session } = await createAgentSession({
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      model,
+      modelRuntime: runtime,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(REPO_ROOT),
+      customTools: [
+        createTgrepToolDefinition(REPO_ROOT),
+        createVerifyBashToolDefinition(REPO_ROOT),
+      ],
+      tools: [...VERIFY_TOOLS],
+    });
+
+    try {
+      const active = session.getActiveToolNames();
+      assert.equal(active.includes("edit"), false, "Verify must not have 'edit'");
+      assert.equal(active.includes("write"), false, "Verify must not have 'write'");
+      assert.ok(active.includes("read"));
+      assert.ok(active.includes("bash"));
+      assert.ok(active.includes("tgrep"));
+    } finally {
+      session.dispose();
+    }
+  });
+});
+
+describe("AIES-005 Verify independence", () => {
+  it("never receives the parent or Worker sentinel unless it is an explicit fact", async () => {
+    const { faux, runtime, model } = await fauxRuntime();
+    const sessionManager = SessionManager.inMemory(REPO_ROOT);
+    faux.setResponses([
+      fauxAssistantMessage([{ type: "text", text: verifyHandoffJson() }]),
+      fauxAssistantMessage([
+        {
+          type: "text",
+          text: verifyHandoffJson({
+            criteria: [
+              { criterion: `Report the sentinel ${PARENT_SECRET}`, status: "pass", evidence: PARENT_SECRET },
+            ],
+          }),
+        },
+      ]),
+    ]);
+
+    // The parent session carries the sentinel; it is not part of Verify's input.
+    const parentScratchpad = `parent notes: ${PARENT_SECRET} is the Worker sentinel`;
+    assert.match(parentScratchpad, /987/u);
+
+    const untouched = await runVerifyAgent({
+      task: "Verify the timeout change",
+      criteria: ["TIMEOUT_MS is 2000"],
+      changedPaths: ["config.js"],
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      sessionManager,
+    });
+
+    assert.equal(untouched.status, "pass");
+    assert.equal(transcriptOf(sessionManager).includes(PARENT_SECRET), false, "sentinel leaked");
+
+    // The same assertion is not vacuous: a sentinel inside the criteria does appear.
+    const secondManager = SessionManager.inMemory(REPO_ROOT);
+    await runVerifyAgent({
+      task: "Verify the timeout change",
+      criteria: [`Report the sentinel ${PARENT_SECRET}`],
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      sessionManager: secondManager,
+    });
+
+    assert.equal(transcriptOf(secondManager).includes(PARENT_SECRET), true);
+  });
+
+  it("refuses free-form context, so a Worker narrative has no path into Verify", async () => {
+    const tool = createDelegateTool();
+
+    const result = await tool.execute(
+      "call-1",
+      {
+        role: "verify",
+        task: "Verify the timeout change",
+        criteria: ["TIMEOUT_MS is 2000"],
+        context: `Worker says: timeout updated to 2000. ${PARENT_SECRET}`,
+      },
+      undefined,
+      undefined,
+      { cwd: REPO_ROOT },
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /does not accept free-form context/u);
+    assert.doesNotMatch(result.content[0].text, /WORKER_SECRET_SENTINEL_987|Worker says/u);
+  });
+
+  it("requires acceptance criteria instead of accepting a bare task", async () => {
+    const tool = createDelegateTool();
+    const result = await tool.execute(
+      "call-1",
+      { role: "verify", task: "Verify the timeout change" },
+      undefined,
+      undefined,
+      { cwd: REPO_ROOT },
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /requires 'criteria'/u);
+  });
+
+  it("builds the child prompt from facts only", () => {
+    const workerClaim = "Worker says the timeout was updated to 2000 and everything passes";
+    const prompt = buildVerifyTaskInput({
+      task: "Update the request timeout to 2000ms",
+      criteria: ["TIMEOUT_MS is 2000", "npm test passes"],
+      changedPaths: ["config.js"],
+      baseRef: "HEAD~1",
+      checks: ["npm test"],
+    });
+
+    assert.match(prompt, /WORK UNIT: Update the request timeout to 2000ms/u);
+    assert.match(prompt, /1\. TIMEOUT_MS is 2000/u);
+    assert.match(prompt, /CHANGED PATHS:\n- config\.js/u);
+    assert.match(prompt, /BASE REF: HEAD~1/u);
+    assert.match(prompt, /SUGGESTED CHECKS/u);
+    assert.equal(prompt.includes(workerClaim), false);
+    assert.doesNotMatch(prompt, /Worker says|everything passes/u);
+  });
+});
+
+describe("AIES-005 Verify execution against a real fixture", () => {
+  it("runs the repository checks and reads the real file", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      const sessionManager = SessionManager.inMemory(dir);
+
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-read")]),
+        fauxAssistantMessage([fauxToolCall("bash", { command: "npm test" }, "call-test")]),
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: verifyHandoffJson({
+              checks: [{ check: "npm test", result: "exit 0" }],
+            }),
+          },
+        ]),
+      ]);
+
+      const handoff = await runVerifyAgent({
+        task: "Update the request timeout to 2000ms",
+        criteria: ["TIMEOUT_MS is 2000", "npm test passes"],
+        changedPaths: ["config.js"],
+        checks: ["npm test"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        sessionManager,
+        bashRunner: async () => ({ stdout: "3 checks passed\n", exitCode: 0 }),
+      });
+
+      assert.equal(handoff.status, "pass");
+
+      const transcript = transcriptOf(sessionManager);
+      assert.match(transcript, /TIMEOUT_MS = 2000/u, "Verify must have read the real file");
+      assert.match(transcript, /3 checks passed/u, "Verify must have run the real check");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns FAIL when the artifact does not satisfy the criteria", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 1000;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      const sessionManager = SessionManager.inMemory(dir);
+
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-read")]),
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: verifyHandoffJson({
+              status: "fail",
+              summary: "The timeout is still 1000.",
+              criteria: [
+                {
+                  criterion: "TIMEOUT_MS is 2000",
+                  status: "fail",
+                  evidence: "config.js:1 shows TIMEOUT_MS = 1000",
+                },
+              ],
+              defects: [
+                {
+                  severity: "blocking",
+                  file: "config.js",
+                  description: "TIMEOUT_MS is 1000, expected 2000",
+                  evidence: "read config.js:1",
+                },
+              ],
+            }),
+          },
+        ]),
+      ]);
+
+      const handoff = await runVerifyAgent({
+        task: "Update the request timeout to 2000ms",
+        criteria: ["TIMEOUT_MS is 2000"],
+        changedPaths: ["config.js"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        sessionManager,
+      });
+
+      assert.equal(handoff.status, "fail");
+      assert.equal(handoff.defects.length, 1);
+      assert.equal(handoff.defects[0].severity, "blocking");
+      assert.equal(handoff.defects[0].file, "config.js");
+      assert.match(transcriptOf(sessionManager), /TIMEOUT_MS = 1000/u, "the real value was observed");
+      assert.match(formatVerifyHandoff(handoff), /Blocking defects/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FAILs when a Worker claim contradicts the repository", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 1000;\n" });
+    try {
+      // The Worker's handoff for this very change.
+      const workerHandoff = {
+        status: "done",
+        summary: "Updated TIMEOUT_MS to 2000. All checks pass.",
+        changes: [{ file: "config.js", description: "timeout updated to 2000" }],
+        checks: [{ check: "npm test", result: "passed" }],
+        issues: [],
+        next: [],
+      };
+
+      const { faux, runtime, model } = await fauxRuntime();
+      const sessionManager = SessionManager.inMemory(dir);
+
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-read")]),
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: verifyHandoffJson({
+              status: "fail",
+              summary: `The Worker claimed the timeout is 2000 but the file says 1000.`,
+              criteria: [
+                {
+                  criterion: "TIMEOUT_MS is 2000",
+                  status: "fail",
+                  evidence: "config.js:1 shows 1000",
+                },
+              ],
+              defects: [
+                {
+                  severity: "blocking",
+                  file: "config.js",
+                  description: "TIMEOUT_MS is 1000, expected 2000",
+                  evidence: "read config.js:1",
+                },
+              ],
+            }),
+          },
+        ]),
+      ]);
+
+      // The Verify child is built only from the work unit and the criteria.
+      const prompt = buildVerifyTaskInput({
+        task: "Update the request timeout to 2000ms",
+        criteria: ["TIMEOUT_MS is 2000"],
+        changedPaths: workerHandoff.changes.map((change) => change.file),
+      });
+      assert.equal(prompt.includes(workerHandoff.summary), false, "the claim never reaches Verify");
+
+      const handoff = await runVerifyAgent({
+        task: "Update the request timeout to 2000ms",
+        criteria: ["TIMEOUT_MS is 2000"],
+        changedPaths: ["config.js"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        sessionManager,
+      });
+
+      assert.equal(handoff.status, "fail", "the repository, not the claim, decides");
+      assert.match(transcriptOf(sessionManager), /TIMEOUT_MS = 1000/u);
+      assert.equal(readFileSync(join(dir, "config.js"), "utf8"), "export const TIMEOUT_MS = 1000;\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns BLOCKED, not FAIL, when the check cannot run", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      const sessionManager = SessionManager.inMemory(dir);
+
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("bash", { command: "pytest" }, "call-test")]),
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: verifyHandoffJson({
+              status: "blocked",
+              summary: "pytest is not installed, so the acceptance criterion cannot be exercised.",
+              criteria: [{ criterion: "pytest passes", status: "blocked", evidence: "command not found" }],
+              checks: [{ check: "pytest", result: "exit 127: command not found" }],
+              defects: [],
+            }),
+          },
+        ]),
+      ]);
+
+      const handoff = await runVerifyAgent({
+        task: "Update the request timeout to 2000ms",
+        criteria: ["pytest passes"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        sessionManager,
+        bashRunner: async () => ({ stdout: "sh: pytest: command not found\n", exitCode: 127 }),
+      });
+
+      assert.equal(handoff.status, "blocked");
+      assert.notEqual(handoff.status, "fail");
+      assert.equal(planVerification(applyVerifyResult(createVerificationState(), handoff, 0)).action, "stop");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never repairs: the fixture is byte-identical after a FAIL, even when the child tries", async () => {
+    const dir = fixtureDir({
+      "config.js": "export const TIMEOUT_MS = 1000;\n",
+      "src/service.js": "export const t = 1000;\n",
+    });
+    try {
+      const before = treeHash(dir);
+
+      const { faux, runtime, model } = await fauxRuntime();
+      const sessionManager = SessionManager.inMemory(dir);
+      const executed = [];
+
+      faux.setResponses([
+        // The child tries to repair the defect through the shell.
+        fauxAssistantMessage([fauxToolCall("bash", { command: "sed -i 's/1000/2000/' config.js" }, "call-1")]),
+        fauxAssistantMessage([fauxToolCall("bash", { command: "git commit -am fix" }, "call-2")]),
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-3")]),
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: verifyHandoffJson({
+              status: "fail",
+              criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "fail", evidence: "config.js:1 shows 1000" }],
+              defects: [
+                {
+                  severity: "blocking",
+                  file: "config.js",
+                  description: "TIMEOUT_MS is 1000, expected 2000",
+                },
+              ],
+            }),
+          },
+        ]),
+      ]);
+
+      const handoff = await runVerifyAgent({
+        task: "Update the request timeout to 2000ms",
+        criteria: ["TIMEOUT_MS is 2000"],
+        changedPaths: ["config.js"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        sessionManager,
+        bashRunner: async (command) => {
+          executed.push(command);
+          return { stdout: "unexpected", exitCode: 0 };
+        },
+      });
+
+      assert.equal(handoff.status, "fail");
+      assert.deepEqual(executed, [], "a blocked command must never reach the shell");
+      assert.equal(treeHash(dir), before, "Verify modified the workspace");
+      assert.equal(readFileSync(join(dir, "config.js"), "utf8"), "export const TIMEOUT_MS = 1000;\n");
+
+      const transcript = transcriptOf(sessionManager);
+      assert.match(transcript, /Command blocked by Verify safety guard/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("AIES-005 Verify handoff", () => {
+  it("parses the three verdicts", () => {
+    for (const status of ["pass", "fail", "blocked"]) {
+      const handoff = parseVerifyHandoff(verifyHandoffJson({ status }));
+      assert.equal(handoff.status, status);
+    }
+  });
+
+  it("downgrades a PASS without evidence to BLOCKED", () => {
+    const handoff = parseVerifyHandoff(
+      verifyHandoffJson({
+        status: "pass",
+        criteria: [{ criterion: "Timeout is 2000", status: "pass" }],
+        checks: [],
+      }),
+    );
+
+    assert.equal(handoff.status, "blocked");
+    assert.match(handoff.summary, /without evidence/u);
+  });
+
+  it("is conservative on unreadable or malformed output", () => {
+    assert.equal(parseVerifyHandoff(undefined).status, "blocked");
+    assert.equal(parseVerifyHandoff("   ").status, "blocked");
+    assert.equal(parseVerifyHandoff("no structured block here").status, "blocked");
+    assert.equal(parseVerifyHandoff(verifyHandoffJson({ status: "maybe" })).status, "blocked");
+  });
+
+  it("caps the formatted verdict and keeps the repair brief to defects", () => {
+    const handoff = parseVerifyHandoff(
+      verifyHandoffJson({
+        status: "fail",
+        summary: "F".repeat(10_000),
+        defects: [
+          {
+            severity: "blocking",
+            file: "src/a.ts",
+            description: "d".repeat(500),
+            evidence: "e",
+          },
+        ],
+      }),
+    );
+
+    assert.ok(formatVerifyHandoff(handoff).length <= MAX_HANDOFF_CHARS + 100);
+    const brief = formatRepairBrief(handoff);
+    assert.match(brief, /src\/a\.ts/u);
+    assert.equal(brief.includes("F".repeat(50)), false, "the brief carries defects, not the summary");
+  });
+
+  it("derives a stable failure signature from the blocking defects", () => {
+    const one = parseVerifyHandoff(
+      verifyHandoffJson({
+        status: "fail",
+        defects: [{ severity: "blocking", file: "config.js", description: "TIMEOUT_MS is 1000, expected 2000" }],
+      }),
+    );
+    const same = parseVerifyHandoff(
+      verifyHandoffJson({
+        status: "fail",
+        summary: "Different wording entirely.",
+        defects: [{ severity: "blocking", file: "./config.js", description: "timeout_ms  is   1000, expected 2000" }],
+      }),
+    );
+    const other = parseVerifyHandoff(
+      verifyHandoffJson({
+        status: "fail",
+        defects: [{ severity: "blocking", file: "src/a.ts", description: "Type mismatch" }],
+      }),
+    );
+
+    assert.equal(verifyFailureSignature(one), verifyFailureSignature(same));
+    assert.notEqual(verifyFailureSignature(one), verifyFailureSignature(other));
+  });
+});
+
+describe("AIES-005 verification state and policy", () => {
+  const failedOnce = () =>
+    applyVerifyResult(
+      applyVerifyStart(createVerificationState(), 0),
+      parseVerifyHandoff(
+        verifyHandoffJson({
+          status: "fail",
+          defects: [{ severity: "blocking", file: "config.js", description: "TIMEOUT_MS is 1000" }],
+        }),
+      ),
+      1000,
+    );
+
+  it("requires verification for behaviour-bearing changes only", () => {
+    assert.equal(requiresVerification(["src/a.ts"]).required, true);
+    assert.equal(requiresVerification(["tests/a.test.mjs"]).required, true);
+    assert.equal(requiresVerification(["package.json"]).required, true);
+    assert.equal(requiresVerification(["README.md"]).required, false);
+    assert.equal(requiresVerification(["docs/ARCHITECTURE.md", "CHANGELOG.md"]).required, false);
+    assert.match(requiresVerification(["docs/x.md"]).reason, /documentation-only/u);
+    assert.equal(requiresVerification(["docs/x.md", "src/a.ts"]).required, true);
+    assert.deepEqual(requiresVerification([]).required, false);
+  });
+
+  it("invalidates a PASS as soon as the work unit changes", () => {
+    const handoff = parseVerifyHandoff(verifyHandoffJson());
+    const verified = applyVerifyResult(applyVerifyStart(createVerificationState(), 0), handoff, 500);
+
+    assert.equal(verified.status, "pass");
+    assert.equal(isVerificationValid(verified), true);
+    assert.equal(planVerification(verified).action, "done");
+
+    const edited = applyWorkUnitChange(verified, "parent edit on config.js");
+    assert.equal(edited.status, "none");
+    assert.equal(isVerificationValid(edited), false);
+    assert.equal(edited.verifiedRevision, undefined);
+    assert.equal(planVerification(edited).action, "none");
+  });
+
+  it("invalidates a PASS when a Worker run changes the artifact", () => {
+    const verified = applyVerifyResult(
+      applyVerifyStart(createVerificationState(), 0),
+      parseVerifyHandoff(verifyHandoffJson()),
+      10,
+    );
+
+    const afterWorker = applyWorkerResult(verified, ["config.js"]);
+    assert.equal(isVerificationValid(afterWorker), false);
+    assert.equal(afterWorker.awaitingVerification, true);
+    assert.equal(planVerification(afterWorker).action, "verify");
+
+    const docsOnly = applyWorkerResult(verified, ["README.md"]);
+    assert.equal(docsOnly.awaitingVerification, false);
+  });
+
+  it("allows a FAIL to be repaired, then verified again", () => {
+    let state = failedOnce();
+    assert.equal(state.status, "fail");
+    assert.equal(planVerification(state).action, "repair");
+
+    state = applyWorkerRepairStart(state);
+    assert.equal(state.repairs, 1);
+    state = applyWorkerResult(state, ["config.js"]);
+    assert.equal(state.status, "none");
+    assert.equal(planVerification(state).action, "verify");
+
+    state = applyVerifyResult(applyVerifyStart(state, 2000), parseVerifyHandoff(verifyHandoffJson()), 2100);
+    assert.equal(state.status, "pass");
+    assert.equal(state.attempts, 2);
+    assert.equal(planVerification(state).action, "done");
+  });
+
+  it("stops after the repair budget instead of looping", () => {
+    let state = failedOnce();
+
+    for (let cycle = 1; cycle <= MAX_REPAIR_CYCLES; cycle++) {
+      assert.equal(planVerification(state).action, "repair", `cycle ${cycle} must be allowed`);
+      state = applyWorkerRepairStart(state);
+      state = applyWorkerResult(state, ["config.js"]);
+      state = applyVerifyResult(
+        applyVerifyStart(state, 0),
+        parseVerifyHandoff(
+          verifyHandoffJson({
+            status: "fail",
+            defects: [
+              {
+                severity: "blocking",
+                file: "config.js",
+                description: `Defect number ${cycle}`,
+              },
+            ],
+          }),
+        ),
+        0,
+      );
+    }
+
+    assert.equal(state.repairs, MAX_REPAIR_CYCLES);
+    const decision = planVerification(state);
+    assert.equal(decision.action, "stop");
+    assert.match(decision.reason, /repair budget exhausted/u);
+    assert.equal(state.attempts, 3);
+  });
+
+  it("stops early when the same failure repeats without progress", () => {
+    let state = failedOnce();
+    state = applyWorkerRepairStart(state);
+    state = applyWorkerResult(state, ["config.js"]);
+    state = applyVerifyResult(
+      applyVerifyStart(state, 0),
+      parseVerifyHandoff(
+        verifyHandoffJson({
+          status: "fail",
+          summary: "Still failing, and the wording changed.",
+          defects: [{ severity: "blocking", file: "config.js", description: "TIMEOUT_MS is 1000" }],
+        }),
+      ),
+      0,
+    );
+
+    assert.equal(state.repeatedFailures, 2);
+    const decision = planVerification(state);
+    assert.equal(decision.action, "stop");
+    assert.match(decision.reason, /same failure signature repeated/u);
+    assert.ok(state.repairs < MAX_REPAIR_CYCLES, "the early stop happens before the budget is spent");
+  });
+
+  it("reports the policy state compactly for the parent and the observer", () => {
+    const report = toVerificationReport(failedOnce());
+
+    assert.equal(report.status, "fail");
+    assert.equal(report.attempts, 1);
+    assert.equal(report.repairs, 0);
+    assert.equal(report.maxRepairs, MAX_REPAIR_CYCLES);
+    assert.equal(report.valid, false);
+    assert.equal(report.decision, "repair");
+  });
+
+  it("builds the repair context from the original work unit and the defects only", () => {
+    const handoff = parseVerifyHandoff(
+      verifyHandoffJson({
+        status: "fail",
+        defects: [
+          { severity: "blocking", file: "config.js", description: "TIMEOUT_MS is 1000", evidence: "read config.js:1" },
+          { severity: "non_blocking", file: "style.css", description: "unrelated nit" },
+        ],
+      }),
+    );
+
+    const context = buildRepairContext({
+      task: "Update the request timeout to 2000ms",
+      criteria: ["TIMEOUT_MS is 2000"],
+      changedPaths: ["config.js"],
+      brief: formatRepairBrief(handoff),
+    });
+
+    assert.match(context, /WORK UNIT: Update the request timeout to 2000ms/u);
+    assert.match(context, /TIMEOUT_MS is 1000/u);
+    assert.match(context, /RELEVANT PATHS:\n- config\.js/u);
+    assert.equal(context.includes("unrelated nit"), false, "only blocking defects drive a repair");
+    assert.doesNotMatch(context, /Verify Result|Summary/u);
+  });
+});
+
+describe("AIES-005 Verify model resolution", () => {
+  it("prefers AIES_VERIFY_MODEL", async () => {
+    const { runtime } = await fauxRuntime();
+    const resolved = await resolveVerifyModel(runtime, { id: "parent" }, "/dummy", {
+      AIES_VERIFY_MODEL: "faux/faux-1",
+    });
+
+    assert.equal(resolved?.id, "faux-1");
+  });
+
+  it("reads aies.json agents.verify.model, then falls back to the parent model", async () => {
+    const { runtime } = await fauxRuntime();
+    const tempDir = mkdtempSync(join(tmpdir(), "aies-verify-model-"));
+    try {
+      writeFileSync(
+        join(tempDir, "aies.json"),
+        JSON.stringify({ agents: { verify: { model: "faux/faux-1" } } }),
+      );
+
+      assert.equal((await resolveVerifyModel(runtime, { id: "parent" }, tempDir, {})).id, "faux-1");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const parentModel = { id: "parent-model", provider: "mock" };
+    assert.equal(await resolveVerifyModel(null, parentModel, "/dummy", {}), parentModel);
+  });
+});
+
+describe("AIES-005 metrics isolation", () => {
+  it("counts one parent call for a delegation, whatever Verify does inside", () => {
+    let parent = createState(1_000_000);
+    const root = "/repo";
+
+    parent = applyToolCall(
+      parent,
+      { toolName: "aies_delegate", input: { role: "verify", task: "verify" } },
+      1_000_100,
+      root,
+    );
+    parent = applyToolResult(parent, { content: "### Verify Result: FAIL", isError: false }, 1_000_900);
+
+    assert.equal(parent.tools.calls, 1);
+    assert.equal(parent.tools.callsByName.aies_delegate, 1);
+    assert.equal(parent.exploration.sourceReads, 0);
+    assert.equal(parent.exploration.searches, 0);
+    assert.equal(parent.exploration.shellInspections, 0);
+    assert.equal(parent.exploration.filesInspected.length, 0);
+  });
+});

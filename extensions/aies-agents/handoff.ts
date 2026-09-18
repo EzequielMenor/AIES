@@ -42,6 +42,41 @@ export interface WorkerHandoff {
   next: string[];
 }
 
+/** What independent verification concluded about the real repository state. */
+export type VerifyStatus = "pass" | "fail" | "blocked";
+
+export interface VerifyCriterion {
+  criterion: string;
+  status: VerifyStatus;
+  evidence?: string;
+}
+
+export interface VerifyCheck {
+  check: string;
+  result?: string;
+}
+
+export interface VerifyDefect {
+  severity: "blocking" | "non_blocking";
+  file?: string;
+  description: string;
+  evidence?: string;
+}
+
+/**
+ * Verify's structured verdict. Facts only: no transcript, no reasoning, no diff
+ * and no whole files. The parent owns the "this work unit is verified" claim;
+ * Verify only reports what it observed.
+ */
+export interface VerifyHandoff {
+  status: VerifyStatus;
+  summary: string;
+  criteria: VerifyCriterion[];
+  checks: VerifyCheck[];
+  defects: VerifyDefect[];
+  next: string[];
+}
+
 /** Maximum length of the formatted handoff returned to parent context. */
 export const MAX_HANDOFF_CHARS = 6000;
 
@@ -141,6 +176,112 @@ function sanitizeWorkerHandoff(parsed: Record<string, unknown>): WorkerHandoff {
     issues: sanitizeStringList(parsed.issues),
     next: sanitizeStringList(parsed.next).slice(0, 1),
   };
+}
+
+function sanitizeVerifyStatus(val: unknown): VerifyStatus | undefined {
+  return val === "pass" || val === "fail" || val === "blocked" ? val : undefined;
+}
+
+function sanitizeCriteria(val: unknown): VerifyCriterion[] {
+  if (!Array.isArray(val)) return [];
+  const list: VerifyCriterion[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Record<string, unknown>;
+    const criterion = typeof entry.criterion === "string" ? entry.criterion.trim() : "";
+    if (!criterion) continue;
+    list.push({
+      criterion,
+      status: sanitizeVerifyStatus(entry.status) ?? "blocked",
+      evidence:
+        typeof entry.evidence === "string" && entry.evidence.trim()
+          ? entry.evidence.trim()
+          : undefined,
+    });
+  }
+  return list;
+}
+
+function sanitizeDefects(val: unknown): VerifyDefect[] {
+  if (!Array.isArray(val)) return [];
+  const list: VerifyDefect[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Record<string, unknown>;
+    const description = typeof entry.description === "string" ? entry.description.trim() : "";
+    if (!description) continue;
+    list.push({
+      severity: entry.severity === "blocking" ? "blocking" : "non_blocking",
+      file: typeof entry.file === "string" && entry.file.trim() ? entry.file.trim() : undefined,
+      description,
+      evidence:
+        typeof entry.evidence === "string" && entry.evidence.trim()
+          ? entry.evidence.trim()
+          : undefined,
+    });
+  }
+  return list;
+}
+
+/**
+ * A verdict is only as good as the proof behind it. A `pass` that carries no
+ * evidence anywhere is downgraded to `blocked`: the parent must never read
+ * "looks good" as a verification result.
+ */
+function hasEvidence(handoff: VerifyHandoff): boolean {
+  return handoff.criteria.some((entry) => Boolean(entry.evidence))
+    || handoff.checks.some((entry) => Boolean(entry.result));
+}
+
+function sanitizeVerifyHandoff(parsed: Record<string, unknown>): VerifyHandoff {
+  const handoff: VerifyHandoff = {
+    status: sanitizeVerifyStatus(parsed.status) ?? "blocked",
+    summary:
+      typeof parsed.summary === "string" && parsed.summary.trim()
+        ? parsed.summary.trim()
+        : "Verification finished without an explicit summary.",
+    criteria: sanitizeCriteria(parsed.criteria),
+    checks: sanitizeChecks(parsed.checks),
+    defects: sanitizeDefects(parsed.defects),
+    next: sanitizeStringList(parsed.next).slice(0, 1),
+  };
+
+  if (handoff.status === "pass" && !hasEvidence(handoff)) {
+    return {
+      ...handoff,
+      status: "blocked",
+      summary: `Pass reported without evidence; treated as blocked. ${handoff.summary}`,
+    };
+  }
+
+  return handoff;
+}
+
+/**
+ * A small, deterministic identity for a failure: the blocking defects, or the
+ * failing criteria when no defect was described. Two verifications that report
+ * the same signature describe the same unfixed problem, which is what the repair
+ * policy uses to stop early instead of looping.
+ */
+export function verifyFailureSignature(handoff: VerifyHandoff): string {
+  const normalize = (value: string) =>
+    value.toLowerCase().replace(/\s+/gu, " ").trim().slice(0, 80);
+  const location = (value: string) =>
+    value.replace(/\\/gu, "/").replace(/^\.\//u, "").replace(/^\/+/u, "").trim();
+
+  const blocking = handoff.defects
+    .filter((defect) => defect.severity === "blocking")
+    .map((defect) => `${normalize(location(defect.file ?? "?"))}::${normalize(defect.description)}`);
+
+  if (blocking.length > 0) return [...blocking].sort().join(" | ");
+
+  const failing = handoff.criteria
+    .filter((entry) => entry.status !== "pass")
+    .map((entry) => `${normalize(entry.criterion)}::${normalize(entry.evidence ?? entry.status)}`);
+
+  if (failing.length > 0) return [...failing].sort().join(" | ");
+
+  return normalize(handoff.summary);
 }
 
 function extractJsonBlock(rawText: string): Record<string, unknown> | null {
@@ -319,4 +460,117 @@ export function formatWorkerHandoff(handoff: WorkerHandoff): string {
     formatted = `${formatted.slice(0, MAX_HANDOFF_CHARS)}\n\n[Truncated: worker handoff exceeded 6,000 characters]`;
   }
   return formatted;
+}
+
+/**
+ * Parse raw Verify child output into a structured VerifyHandoff. An unreadable
+ * answer is `blocked`, never `pass`: the conservative default for a verifier is
+ * "I could not prove it", not "it is fine".
+ */
+export function parseVerifyHandoff(rawText: string | undefined): VerifyHandoff {
+  if (!rawText || !rawText.trim()) {
+    return {
+      status: "blocked",
+      summary: "Verify child returned no output.",
+      criteria: [],
+      checks: [],
+      defects: [],
+      next: [],
+    };
+  }
+
+  const parsed = extractJsonBlock(rawText);
+  if (parsed) {
+    return sanitizeVerifyHandoff(parsed);
+  }
+
+  return {
+    status: "blocked",
+    summary: rawText.slice(0, 1000).trim(),
+    criteria: [],
+    checks: [],
+    defects: [
+      {
+        severity: "blocking",
+        description: "Verify response did not provide a structured JSON handoff block.",
+      },
+    ],
+    next: ["Re-run verification with the structured handoff schema."],
+  };
+}
+
+/**
+ * Formats a Verify handoff into concise markdown, defensively capped.
+ */
+export function formatVerifyHandoff(handoff: VerifyHandoff): string {
+  const lines: string[] = [
+    `### Verify Result: ${handoff.status.toUpperCase()}`,
+    "",
+    `**Summary**: ${handoff.summary}`,
+  ];
+
+  if (handoff.criteria.length > 0) {
+    lines.push("", "**Criteria**:");
+    for (const item of handoff.criteria) {
+      const evidence = item.evidence ? ` — ${item.evidence}` : "";
+      lines.push(`- ${item.status.toUpperCase()} \`${item.criterion}\`${evidence}`);
+    }
+  }
+
+  if (handoff.checks.length > 0) {
+    lines.push("", "**Checks**:");
+    for (const item of handoff.checks) {
+      const result = item.result ? `: ${item.result}` : "";
+      lines.push(`- \`${item.check}\`${result}`);
+    }
+  }
+
+  const defects = handoff.defects.filter((defect) => defect.severity === "blocking");
+  if (defects.length > 0) {
+    lines.push("", "**Blocking defects**:");
+    for (const defect of defects) {
+      const location = defect.file ? `\`${defect.file}\` ` : "";
+      const evidence = defect.evidence ? ` (${defect.evidence})` : "";
+      lines.push(`- ${location}${defect.description}${evidence}`);
+    }
+  }
+
+  const nonBlocking = handoff.defects.length - defects.length;
+  if (nonBlocking > 0) {
+    lines.push("", `**Non-blocking defects**: ${nonBlocking}`);
+  }
+
+  if (handoff.next.length > 0) {
+    lines.push("", "**Next**:");
+    for (const step of handoff.next.slice(0, 1)) {
+      lines.push(`- ${step}`);
+    }
+  }
+
+  let formatted = lines.join("\n");
+  if (formatted.length > MAX_HANDOFF_CHARS) {
+    formatted = `${formatted.slice(0, MAX_HANDOFF_CHARS)}\n\n[Truncated: verify handoff exceeded 6,000 characters]`;
+  }
+  return formatted;
+}
+
+/**
+ * The compact defect list handed to a repair Worker, built from the verdict and
+ * nothing else. It deliberately cannot carry the verify transcript.
+ */
+export function formatRepairBrief(handoff: VerifyHandoff): string {
+  const lines: string[] = [];
+
+  for (const defect of handoff.defects.filter((entry) => entry.severity === "blocking")) {
+    const location = defect.file ? `${defect.file}: ` : "";
+    const evidence = defect.evidence ? ` (evidence: ${defect.evidence})` : "";
+    lines.push(`- ${location}${defect.description}${evidence}`);
+  }
+
+  for (const entry of handoff.criteria.filter((item) => item.status !== "pass")) {
+    const evidence = entry.evidence ? ` (${entry.evidence})` : "";
+    lines.push(`- criterion ${entry.status}: ${entry.criterion}${evidence}`);
+  }
+
+  return lines.join("\n");
 }

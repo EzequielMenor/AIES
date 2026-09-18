@@ -6,6 +6,9 @@
     },
     "worker": {
       "model": null
+    },
+    "verify": {
+      "model": null
     }
   }
 }

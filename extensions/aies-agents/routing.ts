@@ -1,10 +1,14 @@
 /**
- * Routing policy and guardrails for the parent session (AIES-004).
+ * Routing policy and guardrails for the parent session (AIES-004, AIES-005).
  *
- * Implements three routes:
+ * Implements four routes:
  * - INLINE DIRECT: Trivial work (typo, single comment, 1-2 file reads, localized fix).
  * - EXPLORE: Unknown scope, broad search, or reading >2 files.
  * - WORKER: Non-trivial multi-file changes, test cycles, or editing work units.
+ * - VERIFY: Independent proof that a behaviour-bearing change actually works
+ *   (AIES-005). It is not a route taken by pressure counters: a change produced
+ *   by Worker requires it before the work unit can be considered complete, and
+ *   `requiresVerification()` in `verification.ts` is the rule that decides when.
  *
  * Distinguishes:
  * - Soft signals: Informing prompt/model to steer toward delegation.
@@ -24,6 +28,9 @@ export const ROUTING_THRESHOLDS = {
 
 export type RoutingMode = "inline" | "delegated";
 
+/** The child roles a parent may delegate to. Order is the work order, not a rank. */
+export type DelegationRole = "explore" | "worker" | "verify";
+
 export interface RoutingState {
   currentMode: RoutingMode;
   toolsSinceBoundary: number;
@@ -31,7 +38,7 @@ export interface RoutingState {
   filesSinceBoundary: string[];
   lastDelegation:
     | {
-        role: "explore" | "worker";
+        role: DelegationRole;
         timestamp: number;
         outcome?: string;
       }
@@ -117,7 +124,7 @@ export function applyRoutingToolCall(
  */
 export function applyRoutingDelegationStart(
   state: RoutingState,
-  _role: "explore" | "worker",
+  _role: DelegationRole,
   _now: number,
 ): RoutingState {
   return {
@@ -131,7 +138,7 @@ export function applyRoutingDelegationStart(
  */
 export function applyRoutingDelegationEnd(
   state: RoutingState,
-  role: "explore" | "worker",
+  role: DelegationRole,
   outcome: string,
   now: number,
 ): RoutingState {
