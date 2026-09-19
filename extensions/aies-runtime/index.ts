@@ -123,6 +123,10 @@ const BLOCKED_SENTENCES: Record<string, { happened: string; needs?: string; pend
     happened: "La verificación falló de forma repetida.",
     needs: "revisar los defectos que reportó Verify.",
   },
+  verification_protocol_error: {
+    happened: "La verificación devolvió un error de protocolo y no produjo un veredicto válido.",
+    needs: "revisar la configuración del agente Verify o volver a delegar la verificación.",
+  },
   repair_limit: {
     happened: "Se agotaron los intentos de reparación.",
     needs: "revisar el defecto original a mano.",
@@ -221,26 +225,31 @@ function activityFacts(role: string, details: Record<string, unknown> | undefine
   return facts;
 }
 
-/** The activity outcome. `explore`/`worker` speak `done|blocked|failed`; Verify speaks `pass|fail|blocked`. */
+/** The activity outcome. `explore`/`worker` speak `done|blocked|failed`; Verify speaks `pass|fail|blocked` plus a protocol fault. */
 function activityOutcome(role: string, details: Record<string, unknown> | undefined, isError: boolean): string {
-  if (isError) return "failed";
-
   const status = details?.status;
-  if (role === "verify") {
-    if (status === "pass") return "done";
-    if (status === "fail") return "failed";
-    if (status === "blocked") return "blocked";
 
+  if (role === "verify") {
     const verification = details?.verification;
     const vStatus = verification && typeof verification === "object" && !Array.isArray(verification)
       ? (verification as Record<string, unknown>).status
       : undefined;
+
+    // A protocol fault is its own outcome: never collapsed into domain FAIL by isError.
+    if (status === "protocol_error" || vStatus === "protocol_error" || details?.kind === "protocol_error") {
+      return "protocol_error";
+    }
+    if (status === "pass") return "done";
+    if (status === "fail") return "failed";
+    if (status === "blocked") return "blocked";
     if (vStatus === "pass") return "done";
     if (vStatus === "fail") return "failed";
     if (vStatus === "blocked") return "blocked";
+    if (isError) return "failed";
     return "done";
   }
 
+  if (isError) return "failed";
   if (status === "done" || status === "blocked" || status === "failed") return status;
   return "done";
 }
@@ -445,6 +454,8 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         return "V:FAIL";
       case "blocked":
         return "V:BLOCKED";
+      case "protocol_error":
+        return "V:ERROR";
       default:
         return undefined;
     }

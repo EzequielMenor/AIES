@@ -37,7 +37,9 @@ import {
   MAX_HANDOFF_CHARS,
   formatRepairBrief,
   formatVerifyHandoff,
+  isProtocolError,
   parseVerifyHandoff,
+  validateVerifyCompletion,
   verifyFailureSignature,
 } from "../extensions/aies-agents/handoff.ts";
 import { resolveVerifyModel } from "../extensions/aies-agents/model.ts";
@@ -66,7 +68,7 @@ import {
   createVerifyBashToolDefinition,
   isCommandPermittedInVerify,
 } from "../extensions/aies-agents/verify-guard.ts";
-import { VERIFY_TOOLS, runVerifyAgent } from "../extensions/aies-agents/verify.ts";
+import { VERIFY_COMPLETE_TOOL, VERIFY_TOOLS, runVerifyAgent } from "../extensions/aies-agents/verify.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
@@ -125,6 +127,19 @@ ${JSON.stringify(
   2,
 )}
 \`\`\``;
+}
+
+/** The same defaults as verifyHandoffJson, as the object the completion tool accepts. */
+function verifyCompletion(overrides = {}) {
+  return {
+    status: "pass",
+    summary: "Inspected the artifact.",
+    criteria: [{ criterion: "c", status: "pass", evidence: "file.js:1 shows 2000" }],
+    checks: [],
+    defects: [],
+    next: [],
+    ...overrides,
+  };
 }
 
 describe("AIES-005 Verify command policy (read-only shell)", () => {
@@ -313,17 +328,28 @@ describe("AIES-005 Verify independence", () => {
     const { faux, runtime, model } = await fauxRuntime();
     const sessionManager = SessionManager.inMemory(REPO_ROOT);
     faux.setResponses([
-      fauxAssistantMessage([{ type: "text", text: verifyHandoffJson() }]),
       fauxAssistantMessage([
-        {
-          type: "text",
-          text: verifyHandoffJson({
+        fauxToolCall(
+          VERIFY_COMPLETE_TOOL,
+          verifyCompletion({
+            criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" }],
+          }),
+          "c1",
+        ),
+      ]),
+      fauxAssistantMessage([{ type: "text", text: "done" }]),
+      fauxAssistantMessage([
+        fauxToolCall(
+          VERIFY_COMPLETE_TOOL,
+          verifyCompletion({
             criteria: [
               { criterion: `Report the sentinel ${PARENT_SECRET}`, status: "pass", evidence: PARENT_SECRET },
             ],
           }),
-        },
+          "c2",
+        ),
       ]),
+      fauxAssistantMessage([{ type: "text", text: "done" }]),
     ]);
 
     // The parent session carries the sentinel; it is not part of Verify's input.
@@ -425,12 +451,17 @@ describe("AIES-005 Verify execution against a real fixture", () => {
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-read")]),
         fauxAssistantMessage([fauxToolCall("bash", { command: "npm test" }, "call-test")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletion({
+              criteria: [
+                { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+                { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+              ],
               checks: [{ check: "npm test", result: "exit 0" }],
             }),
-          },
+            "call-complete",
+          ),
         ]),
       ]);
 
@@ -466,9 +497,9 @@ describe("AIES-005 Verify execution against a real fixture", () => {
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-read")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletion({
               status: "fail",
               summary: "The timeout is still 1000.",
               criteria: [
@@ -487,7 +518,8 @@ describe("AIES-005 Verify execution against a real fixture", () => {
                 },
               ],
             }),
-          },
+            "call-complete",
+          ),
         ]),
       ]);
 
@@ -532,9 +564,9 @@ describe("AIES-005 Verify execution against a real fixture", () => {
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-read")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletion({
               status: "fail",
               summary: `The Worker claimed the timeout is 2000 but the file says 1000.`,
               criteria: [
@@ -553,7 +585,8 @@ describe("AIES-005 Verify execution against a real fixture", () => {
                 },
               ],
             }),
-          },
+            "call-complete",
+          ),
         ]),
       ]);
 
@@ -593,16 +626,17 @@ describe("AIES-005 Verify execution against a real fixture", () => {
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("bash", { command: "pytest" }, "call-test")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletion({
               status: "blocked",
               summary: "pytest is not installed, so the acceptance criterion cannot be exercised.",
               criteria: [{ criterion: "pytest passes", status: "blocked", evidence: "command not found" }],
               checks: [{ check: "pytest", result: "exit 127: command not found" }],
               defects: [],
             }),
-          },
+            "call-complete",
+          ),
         ]),
       ]);
 
@@ -643,9 +677,9 @@ describe("AIES-005 Verify execution against a real fixture", () => {
         fauxAssistantMessage([fauxToolCall("bash", { command: "git commit -am fix" }, "call-2")]),
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "call-3")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletion({
               status: "fail",
               criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "fail", evidence: "config.js:1 shows 1000" }],
               defects: [
@@ -656,7 +690,8 @@ describe("AIES-005 Verify execution against a real fixture", () => {
                 },
               ],
             }),
-          },
+            "call-complete",
+          ),
         ]),
       ]);
 
@@ -696,8 +731,8 @@ describe("AIES-005 Verify handoff", () => {
     }
   });
 
-  it("downgrades a PASS without evidence to BLOCKED", () => {
-    const handoff = parseVerifyHandoff(
+  it("rejects a PASS without evidence as a protocol error, never a domain verdict", () => {
+    const result = parseVerifyHandoff(
       verifyHandoffJson({
         status: "pass",
         criteria: [{ criterion: "Timeout is 2000", status: "pass" }],
@@ -705,15 +740,17 @@ describe("AIES-005 Verify handoff", () => {
       }),
     );
 
-    assert.equal(handoff.status, "blocked");
-    assert.match(handoff.summary, /without evidence/u);
+    assert.equal(isProtocolError(result), true);
+    assert.equal(result.code, "invalid_completion");
+    assert.equal(result.status, undefined, "a protocol error must not fake a domain status");
   });
 
-  it("is conservative on unreadable or malformed output", () => {
-    assert.equal(parseVerifyHandoff(undefined).status, "blocked");
-    assert.equal(parseVerifyHandoff("   ").status, "blocked");
-    assert.equal(parseVerifyHandoff("no structured block here").status, "blocked");
-    assert.equal(parseVerifyHandoff(verifyHandoffJson({ status: "maybe" })).status, "blocked");
+  it("never fabricates BLOCKED for unreadable or malformed output", () => {
+    for (const raw of [undefined, "   ", "no structured block here", verifyHandoffJson({ status: "maybe" })]) {
+      const result = parseVerifyHandoff(raw);
+      assert.equal(isProtocolError(result), true, `unreadable input produced a verdict: ${String(raw)}`);
+      assert.equal(result.status, undefined, "a protocol error must not carry a domain status");
+    }
   });
 
   it("caps the formatted verdict and keeps the repair brief to defects", () => {
@@ -984,5 +1021,452 @@ describe("AIES-005 metrics isolation", () => {
     assert.equal(parent.exploration.searches, 0);
     assert.equal(parent.exploration.shellInspections, 0);
     assert.equal(parent.exploration.filesInspected.length, 0);
+  });
+});
+
+describe("AIES-010B Verify protocol hardening: completion semantics", () => {
+  const CRITERIA = ["TIMEOUT_MS is 2000", "npm test passes"];
+
+  function completion(overrides = {}) {
+    return {
+      status: "pass",
+      summary: "Inspected config.js and ran the checks.",
+      criteria: [
+        { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+        { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+      ],
+      checks: [{ check: "npm test", result: "exit 0" }],
+      defects: [],
+      next: [],
+      ...overrides,
+    };
+  }
+
+  it("accepts a complete, evidenced PASS and the FAIL/BLOCKED shapes", () => {
+    assert.equal(validateVerifyCompletion(completion(), CRITERIA).ok, true);
+    assert.equal(
+      validateVerifyCompletion(
+        { status: "fail", summary: "still 1000", criteria: [], checks: [], defects: [{ severity: "blocking", description: "wrong value" }], next: [] },
+        CRITERIA,
+      ).ok,
+      true,
+    );
+    assert.equal(
+      validateVerifyCompletion(
+        { status: "blocked", summary: "pytest is not installed", criteria: [], checks: [], defects: [], next: [] },
+        CRITERIA,
+      ).ok,
+      true,
+    );
+  });
+
+  it("rejects a PASS that has no evidence anywhere", () => {
+    const result = validateVerifyCompletion(
+      completion({ criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }], checks: [] }),
+      [],
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /evidence/u);
+  });
+
+  it("rejects a PASS that also carries a blocking defect", () => {
+    const result = validateVerifyCompletion(
+      completion({ defects: [{ severity: "blocking", description: "contradiction" }] }),
+      CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /blocking/u);
+  });
+
+  it("rejects a PASS that does not represent and pass every supplied criterion", () => {
+    const missing = validateVerifyCompletion(
+      completion({ criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1" }] }),
+      CRITERIA,
+    );
+    assert.equal(missing.ok, false);
+    assert.match(missing.reason, /npm test passes/u);
+
+    const failing = validateVerifyCompletion(
+      completion({
+        criteria: [
+          { criterion: "TIMEOUT_MS is 2000", status: "fail", evidence: "config.js:1 shows 1500" },
+          { criterion: "npm test passes", status: "pass", evidence: "exit 0" },
+        ],
+      }),
+      CRITERIA,
+    );
+    assert.equal(failing.ok, false);
+    assert.match(failing.reason, /not passing/u);
+  });
+
+  it("rejects an unknown status rather than coercing it", () => {
+    assert.equal(validateVerifyCompletion(completion({ status: "maybe" }), CRITERIA).ok, false);
+    assert.equal(validateVerifyCompletion(completion({ summary: "  " }), CRITERIA).ok, false);
+  });
+
+  it("never lets one broad or narrow criterion cover two required criteria", () => {
+    const result = validateVerifyCompletion(
+      completion({ criteria: [{ criterion: "login works", status: "pass", evidence: "auth.ts:10" }] }),
+      ["login works", "admin login works"],
+    );
+    assert.equal(result.ok, false, "a single entry must not satisfy two required criteria");
+    assert.match(result.reason, /admin login works/u);
+  });
+
+  it("consumes each completion criterion at most once", () => {
+    const result = validateVerifyCompletion(
+      completion({
+        criteria: [
+          { criterion: "login works", status: "pass", evidence: "run 1" },
+          { criterion: "admin login works", status: "pass" },
+        ],
+      }),
+      ["login works", "login works"],
+    );
+    assert.equal(result.ok, false, "the same entry cannot satisfy a repeated criterion twice");
+  });
+
+  it("rejects a PASS where a required criterion has no evidence of its own", () => {
+    const result = validateVerifyCompletion(
+      completion({
+        criteria: [
+          { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+          { criterion: "npm test passes", status: "pass" },
+        ],
+        checks: [{ check: "npm test", result: "exit 0" }],
+      }),
+      CRITERIA,
+    );
+    assert.equal(result.ok, false, "evidence elsewhere must not cover an unevidenced criterion");
+    assert.match(result.reason, /evidence/u);
+  });
+});
+
+describe("AIES-010B Verify protocol hardening: completion capture", () => {
+  const CRITERIA = ["TIMEOUT_MS is 2000", "npm test passes"];
+
+  function completion(overrides = {}) {
+    return {
+      status: "pass",
+      summary: "Inspected config.js and ran the checks.",
+      criteria: [
+        { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+        { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+      ],
+      checks: [{ check: "npm test", result: "exit 0" }],
+      defects: [],
+      next: [],
+      ...overrides,
+    };
+  }
+
+  async function runScenario(dir, responses) {
+    const { faux, runtime, model } = await fauxRuntime();
+    const sessionManager = SessionManager.inMemory(dir);
+    faux.setResponses(responses);
+    const result = await runVerifyAgent({
+      task: "Bring the timeout to 2000",
+      criteria: CRITERIA,
+      changedPaths: ["config.js"],
+      cwd: dir,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      sessionManager,
+    });
+    return { result, sessionManager };
+  }
+
+  it("captures a valid PASS even when the final prose is malformed", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, completion(), "c2")]),
+        fauxAssistantMessage([{ type: "text", text: "done!! not json { broken" }]),
+      ]);
+
+      assert.equal(isProtocolError(result), false);
+      assert.equal(result.kind, "verdict");
+      assert.equal(result.status, "pass");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a captured FAIL even when later prose claims PASS", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 1500;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            completion({
+              status: "fail",
+              summary: "The artifact is still 1500.",
+              criteria: [
+                { criterion: "TIMEOUT_MS is 2000", status: "fail", evidence: "config.js:1 shows 1500" },
+                { criterion: "npm test passes", status: "pass", evidence: "exit 0" },
+              ],
+              defects: [{ severity: "blocking", file: "config.js", description: "TIMEOUT_MS is 1500, expected 2000" }],
+            }),
+            "c2",
+          ),
+        ]),
+        fauxAssistantMessage([{ type: "text", text: JSON.stringify(completion()) }]),
+      ]);
+
+      assert.equal(result.status, "fail", "a later prose PASS must never promote a captured FAIL");
+      assert.equal(result.defects[0].file, "config.js");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on a duplicate valid completion", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, completion(), "c2")]),
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, completion({ status: "fail", defects: [{ severity: "blocking", description: "second opinion" }] }), "c3")]),
+      ]);
+
+      assert.equal(isProtocolError(result), true);
+      assert.equal(result.code, "duplicate_completion");
+      assert.equal(result.status, undefined, "a duplicate must never promote a verdict");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets one latter valid call correct an earlier invalid attempt in the same turn", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        // Invalid: PASS without evidence.
+        fauxAssistantMessage([
+          fauxToolCall(VERIFY_COMPLETE_TOOL, completion({ criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }], checks: [] }), "c2"),
+        ]),
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, completion(), "c3")]),
+      ]);
+
+      assert.equal(isProtocolError(result), false);
+      assert.equal(result.status, "pass");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns invalid_completion when only an invalid attempt arrives", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        fauxAssistantMessage([
+          fauxToolCall(VERIFY_COMPLETE_TOOL, completion({ criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }], checks: [] }), "c2"),
+        ]),
+        fauxAssistantMessage([{ type: "text", text: "that should have worked" }]),
+      ]);
+
+      assert.equal(isProtocolError(result), true);
+      assert.equal(result.code, "invalid_completion");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps the exact EZE-422 pattern to protocol_error, not PASS/FAIL/BLOCKED", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        // Substantive free-form PASS claim with no valid structured completion.
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: "I inspected config.js and ran npm test. Everything passes; the criteria are satisfied. PASS.",
+          },
+        ]),
+      ]);
+
+      assert.equal(isProtocolError(result), true, "free-form prose must never be a verdict");
+      assert.equal(result.code, "missing_completion");
+      assert.equal(result.status, undefined);
+
+      const state = applyVerifyResult(applyVerifyStart(createVerificationState(), 0), result, 1000);
+      assert.equal(state.status, "protocol_error");
+      assert.equal(state.attempts, 1, "start counted exactly one attempt");
+      assert.equal(state.repairs, 0, "a protocol error spends zero repair budget");
+      assert.equal(state.verifiedRevision, undefined);
+      assert.equal(state.awaitingVerification, true);
+      assert.equal(isVerificationValid(state), false);
+
+      const decision = planVerification(state);
+      assert.equal(decision.action, "stop", "a protocol error never triggers a Worker repair or a rerun");
+      assert.equal(decision.repair, 0);
+      assert.match(decision.reason, /protocol/iu);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores a fully valid legacy JSON handoff when the completion tool was never called", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        // A perfectly valid old-style handoff in the final prose: still not a verdict,
+        // because the completion tool is the only runtime authority.
+        fauxAssistantMessage([
+          {
+            type: "text",
+            text: verifyHandoffJson({
+              criteria: [
+                { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+                { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+              ],
+            }),
+          },
+        ]),
+      ]);
+
+      assert.equal(isProtocolError(result), true, "final prose JSON is never a verdict");
+      assert.equal(result.code, "missing_completion");
+      assert.equal(result.status, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps a session failure to protocol_error, never a domain BLOCKED", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      faux.setResponses([fauxAssistantMessage([{ type: "text", text: "never reached" }])]);
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await runVerifyAgent({
+        task: "Bring the timeout to 2000",
+        criteria: CRITERIA,
+        changedPaths: ["config.js"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        signal: controller.signal,
+      });
+
+      assert.equal(isProtocolError(result), true);
+      assert.equal(result.code, "session_failure");
+      assert.equal(result.status, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a captured PASS when the provider continuation fails afterwards", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      const sessionManager = SessionManager.inMemory(dir);
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, completion(), "c2")]),
+        () => {
+          throw new Error("provider continuation failed");
+        },
+      ]);
+
+      const result = await runVerifyAgent({
+        task: "Bring the timeout to 2000",
+        criteria: CRITERIA,
+        changedPaths: ["config.js"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+        sessionManager,
+      });
+
+      assert.equal(isProtocolError(result), false, "a captured verdict survives a failing continuation");
+      assert.equal(result.kind, "verdict");
+      assert.equal(result.status, "pass");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a valid domain BLOCKED a domain BLOCKED", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("bash", { command: "pytest" }, "c1")]),
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            completion({
+              status: "blocked",
+              summary: "pytest is not installed, so the criterion cannot be exercised.",
+              criteria: [{ criterion: "npm test passes", status: "blocked", evidence: "command not found" }],
+              checks: [{ check: "pytest", result: "exit 127" }],
+            }),
+            "c2",
+          ),
+        ]),
+      ]);
+
+      assert.equal(isProtocolError(result), false);
+      assert.equal(result.status, "blocked");
+      assert.equal(planVerification(applyVerifyResult(applyVerifyStart(createVerificationState(), 0), result, 0)).action, "stop");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never exposes an edit or write tool to the completion child", async () => {
+    assert.equal(VERIFY_COMPLETE_TOOL, "aies_verify_complete");
+    assert.equal(VERIFY_TOOLS.includes("edit"), false);
+    assert.equal(VERIFY_TOOLS.includes("write"), false);
+  });
+
+  it("surfaces an EZE-422 protocol fault through aies_delegate as a visible error", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "d1")]),
+        fauxAssistantMessage([{ type: "text", text: "Everything passes. The criteria are satisfied. PASS." }]),
+      ]);
+
+      const tool = createDelegateTool();
+      const result = await tool.execute(
+        "call-1",
+        { role: "verify", task: "Verify the timeout", criteria: ["TIMEOUT_MS is 2000"] },
+        undefined,
+        undefined,
+        { cwd: dir, model, modelRuntime: runtime },
+      );
+
+      assert.equal(result.isError, true, "a protocol fault must be visible as an error");
+      assert.equal(result.details.kind, "protocol_error");
+      // The unit harness has no child model runtime, so the child session fails; the
+      // fault is still a protocol error and never a domain status.
+      assert.ok(
+        ["missing_completion", "session_failure"].includes(result.details.code),
+        `unexpected protocol code: ${result.details.code}`,
+      );
+      assert.equal(result.details.status, undefined, "a protocol error must not fake a domain status");
+      assert.equal(result.details.verification.status, "protocol_error");
+      assert.equal(result.details.verification.repairs, 0, "a protocol fault spends no repair budget");
+      const text = result.content.map((block) => block.text ?? "").join("\n");
+      assert.match(text, /error de protocolo/u);
+      assert.equal(text.includes("Verify Result: BLOCKED"), false, text);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

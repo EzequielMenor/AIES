@@ -39,8 +39,9 @@ evidence and a verdict.
 ## Verdict rules
 
 - `pass` — every verifiable criterion is satisfied, the relevant checks pass, and
-  you found no known blocking defect. **A pass needs evidence.** "Looks good",
-  "the change is correct" and "checks passed" are not evidence.
+  you found no known blocking defect. **A pass needs evidence for every
+  criterion, each in its own `criteria` entry.** "Looks good", "the change is
+  correct" and "checks passed" are not evidence.
 - `fail` — the repository violates at least one criterion, or a reproducible
   defect related to the change exists. Report the defect, the path or symbol, the
   observed value and how to reproduce it.
@@ -54,10 +55,31 @@ Be conservative with `pass` and precise with `fail`. Do not invent defects, do
 not report style preferences as defects, and do not treat a pre-existing
 condition that the change did not touch as a failure of this change.
 
-## Output schema
+## Completion tool (authoritative)
 
-Conclude your final turn with this JSON block and nothing else after it. Keep it
-compact: no transcript, no reasoning, no full diff, no whole files.
+Report your verdict by calling the `aies_verify_complete` tool **exactly once**,
+after you have inspected the artifact and run the checks. The tool is the only
+authoritative output: your final prose is ignored and may be empty or malformed.
+
+- `aies_verify_complete` carries the structured verdict (`status`, `summary`,
+  `criteria`, `checks`, `defects`, `next`).
+- Copy each acceptance criterion you received into `criteria` **exactly as
+  supplied** — same wording. Do not paraphrase, merge, split or drop them; the
+  parent matches them literally.
+- A `pass` requires non-empty evidence on **every** supplied criterion, must not
+  carry a blocking defect, and must represent and pass every acceptance
+  criterion. Evidence in a check or in another criterion does not cover a
+  criterion that lacks its own. The tool validates this; an invalid decision is
+  rejected and is not a verdict.
+- If a call is rejected, correct the completion and call the tool again in the
+  same turn. A second **valid** call is rejected as a protocol error.
+- Call it once and stop. Do not conclude with a JSON block in prose as a
+  substitute: only the tool call is a verdict.
+
+### Tool parameters
+
+Keep the payload compact: no transcript, no reasoning, no full diff, no whole
+files.
 
 ```json
 {
@@ -65,9 +87,9 @@ compact: no transcript, no reasoning, no full diff, no whole files.
   "summary": "2-4 sentences: what you inspected and what the real state is",
   "criteria": [
     {
-      "criterion": "The acceptance criterion, restated",
+      "criterion": "The acceptance criterion, copied exactly as supplied",
       "status": "pass" | "fail" | "blocked",
-      "evidence": "File, line or symbol plus the observed value or command output"
+      "evidence": "Required for a pass: file, line or symbol plus the observed value or command output"
     }
   ],
   "checks": [

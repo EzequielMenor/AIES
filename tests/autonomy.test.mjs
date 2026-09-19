@@ -348,6 +348,29 @@ describe("AIES-009 Bounded Task Autonomy & Continuation Controller", () => {
       assert.equal(controller.isEnabled(), false);
       assert.equal(pi.messages.length, 0);
     });
+
+    it("Caso 11b — Protocol error -> STOP distinto sin reparación ni follow-up", async () => {
+      await ticketManager.loadTicket("EZE-101");
+      await ticketManager.startWork();
+      controller.activate("EZE-101");
+
+      verification = applyWorkUnitChange(verification, ["src/client.js"], "initial");
+      verification = applyVerifyStart(verification, Date.now());
+      verification = applyVerifyResult(
+        verification,
+        { kind: "protocol_error", code: "missing_completion", message: "the verify child produced no completion" },
+        Date.now(),
+      );
+      assert.equal(verification.status, "protocol_error");
+      assert.equal(verification.repairs, 0);
+
+      const decision = await controller.handleSettled();
+      assert.equal(decision.decision, "blocked");
+      assert.equal(decision.stopReason, "verification_protocol_error");
+      assert.equal(decision.followUpPrompt, undefined, "a protocol error must never auto-continue");
+      assert.equal(controller.isEnabled(), false);
+      assert.equal(pi.messages.length, 0, "no follow-up prompt on a protocol error");
+    });
   });
 
   // --------------------------------------------------------------------------

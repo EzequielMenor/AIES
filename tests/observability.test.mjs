@@ -611,6 +611,22 @@ describe("verification observability (AIES-005)", () => {
     assert.equal(field(await blocked.report(), "estado"), "BLOCKED");
   });
 
+  it("shows a protocol error distinctly, never as a domain verdict", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await host.emit("tool_result", verifyResult({ status: "protocol_error", attempts: 1, repairs: 0, maxRepairs: 2, valid: false, awaitingVerification: true }));
+
+    const footer = host.footerText();
+    assert.match(footer, /V:ERROR/u);
+    assert.equal(footer.includes("V:FAIL"), false, footer);
+    assert.equal(footer.includes("V:BLOCKED"), false, footer);
+    const report = await host.report();
+    assert.equal(field(report, "estado"), "error de protocolo");
+    assert.equal(report.includes("PROTOCOL_ERROR"), false, "a raw internal code leaked into the report");
+  });
+
   it("survives a hostile or absent report without changing what it observes", async () => {
     const host = createHost();
     await host.start();

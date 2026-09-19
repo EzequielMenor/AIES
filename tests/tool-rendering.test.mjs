@@ -367,6 +367,25 @@ describe("aies_delegate presentation", () => {
     assert.equal(blockedRow, "✗ Verify · bloqueado");
   });
 
+  it("presents a verify protocol error as its own Spanish fault, never a domain BLOCKED", () => {
+    const result = {
+      content: [{ type: "text", text: "⚠ Verificación: error de protocolo (missing_completion)." }],
+      details: { kind: "protocol_error", code: "missing_completion", message: "the verify child produced no completion" },
+    };
+    const row = text(
+      tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, context({ role: "verify" }, { isError: true })),
+    );
+    assert.match(row, /error de protocolo/u);
+    assert.equal(row.includes("bloqueado"), false, `a protocol error must not read as BLOCKED: ${row}`);
+    assert.equal(row.includes("missing_completion"), false, `the raw internal code must not leak: ${row}`);
+  });
+
+  it("tells the Parent not to auto-retry a protocol fault", () => {
+    const guidelines = (tool.promptGuidelines ?? []).join("\n").toLowerCase();
+    assert.match(guidelines, /protocol/);
+    assert.match(guidelines, /retry/);
+  });
+
   it("exposes the complete handoff only when expanded", () => {
     const full = "WORKER HANDOFF\nstatus: done\nchanges:\n  - src/secret.ts\nsummary: implemented everything";
     const result = { content: [{ type: "text", text: full }], details: { status: "done", changes: [{ file: "src/secret.ts" }] } };

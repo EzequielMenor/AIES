@@ -112,7 +112,7 @@ export interface ActivityState {
  * as stale in the footer after the artifact changed.
  */
 export interface VerificationState {
-  status: "none" | "pass" | "fail" | "blocked";
+  status: "none" | "pass" | "fail" | "blocked" | "protocol_error";
   /** Verification runs started, counted here. */
   attempts: number;
   /** Repair cycles reported by the verification policy. */
@@ -585,7 +585,7 @@ export function applyVerificationReport(state: AiesState, report: unknown): Aies
 
   const source = report as Record<string, unknown>;
   const status =
-    source.status === "pass" || source.status === "fail" || source.status === "blocked"
+    source.status === "pass" || source.status === "fail" || source.status === "blocked" || source.status === "protocol_error"
       ? source.status
       : "none";
 
@@ -723,7 +723,7 @@ export interface AiesSnapshot {
     lastDurationMs: number | undefined;
   };
   verification: {
-    status: "none" | "pass" | "fail" | "blocked";
+    status: "none" | "pass" | "fail" | "blocked" | "protocol_error";
     attempts: number;
     repairs: number;
     maxRepairs: number;
@@ -842,7 +842,7 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     : {}) as Record<string, unknown>;
   state.verification = {
     status:
-      rawVerification.status === "pass" || rawVerification.status === "fail" || rawVerification.status === "blocked"
+      rawVerification.status === "pass" || rawVerification.status === "fail" || rawVerification.status === "blocked" || rawVerification.status === "protocol_error"
         ? rawVerification.status
         : "none",
     attempts: positive(rawVerification.attempts) ?? 0,

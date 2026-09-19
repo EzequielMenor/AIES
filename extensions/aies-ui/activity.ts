@@ -19,7 +19,7 @@ export interface ActivityRecord {
   task: string;
   startedAt: number;
   finishedAt?: number;
-  outcome?: "done" | "blocked" | "failed" | "interrupted";
+  outcome?: "done" | "blocked" | "failed" | "interrupted" | "protocol_error";
   summary?: string;
   /** explore: relevant paths. */
   evidenceCount?: number;
@@ -56,6 +56,7 @@ function outcomeColor(outcome: string | undefined): SemanticColor {
     case "done":
       return "success";
     case "failed":
+    case "protocol_error":
       return "error";
     case "blocked":
       return "warning";
@@ -70,6 +71,8 @@ function outcomeGlyph(outcome: string | undefined): string {
       return "✓";
     case "failed":
       return "✗";
+    case "protocol_error":
+      return "⚠";
     case "blocked":
       return "!";
     default:
@@ -86,6 +89,8 @@ function verdictFor(role: string, outcome: string | undefined): string | undefin
       return "FAIL";
     case "blocked":
       return "BLOCKED";
+    case "protocol_error":
+      return "ERROR";
     default:
       return undefined;
   }
@@ -127,6 +132,10 @@ function facts(activity: ActivityRecord): string[] {
     const checks = checksFact(activity);
     if (checks) out.push(checks);
   } else if (activity.role === "verify") {
+    if (activity.outcome === "protocol_error") {
+      out.push("error de protocolo");
+      return out;
+    }
     if (typeof activity.criteriaTotal === "number" && activity.criteriaTotal > 0 && typeof activity.criteriaPassed === "number" && Number.isFinite(activity.criteriaPassed)) {
       const noun = activity.criteriaTotal === 1 ? "criterio" : "criterios";
       out.push(`${activity.criteriaPassed}/${activity.criteriaTotal} ${noun}`);

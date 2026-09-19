@@ -9,6 +9,7 @@
 import type { AiesSnapshot } from "./state.ts";
 import { formatDuration, formatTokens } from "../aies-ui/format.ts";
 import { renderFooter } from "../aies-ui/footer.ts";
+import { verificationStatusLabel } from "../aies-ui/vocabulary.ts";
 
 // One implementation each: the formatters and the footer live in `aies-ui` and are
 // re-exported here so existing callers and tests keep importing from this module.
@@ -45,9 +46,9 @@ function peakLabel(snapshot: AiesSnapshot): string {
 function ticketVerifyLabel(snapshot: AiesSnapshot): string {
   // PASS stays a technical token; only the human qualifier and the absent state are Spanish.
   if (snapshot.ticket?.validVerify) return "PASS (válido)";
-  const status = snapshot.verification?.status?.toUpperCase();
-  if (!status || status === "NONE") return "sin verificar";
-  return status;
+  const status = snapshot.verification?.status;
+  if (!status || status === "none") return "sin verificar";
+  return verificationStatusLabel(status);
 }
 
 /** The `/aies-status` report: the same numbers, unfolded for a human. */
@@ -100,7 +101,7 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
       : []),
     ...(snapshot.verification && (snapshot.verification.attempts > 0 || snapshot.verification.status !== "none")
       ? section("Verificación", [
-          row("estado", snapshot.verification.status.toUpperCase()),
+          row("estado", verificationStatusLabel(snapshot.verification.status)),
           row("válido", snapshot.verification.valid ? "sí" : "no"),
           row("intentos", String(snapshot.verification.attempts)),
           row("reparaciones", `${snapshot.verification.repairs} / ${snapshot.verification.maxRepairs}`),

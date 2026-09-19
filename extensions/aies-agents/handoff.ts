@@ -77,6 +77,44 @@ export interface VerifyHandoff {
   next: string[];
 }
 
+/** Why a Verify run produced no usable verdict. */
+export type VerifyProtocolErrorCode =
+  | "missing_completion"
+  | "invalid_completion"
+  | "duplicate_completion"
+  | "session_failure";
+
+/**
+ * A handoff failure, not a verdict. It carries no domain status on purpose: a
+ * missing, malformed or duplicated completion must never be read as `blocked`,
+ * `pass` or `fail`.
+ */
+export interface VerifyProtocolError {
+  kind: "protocol_error";
+  code: VerifyProtocolErrorCode;
+  message: string;
+}
+
+/**
+ * A verdict captured structurally from the completion tool. It keeps the direct
+ * `.status`/`.criteria`/... fields for compatibility and adds an explicit
+discriminant so a verdict can never be confused with a protocol error.
+ */
+export interface VerifyVerdict extends VerifyHandoff {
+  kind: "verdict";
+}
+
+export type VerifyRunResult = VerifyVerdict | VerifyProtocolError;
+
+/** True only for the protocol failure, never for a verdict. */
+export function isProtocolError(result: VerifyRunResult | VerifyHandoff): result is VerifyProtocolError {
+  return (result as { kind?: unknown }).kind === "protocol_error";
+}
+
+export function createVerifyProtocolError(code: VerifyProtocolErrorCode, message: string): VerifyProtocolError {
+  return { kind: "protocol_error", code, message };
+}
+
 /** Maximum length of the formatted handoff returned to parent context. */
 export const MAX_HANDOFF_CHARS = 6000;
 
@@ -190,9 +228,13 @@ function sanitizeCriteria(val: unknown): VerifyCriterion[] {
     const entry = item as Record<string, unknown>;
     const criterion = typeof entry.criterion === "string" ? entry.criterion.trim() : "";
     if (!criterion) continue;
+    // Compatibility: an older handoff may say `met: true|false` instead of `status`.
+    const status =
+      sanitizeVerifyStatus(entry.status)
+      ?? (entry.met === true ? "pass" : entry.met === false ? "fail" : undefined);
     list.push({
       criterion,
-      status: sanitizeVerifyStatus(entry.status) ?? "blocked",
+      status: status ?? "blocked",
       evidence:
         typeof entry.evidence === "string" && entry.evidence.trim()
           ? entry.evidence.trim()
@@ -233,28 +275,173 @@ function hasEvidence(handoff: VerifyHandoff): boolean {
     || handoff.checks.some((entry) => Boolean(entry.result));
 }
 
-function sanitizeVerifyHandoff(parsed: Record<string, unknown>): VerifyHandoff {
+function strictStatus(val: unknown): VerifyStatus | undefined {
+  return sanitizeVerifyStatus(val);
+}
+
+function strictCriteria(val: unknown): { ok: true; value: VerifyCriterion[] } | { ok: false; reason: string } {
+  if (val === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(val)) return { ok: false, reason: "criteria must be an array" };
+  const list: VerifyCriterion[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") return { ok: false, reason: "each criterion must be an object" };
+    const entry = item as Record<string, unknown>;
+    const criterion = typeof entry.criterion === "string" ? entry.criterion.trim() : "";
+    if (!criterion) return { ok: false, reason: "each criterion needs non-empty text" };
+    const status = strictStatus(entry.status);
+    if (!status) return { ok: false, reason: `criterion "${criterion}" needs status pass|fail|blocked` };
+    list.push({
+      criterion,
+      status,
+      evidence:
+        typeof entry.evidence === "string" && entry.evidence.trim() ? entry.evidence.trim() : undefined,
+    });
+  }
+  return { ok: true, value: list };
+}
+
+function strictChecks(val: unknown): { ok: true; value: VerifyCheck[] } | { ok: false; reason: string } {
+  if (val === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(val)) return { ok: false, reason: "checks must be an array" };
+  const list: VerifyCheck[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") return { ok: false, reason: "each check must be an object" };
+    const entry = item as Record<string, unknown>;
+    const check = typeof entry.check === "string" ? entry.check.trim() : "";
+    if (!check) return { ok: false, reason: "each check needs non-empty text" };
+    list.push({
+      check,
+      result: typeof entry.result === "string" && entry.result.trim() ? entry.result.trim() : undefined,
+    });
+  }
+  return { ok: true, value: list };
+}
+
+function strictDefects(val: unknown): { ok: true; value: VerifyDefect[] } | { ok: false; reason: string } {
+  if (val === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(val)) return { ok: false, reason: "defects must be an array" };
+  const list: VerifyDefect[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") return { ok: false, reason: "each defect must be an object" };
+    const entry = item as Record<string, unknown>;
+    const description = typeof entry.description === "string" ? entry.description.trim() : "";
+    if (!description) return { ok: false, reason: "each defect needs a non-empty description" };
+    if (entry.severity !== "blocking" && entry.severity !== "non_blocking") {
+      return { ok: false, reason: `defect "${description}" needs severity blocking|non_blocking` };
+    }
+    list.push({
+      severity: entry.severity,
+      file: typeof entry.file === "string" && entry.file.trim() ? entry.file.trim() : undefined,
+      description,
+      evidence:
+        typeof entry.evidence === "string" && entry.evidence.trim() ? entry.evidence.trim() : undefined,
+    });
+  }
+  return { ok: true, value: list };
+}
+
+/** Collapse a criterion to comparable tokens: case, punctuation and whitespace. */
+function normalizedCriterion(value: string): string {
+  return value.toLowerCase().replace(/[\s`"'*_.,;:]+/gu, " ").trim();
+}
+
+/** One required criterion matched, or not, to exactly one completion entry. */
+export interface CriterionMatch {
+  expected: string;
+  entry?: VerifyCriterion;
+}
+
+/**
+ * Match required criteria to completion entries one-to-one. Matching is exact
+ * after normalization (case, punctuation and whitespace only) and each
+ * completion entry is consumed at most once, so one broad or narrow entry can
+ * never cover two required criteria.
+ */
+export function matchCriteria(required: string[], criteria: VerifyCriterion[]): CriterionMatch[] {
+  const used = new Set<number>();
+  return required.map((expected) => {
+    const target = normalizedCriterion(expected);
+    if (!target) return { expected };
+    const index = criteria.findIndex(
+      (entry, position) => !used.has(position) && normalizedCriterion(entry.criterion) === target,
+    );
+    if (index === -1) return { expected };
+    used.add(index);
+    return { expected, entry: criteria[index] };
+  });
+}
+
+/** The result of validating one completion attempt against the run's criteria. */
+export interface VerifyCompletionValidation {
+  ok: boolean;
+  handoff?: VerifyHandoff;
+  reason?: string;
+}
+
+/**
+ * Semantic validation of a completion attempt. Shape is checked (the schema
+ * already does part of it) and then the meaning: a PASS needs evidence, must not
+ * contradict a blocking defect, and must represent and pass every acceptance
+ * criterion the run was given. An invalid attempt is a protocol failure, never a
+ * domain verdict.
+ */
+export function validateVerifyCompletion(
+  input: unknown,
+  requiredCriteria: string[] = [],
+): VerifyCompletionValidation {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, reason: "completion must be an object" };
+  }
+  const parsed = input as Record<string, unknown>;
+
+  const status = strictStatus(parsed.status);
+  if (!status) return { ok: false, reason: 'status must be "pass", "fail" or "blocked"' };
+
+  const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+  if (!summary) return { ok: false, reason: "summary is required" };
+
+  const criteria = strictCriteria(parsed.criteria);
+  if (!criteria.ok) return { ok: false, reason: criteria.reason };
+  const checks = strictChecks(parsed.checks);
+  if (!checks.ok) return { ok: false, reason: checks.reason };
+  const defects = strictDefects(parsed.defects);
+  if (!defects.ok) return { ok: false, reason: defects.reason };
+
   const handoff: VerifyHandoff = {
-    status: sanitizeVerifyStatus(parsed.status) ?? "blocked",
-    summary:
-      typeof parsed.summary === "string" && parsed.summary.trim()
-        ? parsed.summary.trim()
-        : "Verification finished without an explicit summary.",
-    criteria: sanitizeCriteria(parsed.criteria),
-    checks: sanitizeChecks(parsed.checks),
-    defects: sanitizeDefects(parsed.defects),
+    status,
+    summary,
+    criteria: criteria.value,
+    checks: checks.value,
+    defects: defects.value,
     next: sanitizeStringList(parsed.next).slice(0, 1),
   };
 
-  if (handoff.status === "pass" && !hasEvidence(handoff)) {
-    return {
-      ...handoff,
-      status: "blocked",
-      summary: `Pass reported without evidence; treated as blocked. ${handoff.summary}`,
-    };
+  if (status !== "pass") return { ok: true, handoff };
+
+  if (handoff.defects.some((defect) => defect.severity === "blocking")) {
+    return { ok: false, reason: "a PASS cannot carry a blocking defect" };
+  }
+  if (!hasEvidence(handoff)) {
+    return { ok: false, reason: "a PASS needs evidence in its criteria or checks" };
   }
 
-  return handoff;
+  const matches = matchCriteria(requiredCriteria, handoff.criteria);
+  const uncovered = matches.filter((match) => !match.entry).map((match) => match.expected);
+  if (uncovered.length > 0) {
+    return { ok: false, reason: `a PASS must represent every acceptance criterion; missing: ${uncovered.join("; ")}` };
+  }
+  const notPassing = matches.filter((match) => match.entry?.status !== "pass").map((match) => match.expected);
+  if (notPassing.length > 0) {
+    return { ok: false, reason: `a PASS requires every acceptance criterion to pass; not passing: ${notPassing.join("; ")}` };
+  }
+  const unevidenced = matches
+    .filter((match) => match.entry && !match.entry.evidence)
+    .map((match) => match.expected);
+  if (unevidenced.length > 0) {
+    return { ok: false, reason: `a PASS needs evidence for every acceptance criterion; missing evidence: ${unevidenced.join("; ")}` };
+  }
+
+  return { ok: true, handoff };
 }
 
 /**
@@ -463,40 +650,53 @@ export function formatWorkerHandoff(handoff: WorkerHandoff): string {
 }
 
 /**
- * Parse raw Verify child output into a structured VerifyHandoff. An unreadable
- * answer is `blocked`, never `pass`: the conservative default for a verifier is
- * "I could not prove it", not "it is fine".
+ * Compatibility parser for a raw Verify child message. It is no longer the
+ * authority: the completion tool is. It exists for deterministic tests and for a
+ * child that never called the tool, and it never fabricates a domain verdict from
+ * prose. Empty, malformed or semantically invalid input becomes a protocol error,
+ * not `blocked`.
  */
-export function parseVerifyHandoff(rawText: string | undefined): VerifyHandoff {
-  if (!rawText || !rawText.trim()) {
-    return {
-      status: "blocked",
-      summary: "Verify child returned no output.",
-      criteria: [],
-      checks: [],
-      defects: [],
-      next: [],
-    };
+export function parseVerifyHandoff(rawText: string | undefined): VerifyRunResult {
+  const text = typeof rawText === "string" ? rawText : "";
+  if (!text.trim()) {
+    return createVerifyProtocolError("missing_completion", "the verify child produced no completion");
   }
 
-  const parsed = extractJsonBlock(rawText);
-  if (parsed) {
-    return sanitizeVerifyHandoff(parsed);
+  const parsed = extractJsonBlock(text);
+  if (!parsed) {
+    return createVerifyProtocolError(
+      "missing_completion",
+      "the verify child produced no structured completion",
+    );
   }
 
-  return {
-    status: "blocked",
-    summary: rawText.slice(0, 1000).trim(),
-    criteria: [],
-    checks: [],
-    defects: [
-      {
-        severity: "blocking",
-        description: "Verify response did not provide a structured JSON handoff block.",
-      },
-    ],
-    next: ["Re-run verification with the structured handoff schema."],
+  const status = sanitizeVerifyStatus(parsed.status);
+  if (!status) {
+    return createVerifyProtocolError("invalid_completion", "the handoff is missing a valid status");
+  }
+
+  const handoff: VerifyHandoff = {
+    status,
+    summary:
+      typeof parsed.summary === "string" && parsed.summary.trim()
+        ? parsed.summary.trim()
+        : "Verification finished without an explicit summary.",
+    criteria: sanitizeCriteria(parsed.criteria),
+    checks: sanitizeChecks(parsed.checks),
+    defects: sanitizeDefects(parsed.defects),
+    next: sanitizeStringList(parsed.next).slice(0, 1),
   };
+
+  if (status === "pass") {
+    if (handoff.defects.some((defect) => defect.severity === "blocking")) {
+      return createVerifyProtocolError("invalid_completion", "a PASS cannot carry a blocking defect");
+    }
+    if (!hasEvidence(handoff)) {
+      return createVerifyProtocolError("invalid_completion", "a PASS needs evidence");
+    }
+  }
+
+  return { kind: "verdict", ...handoff };
 }
 
 /**

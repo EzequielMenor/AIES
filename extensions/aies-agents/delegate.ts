@@ -18,6 +18,7 @@ import {
   formatExploreHandoff,
   formatVerifyHandoff,
   formatWorkerHandoff,
+  isProtocolError,
   type ExploreHandoff,
   type VerifyHandoff,
   type WorkerHandoff,
@@ -193,6 +194,8 @@ function delegateRunningRow(args: Record<string, unknown>, theme: RowTheme): str
 function delegateFailureReason(result: { content?: ReadonlyArray<{ type?: string; text?: string }>; details?: unknown }, isError: boolean): string | undefined {
   const details = asRecord(result?.details);
   if (details) {
+    // A Verify protocol fault is its own fact, never a domain status.
+    if (details.kind === "protocol_error") return "error de protocolo de verificación";
     const status = nonEmptyString(details.status);
     if (status === "failed") return "falló";
     if (status === "blocked") return "bloqueado";
@@ -223,6 +226,7 @@ export function createDelegateTool(
       "Use aies_delegate({ role: 'explore', ... }) when investigating the codebase or checking >2 files.",
       "Use aies_delegate({ role: 'worker', ... }) when implementing concrete changes, editing files, or running tests.",
       "Use aies_delegate({ role: 'verify', task, criteria, changedPaths }) after a behaviour-bearing Worker change, before calling it complete. Pass facts only: never the Worker's summary, reasoning or transcript.",
+      "After a 'verify' result that is a protocol error, do NOT retry verification automatically or treat it as PASS/FAIL/BLOCKED: surface the protocol fault to the user and fix the Verify configuration or the completion call first.",
       "Do NOT implement substantial multi-file changes directly in the parent session.",
       "Do NOT mark a work unit verified yourself: only a valid 'verify' PASS supports that claim.",
     ],
@@ -325,6 +329,19 @@ export function createDelegateTool(
         });
 
         const next = applyVerifyResult(applyVerifyStart(current, startedAt), handoff, Date.now());
+
+        if (isProtocolError(handoff)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `⚠ Verificación: error de protocolo (${handoff.code}). No se marca PASS ni FAIL, no se repara y no se reintenta automáticamente: revisá la configuración del agente Verify o volvé a delegar la verificación.\n\n${commit(next)}`,
+              },
+            ],
+            details: { ...handoff, verification: toVerificationReport(next) },
+            isError: true,
+          };
+        }
 
         return {
           content: [

@@ -44,7 +44,7 @@ import {
   planVerification,
   requiresVerification,
 } from "../extensions/aies-agents/verification.ts";
-import { runVerifyAgent } from "../extensions/aies-agents/verify.ts";
+import { runVerifyAgent, VERIFY_COMPLETE_TOOL } from "../extensions/aies-agents/verify.ts";
 import { runWorkerAgent } from "../extensions/aies-agents/worker.ts";
 import {
   applyDelegationEnd,
@@ -189,20 +189,17 @@ describe("AIES-006 Real Smoke: Permission Boundaries End-to-End", () => {
     // Part 3: Verify executes independent validation
     // ------------------------------------------------------------------------
     const verifyCriteria = ["multiply(3, 4) returns 12", "node test.js passes"];
-    const verifyHandoffJson = `\`\`\`json
-{
-  "status": "pass",
-  "summary": "multiply function is implemented and test.js passes with full assertion coverage.",
-  "criteria": [
-    { "criterion": "multiply(3, 4) returns 12", "met": true, "evidence": "math.js exports multiply and returns a * b" },
-    { "criterion": "node test.js passes", "met": true, "evidence": "node test.js exited 0 with ALL CHECKS PASSED" }
-  ],
-  "defects": [],
-  "checks": [
-    { "check": "node test.js", "result": "passed" }
-  ]
-}
-\`\`\``;
+    const verifyCompletion = {
+      status: "pass",
+      summary: "multiply function is implemented and test.js passes with full assertion coverage.",
+      criteria: [
+        { criterion: "multiply(3, 4) returns 12", status: "pass", evidence: "math.js exports multiply and returns a * b" },
+        { criterion: "node test.js passes", status: "pass", evidence: "node test.js exited 0 with ALL CHECKS PASSED" },
+      ],
+      defects: [],
+      checks: [{ check: "node test.js", result: "passed" }],
+      next: [],
+    };
 
     faux.setResponses([
       fauxAssistantMessage([
@@ -214,7 +211,9 @@ describe("AIES-006 Real Smoke: Permission Boundaries End-to-End", () => {
       fauxAssistantMessage([
         fauxToolCall("bash", { command: "node test.js" }, "v3"),
       ]),
-      fauxAssistantMessage([{ type: "text", text: verifyHandoffJson }]),
+      fauxAssistantMessage([
+        fauxToolCall(VERIFY_COMPLETE_TOOL, verifyCompletion, "v4"),
+      ]),
     ]);
 
     delegate("verify", { criteria: verifyCriteria });

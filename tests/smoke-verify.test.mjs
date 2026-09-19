@@ -29,6 +29,7 @@ import {
   formatRepairBrief,
   formatVerifyHandoff,
   formatWorkerHandoff,
+  isProtocolError,
 } from "../extensions/aies-agents/handoff.ts";
 import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
 import {
@@ -44,7 +45,7 @@ import {
   requiresVerification,
   toVerificationReport,
 } from "../extensions/aies-agents/verification.ts";
-import { runVerifyAgent } from "../extensions/aies-agents/verify.ts";
+import { VERIFY_COMPLETE_TOOL, runVerifyAgent } from "../extensions/aies-agents/verify.ts";
 import { runWorkerAgent } from "../extensions/aies-agents/worker.ts";
 import {
   applyDelegationEnd,
@@ -84,20 +85,18 @@ function workerHandoffJson({ claim, file }) {
 \`\`\``;
 }
 
-function verifyHandoffJson({ status, observed, defect }) {
-  return `\`\`\`json
-{
-  "status": "${status}",
-  "summary": "${status === "pass" ? "The artifact matches the criteria." : "The artifact does not match the criteria."}",
-  "criteria": [
-    { "criterion": "${TIMEOUT_CRITERION}", "status": "${status}", "evidence": "config.js:1 shows ${observed}" },
-    { "criterion": "${CHECK_CRITERION}", "status": "pass", "evidence": "npm test exit 0" }
-  ],
-  "checks": [{ "check": "npm test", "result": "exit 0" }],
-  "defects": ${defect ? JSON.stringify([defect]) : "[]"},
-  "next": []
-}
-\`\`\``;
+function verifyCompletionArgs({ status, observed, defect }) {
+  return {
+    status,
+    summary: status === "pass" ? "The artifact matches the criteria." : "The artifact does not match the criteria.",
+    criteria: [
+      { criterion: TIMEOUT_CRITERION, status, evidence: `config.js:1 shows ${observed}` },
+      { criterion: CHECK_CRITERION, status: "pass", evidence: "npm test exit 0" },
+    ],
+    checks: [{ check: "npm test", result: "exit 0" }],
+    defects: defect ? [defect] : [],
+    next: [],
+  };
 }
 
 describe("AIES-005 Real Smoke: Parent -> Worker -> Verify FAIL -> repair -> Verify PASS", () => {
@@ -230,9 +229,9 @@ describe("AIES-005 Real Smoke: Parent -> Worker -> Verify FAIL -> repair -> Veri
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c5")]),
         fauxAssistantMessage([fauxToolCall("bash", { command: "npm test" }, "c6")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletionArgs({
               status: "fail",
               observed: "TIMEOUT_MS = 1500",
               defect: {
@@ -242,8 +241,10 @@ describe("AIES-005 Real Smoke: Parent -> Worker -> Verify FAIL -> repair -> Veri
                 evidence: "read config.js:1",
               },
             }),
-          },
+            "c7",
+          ),
         ]),
+        fauxAssistantMessage([{ type: "text", text: "Reported the defect; the check still fails." }]),
       ]);
       childToolCalls += 2;
       childrenToolPayloadChars += "3 checks passed\n".length;
@@ -321,11 +322,14 @@ describe("AIES-005 Real Smoke: Parent -> Worker -> Verify FAIL -> repair -> Veri
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c8")]),
         fauxAssistantMessage([
-          {
-            type: "text",
-            text: verifyHandoffJson({ status: "pass", observed: "TIMEOUT_MS = 2000", defect: null }),
-          },
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletionArgs({ status: "pass", observed: "TIMEOUT_MS = 2000", defect: null }),
+            "c9",
+          ),
         ]),
+        // Malformed final prose after the captured verdict must be ignored.
+        fauxAssistantMessage([{ type: "text", text: "All good! not json { broken" }]),
       ]);
       childToolCalls += 1;
       childrenToolPayloadChars += readFileSync(configFile, "utf8").length;
@@ -417,6 +421,57 @@ describe("AIES-005 Real Smoke: Parent -> Worker -> Verify FAIL -> repair -> Veri
       assert.equal(metrics.repairCycles, 1);
       assert.ok(metrics.elapsedMs >= 0);
       assert.equal(metrics.parentToolCalls, 5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a captured PASS when the final prose is malformed (EZE-422 regression)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-smoke-verify-protocol-"));
+
+    try {
+      const configFile = join(dir, "config.js");
+      writeFileSync(configFile, "export const TIMEOUT_MS = 2000;\n");
+
+      const faux = fauxProvider();
+      const runtime = await ModelRuntime.create();
+      runtime.registerNativeProvider(faux.provider);
+      const model = faux.models[0];
+
+      const criteria = [TIMEOUT_CRITERION, CHECK_CRITERION];
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "r1")]),
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletionArgs({ status: "pass", observed: "TIMEOUT_MS = 2000", defect: null }),
+            "r2",
+          ),
+        ]),
+        // The EZE-422 failure mode: substantive prose with malformed JSON after the verdict.
+        fauxAssistantMessage([{ type: "text", text: "Verified everything. PASS. {\"status\": \"pass\", broken" }]),
+      ]);
+
+      let verification = createVerificationState();
+      verification = applyVerifyStart(verification, Date.now());
+      const verifyOne = await runVerifyAgent({
+        task: "Bring the request timeout to 2000ms",
+        criteria,
+        changedPaths: ["config.js"],
+        checks: ["npm test"],
+        cwd: dir,
+        agentDir: REPO_ROOT,
+        modelRuntime: runtime,
+        model,
+      });
+      verification = applyVerifyResult(verification, verifyOne, Date.now());
+
+      assert.equal(isProtocolError(verifyOne), false, "a captured verdict must survive malformed prose");
+      assert.equal(verifyOne.status, "pass");
+      assert.equal(verification.status, "pass");
+      assert.equal(verification.attempts, 1, "one attempt, no automatic rerun");
+      assert.equal(verification.repairs, 0, "no repair budget was spent");
+      assert.equal(planVerification(verification).action, "done");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -103,6 +103,7 @@ function buildSegments(snapshot: AiesSnapshot): Segment[] {
   if (isCompacting(snapshot)) segments.push({ text: "compactando…", color: "warning" });
   const indicator = verificationIndicator(snapshot);
   if (indicator === "V:FAIL") segments.push({ text: "V:FAIL", color: "error" });
+  else if (indicator === "V:ERROR") segments.push({ text: "V:ERROR", color: "error" });
   else if (indicator === "V:STALE") segments.push({ text: "V:STALE", color: "warning" });
   if (snapshot.permissions?.denials > 0) segments.push({ text: "PERM", color: "warning" });
   if (snapshot.permissions?.sandbox === "unavailable" || snapshot.permissions?.sandbox === "disabled") {

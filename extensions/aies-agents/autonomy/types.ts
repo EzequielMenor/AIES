@@ -15,6 +15,7 @@ export type AutonomyStopReason =
   | "user_required"
   | "blocked"
   | "verification_failed"
+  | "verification_protocol_error"
   | "repair_limit"
   | "no_progress"
   | "continuation_limit"

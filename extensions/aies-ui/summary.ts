@@ -9,7 +9,7 @@
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import { formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
-import { deriveStage } from "./vocabulary.ts";
+import { deriveStage, verificationStatusLabel } from "./vocabulary.ts";
 
 /** Width of the label column in the `/aies-status` overview. */
 const LABEL_WIDTH = 18;
@@ -24,6 +24,7 @@ const STOP_LABEL: Record<string, string> = {
   user_required: "necesita tu intervención",
   blocked: "bloqueada",
   verification_failed: "verificación fallida",
+  verification_protocol_error: "error de protocolo en la verificación",
   repair_limit: "límite de reparaciones agotado",
   no_progress: "sin progreso",
   continuation_limit: "límite de continuaciones alcanzado",
@@ -93,6 +94,10 @@ function normalizeVerification(value: string | undefined): string | undefined {
     case "V:BLOCKED":
     case "BLOCKED":
       return "V:BLOCKED";
+    case "V:ERROR":
+    case "ERROR":
+    case "PROTOCOL_ERROR":
+      return "V:ERROR";
     default:
       return raw;
   }
@@ -209,7 +214,7 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
   if (verification && (verification.status !== "none" || verification.attempts > 0 || verification.repairs > 0 || verification.awaiting)) {
     sections.push([
       paint.fg("muted", "Verificación"),
-      row("estado", verification.status === "none" ? "pendiente" : verification.status.toUpperCase()),
+      row("estado", verification.status === "none" ? "pendiente" : verificationStatusLabel(verification.status)),
       row("intentos", String(verification.attempts)),
       row("reparaciones", `${verification.repairs} / ${verification.maxRepairs}`),
     ]);

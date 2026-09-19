@@ -42,7 +42,7 @@ import {
   applyWorkUnitChange,
   createVerificationState,
 } from "../extensions/aies-agents/verification.ts";
-import { runVerifyAgent } from "../extensions/aies-agents/verify.ts";
+import { runVerifyAgent, VERIFY_COMPLETE_TOOL } from "../extensions/aies-agents/verify.ts";
 import { runWorkerAgent } from "../extensions/aies-agents/worker.ts";
 import {
   applyDelegationEnd,
@@ -83,18 +83,17 @@ function workerHandoffJson({ file, claim }) {
 \`\`\``;
 }
 
-function verifyHandoffJson(status, details) {
-  return `\`\`\`json
-{
-  "status": "${status}",
-  "criteria": [
-    { "criterion": "TIMEOUT_MS in config.js is 2000", "met": ${status === "pass"}, "evidence": "${details}" }
-  ],
-  "checks": [],
-  "defects": ${status === "pass" ? "[]" : `["${details}"]`},
-  "summary": "${status === "pass" ? "All criteria satisfied" : "Criterion failed: " + details}"
-}
-\`\`\``;
+function verifyCompletionArgs(status, details) {
+  return {
+    status,
+    summary: status === "pass" ? "All criteria satisfied" : `Criterion failed: ${details}`,
+    criteria: [
+      { criterion: "TIMEOUT_MS in config.js is 2000", status, evidence: details },
+    ],
+    checks: [],
+    defects: status === "pass" ? [] : [{ severity: "blocking", description: details }],
+    next: [],
+  };
 }
 
 describe("AIES-008 Real Smoke: Linear Ticket Workflow End-to-End", () => {
@@ -233,7 +232,13 @@ describe("AIES-008 Real Smoke: Linear Ticket Workflow End-to-End", () => {
       const verifyContract = buildVerifyContract(activeTicket, ["config.js"]);
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c-verify-read-1")]),
-        fauxAssistantMessage([{ type: "text", text: verifyHandoffJson("pass", "config.js has TIMEOUT_MS = 2000") }]),
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletionArgs("pass", "config.js has TIMEOUT_MS = 2000"),
+            "c-verify-complete-1",
+          ),
+        ]),
       ]);
 
       runtimeState = applyToolCall(runtimeState, { toolName: "aies_delegate", input: { role: "verify" } }, Date.now(), dir);
@@ -339,7 +344,13 @@ describe("AIES-008 Real Smoke: Linear Ticket Workflow End-to-End", () => {
       // Verify inspects real file and returns FAIL
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c4")]),
-        fauxAssistantMessage([{ type: "text", text: verifyHandoffJson("fail", "Expected 2000 but found 1500") }]),
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            verifyCompletionArgs("fail", "Expected 2000 but found 1500"),
+            "c-verify-complete-2",
+          ),
+        ]),
       ]);
 
       verification = applyVerifyStart(verification, Date.now());

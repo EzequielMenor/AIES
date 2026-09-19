@@ -161,7 +161,9 @@ export function evaluateContinuation(options: EvaluateContinuationOptions): Cont
   const vPlan = planVerification(verification);
   if (vPlan.action === "stop") {
     let stopReason: AutonomyStopReason = "verification_failed";
-    if (verification.repairs >= vPlan.maxRepairs) {
+    if (verification.status === "protocol_error") {
+      stopReason = "verification_protocol_error";
+    } else if (verification.repairs >= vPlan.maxRepairs) {
       stopReason = "repair_limit";
     } else if (verification.status === "blocked") {
       stopReason = "blocked";

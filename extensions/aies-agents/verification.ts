@@ -16,9 +16,9 @@
  *   independent verification; a documentation-only change does not.
  */
 
-import { verifyFailureSignature, type VerifyHandoff } from "./handoff.ts";
+import { isProtocolError, verifyFailureSignature, type VerifyHandoff, type VerifyProtocolErrorCode, type VerifyRunResult } from "./handoff.ts";
 
-export type VerificationStatus = "none" | "running" | "pass" | "fail" | "blocked";
+export type VerificationStatus = "none" | "running" | "pass" | "fail" | "blocked" | "protocol_error";
 
 /** What the parent should do next, according to the policy. */
 export type VerificationAction = "verify" | "repair" | "done" | "stop" | "wait" | "none";
@@ -41,6 +41,8 @@ export interface VerificationState {
   verifiedRevision: number | undefined;
   /** Last verdict reported by Verify, kept across superseding worker runs. */
   lastStatus: "pass" | "fail" | "blocked" | undefined;
+  /** The handoff failure of the last run, when it produced no valid verdict. */
+  lastProtocolError: VerifyProtocolErrorCode | undefined;
   lastDurationMs: number | undefined;
   lastFailureSignature: string | undefined;
   /** Consecutive verifications that reported the same failure signature. */
@@ -71,6 +73,8 @@ export interface VerificationReport {
   awaitingVerification: boolean;
   decision: VerificationAction;
   reason: string;
+  /** Present only when the last run ended in a handoff failure. */
+  protocolError?: VerifyProtocolErrorCode;
 }
 
 export function createVerificationState(): VerificationState {
@@ -81,6 +85,7 @@ export function createVerificationState(): VerificationState {
     revision: 0,
     verifiedRevision: undefined,
     lastStatus: undefined,
+    lastProtocolError: undefined,
     lastDurationMs: undefined,
     lastFailureSignature: undefined,
     repeatedFailures: 0,
@@ -162,16 +167,31 @@ export function applyVerifyStart(state: VerificationState, now: number): Verific
 /** Record the verdict, the failure signature and the repair-loop bookkeeping. */
 export function applyVerifyResult(
   state: VerificationState,
-  handoff: VerifyHandoff,
+  result: VerifyRunResult | VerifyHandoff,
   now: number,
 ): VerificationState {
   const duration =
     state.startedAt === undefined ? undefined : Math.max(0, now - state.startedAt);
 
+  // A protocol error is a handoff failure, not a verdict: it stops the loop (via
+  // `planVerification`) without spending repair budget and without verifying.
+  if (isProtocolError(result)) {
+    return {
+      ...state,
+      status: "protocol_error",
+      lastProtocolError: result.code,
+      lastDurationMs: duration,
+      startedAt: undefined,
+      awaitingVerification: true,
+    };
+  }
+
+  const handoff = result;
   const next: VerificationState = {
     ...state,
     status: handoff.status,
     lastStatus: handoff.status,
+    lastProtocolError: undefined,
     lastDurationMs: duration,
     startedAt: undefined,
   };
@@ -209,6 +229,14 @@ export function planVerification(state: VerificationState): VerificationDecision
 
   if (state.status === "running") {
     return { ...base, action: "wait", reason: "verification in progress" };
+  }
+
+  if (state.status === "protocol_error") {
+    return {
+      ...base,
+      action: "stop",
+      reason: `verification protocol error (${state.lastProtocolError ?? "unknown"}): the verify child produced no valid completion; no repair and no rerun`,
+    };
   }
 
   if (state.status === "pass") {
@@ -296,6 +324,7 @@ export function toVerificationReport(state: VerificationState): VerificationRepo
     awaitingVerification: state.awaitingVerification,
     decision: decision.action,
     reason: decision.reason,
+    protocolError: state.lastProtocolError,
   };
 }
 

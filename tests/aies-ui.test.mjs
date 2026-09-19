@@ -153,6 +153,12 @@ describe("vocabulary", () => {
     assert.equal(verificationIndicator(snap(applyVerificationReport(createState(T0), { status: "fail", valid: false, attempts: 1 }))), "V:FAIL");
     assert.equal(verificationIndicator(snap(applyVerificationReport(createState(T0), { status: "blocked", valid: false, attempts: 1 }))), undefined);
   });
+
+  it("distinguishes a protocol error from PASS, FAIL and BLOCKED", () => {
+    const protocol = applyVerificationReport(createState(T0), { status: "protocol_error", valid: false, attempts: 1, awaitingVerification: true });
+    assert.equal(verificationIndicator(snap(protocol)), "V:ERROR");
+    assert.equal(deriveStage(snap(protocol)), "BLOCKED");
+  });
 });
 
 describe("footer", () => {
@@ -282,6 +288,18 @@ describe("footer", () => {
     assert.ok(at24.length <= 24, at24);
     assert.ok(at24.startsWith("❈ AIES · EZE-417 · ctx"), at24);
   });
+
+  it("shows a protocol error as V:ERROR, never folded into a domain verdict", () => {
+    let state = withContext(withTicket(createState(T0)), 40_000);
+    state = applyVerificationStart(state);
+    state = applyVerificationReport(state, { status: "protocol_error", valid: false, attempts: 1, awaitingVerification: true });
+
+    const footer = render(snap(state));
+    assert.match(footer, /V:ERROR/u);
+    assert.equal(footer.includes("V:FAIL"), false, footer);
+    assert.equal(footer.includes("V:BLOCKED"), false, footer);
+    assert.equal(footer.includes("V:PASS"), false, footer);
+  });
 });
 
 describe("header", () => {
@@ -387,6 +405,15 @@ describe("activity", () => {
       "! Verify · BLOCKED · 00:04",
       "  la verificación no pudo concluir",
     ]);
+
+    const protocol = renderActivityCard(
+      { role: "verify", task: "", startedAt: T0, finishedAt: T0 + 4_000, outcome: "protocol_error" },
+      "BLOCKED",
+      T0 + 4_000,
+    ).join("\n");
+    assert.match(protocol, /ERROR/u);
+    assert.match(protocol, /error de protocolo/u);
+    assert.equal(protocol.includes("BLOCKED"), false, protocol);
 
     const noFacts = renderActivityCard({ role: "explore", task: "", startedAt: T0, finishedAt: T0 + 16_000, outcome: "done", evidenceCount: 0 }, "IDLE", T0 + 16_000);
     assert.deepEqual(noFacts, ["✓ Explore · 00:16"]);
@@ -540,6 +567,17 @@ describe("summaries", () => {
     assert.equal(field(empty, "compactaciones"), "0");
     assert.equal(empty.includes("Ticket"), false);
     assert.equal(empty.includes("Verificación"), false);
+  });
+
+  it("renders a protocol error in the overview without the raw internal code", () => {
+    let state = createState(T0);
+    state = applyVerificationStart(state);
+    state = applyVerificationReport(state, { status: "protocol_error", valid: false, repairs: 0, maxRepairs: 2, awaitingVerification: true });
+
+    const overview = renderStatusOverview(snap(state), T0);
+    assert.equal(field(overview, "estado"), "error de protocolo");
+    assert.equal(overview.includes("PROTOCOL_ERROR"), false, overview);
+    assert.equal(field(overview, "estado") === "BLOQUEADO", false, overview);
   });
 });
 
