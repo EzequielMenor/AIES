@@ -35,6 +35,7 @@ import { TicketManager } from "../extensions/aies-agents/linear/manager.ts";
 import { createTicketTool } from "../extensions/aies-agents/linear/tool.ts";
 import { createVerificationState } from "../extensions/aies-agents/verification.ts";
 import {
+  FakeLinearTransport,
   HostMediatedLinearTransport,
   isLinearRemoteRequired,
   LINEAR_MCP_SERVER,
@@ -43,6 +44,9 @@ import {
   readRemoteAnswer,
   unwrapMcpAnswer,
 } from "../extensions/aies-agents/linear/transport.ts";
+import { registerTicketCommand } from "../extensions/aies-agents/linear/command.ts";
+import { registerAutonomyCommand } from "../extensions/aies-agents/autonomy/command.ts";
+import { ContinuationController } from "../extensions/aies-agents/autonomy/controller.ts";
 
 const REPO = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const TEMPLATE_MCP = JSON.parse(readFileSync(join(REPO, "profile", "mcp.json"), "utf8"));
@@ -498,6 +502,121 @@ describe("AIES MCP integration", () => {
       });
       const result = await manager.loadTicket("EZE-1");
       assert.equal(result.ok, true);
+    });
+  });
+
+  describe("8. Commands hand the Linear call to the Parent", () => {
+    function mockPi() {
+      const messages = [];
+      const commands = new Map();
+      return {
+        messages,
+        commands,
+        sendUserMessage: (text, options) => messages.push({ text, options }),
+        registerCommand: (name, definition) => commands.set(name, definition),
+      };
+    }
+
+    function mockCtx(notifications) {
+      return {
+        mode: "tui",
+        hasUI: false,
+        ui: { notify: (message, type) => notifications.push({ message, type }) },
+      };
+    }
+
+    const issue = { identifier: "EZE-422", title: "Fix multiply()" };
+
+    it("delegates /aies-ticket to the Parent when the transport is mediated", async () => {
+      const pi = mockPi();
+      const manager = new TicketManager({ getVerification: () => createVerificationState() });
+      registerTicketCommand(pi, manager);
+
+      const notifications = [];
+      await pi.commands.get("aies-ticket").handler("EZE-422", mockCtx(notifications));
+
+      assert.equal(pi.messages.length, 1, "the Parent must be asked to fetch the ticket");
+      assert.match(pi.messages[0].text, /aies_ticket/);
+      assert.match(pi.messages[0].text, /mcp/);
+      assert.equal(pi.messages[0].options.deliverAs, "followUp");
+      assert.equal(manager.getActiveTicket(), null, "the command must not invent a ticket");
+    });
+
+    it("stays synchronous when the transport can answer directly", async () => {
+      const pi = mockPi();
+      const manager = new TicketManager({
+        transport: new FakeLinearTransport([issue]),
+        getVerification: () => createVerificationState(),
+      });
+      registerTicketCommand(pi, manager);
+
+      const notifications = [];
+      await pi.commands.get("aies-ticket").handler("EZE-422", mockCtx(notifications));
+
+      assert.equal(pi.messages.length, 0, "no agent turn is needed when the transport answers");
+      assert.equal(manager.getActiveTicket().identifier, "EZE-422");
+    });
+
+    it("refuses before spending a turn when the adapter is missing", async () => {
+      const pi = mockPi();
+      const manager = new TicketManager({
+        getVerification: () => createVerificationState(),
+        getMcpDiagnostic: () => ({ code: "adapter_missing", usable: false, server: "linear" }),
+      });
+      registerTicketCommand(pi, manager);
+
+      const notifications = [];
+      await pi.commands.get("aies-ticket").handler("EZE-422", mockCtx(notifications));
+
+      assert.equal(pi.messages.length, 0);
+      assert.match(notifications[0].message, /pi-mcp-adapter is not loaded/);
+      assert.equal(notifications[0].type, "error");
+    });
+
+    it("warns instead of erroring when Linear needs authentication", async () => {
+      const pi = mockPi();
+      const manager = new TicketManager({
+        getVerification: () => createVerificationState(),
+        getMcpDiagnostic: () => ({ code: "needs_auth", usable: false, server: "linear" }),
+      });
+      registerTicketCommand(pi, manager);
+
+      const notifications = [];
+      await pi.commands.get("aies-ticket").handler("EZE-422", mockCtx(notifications));
+
+      assert.equal(notifications[0].type, "warning");
+      assert.match(notifications[0].message, /\/mcp-auth linear/);
+    });
+
+    it("delegates /aies-run to the Parent and enables autonomy", async () => {
+      const pi = mockPi();
+      const manager = new TicketManager({ getVerification: () => createVerificationState() });
+      const controller = new ContinuationController({ pi });
+      registerAutonomyCommand(pi, controller, manager);
+
+      const notifications = [];
+      await pi.commands.get("aies-run").handler("EZE-422", mockCtx(notifications));
+
+      assert.equal(controller.isEnabled(), true);
+      assert.equal(controller.getState().ticketId, "EZE-422");
+      assert.equal(pi.messages.length, 1);
+      assert.match(pi.messages[0].text, /aies_ticket/);
+      assert.match(pi.messages[0].text, /"load"/);
+      assert.match(pi.messages[0].text, /"start"/);
+    });
+
+    it("keeps /aies-run stop working without touching Linear", async () => {
+      const pi = mockPi();
+      const manager = new TicketManager({ getVerification: () => createVerificationState() });
+      const controller = new ContinuationController({ pi });
+      registerAutonomyCommand(pi, controller, manager);
+      controller.enable("EZE-422");
+
+      const notifications = [];
+      await pi.commands.get("aies-run").handler("stop", mockCtx(notifications));
+
+      assert.equal(controller.isEnabled(), false);
+      assert.equal(pi.messages.length, 0);
     });
   });
 });

@@ -32,6 +32,13 @@ import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
 import type { TicketSnapshot } from "./linear/types.ts";
 import {
+  applyMcpStatusEvent,
+  createMcpIntegrationState,
+  diagnoseMcpServer,
+  MCP_STATUS_CHANNEL,
+  type McpIntegrationState,
+} from "./mcp/integration.ts";
+import {
   ContinuationController,
   getActiveContinuationController,
   registerAutonomyCommand,
@@ -51,13 +58,39 @@ export function getActiveTicketManager(): TicketManager | undefined {
 export { getActiveContinuationController };
 
 
+/**
+ * Session tool names, or undefined when the host cannot report them. It separates
+ * "the MCP adapter is absent" from "the adapter has not reported a status snapshot
+ * yet", because only the first one is a real failure.
+ */
+function sessionToolNames(pi: ExtensionAPI): string[] | undefined {
+  try {
+    return pi.getAllTools().map((tool) => tool.name);
+  } catch {
+    return undefined;
+  }
+}
+
 export default function aiesAgents(pi: ExtensionAPI): void {
   let routingState: RoutingState = createRoutingState();
   let verification: VerificationState = createVerificationState();
   const governor: ContextGovernor = getContextGovernor();
 
+  // The MCP adapter publishes read-only status on a versioned channel. AIES reads
+  // it so an unusable Linear transport fails with a real instruction, and resets
+  // the sensor per session so a previous session's snapshot cannot decide this
+  // one's diagnosis.
+  let mcpState: McpIntegrationState = createMcpIntegrationState();
+  pi.events.on(MCP_STATUS_CHANNEL, (payload: unknown) => {
+    mcpState = applyMcpStatusEvent(mcpState, payload, Date.now());
+  });
+  pi.on("session_start", () => {
+    mcpState = createMcpIntegrationState();
+  });
+
   const ticketManager = new TicketManager({
     getVerification: () => verification,
+    getMcpDiagnostic: () => diagnoseMcpServer(mcpState, { adapterToolNames: sessionToolNames(pi) }),
   });
   activeTicketManager = ticketManager;
 

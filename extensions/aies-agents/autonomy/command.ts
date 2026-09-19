@@ -11,6 +11,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { TicketManager } from "../linear/manager.ts";
+import { ticketRunPrompt } from "../linear/prompt.ts";
+import { describeMcpDiagnostic } from "../mcp/integration.ts";
 import type { ContinuationController } from "./controller.ts";
 import { AIES_CONTINUATION_PROMPT } from "./policy.ts";
 import {
@@ -116,27 +118,51 @@ export function registerAutonomyCommand(
 
       // Case 4: `/aies-run <ticketId>`
       const ticketId = rawArg;
-      const current = ticketManager.getActiveTicket();
 
-      if (!current || current.identifier !== ticketId) {
-        ctx.ui.notify(`Cargando ticket ${ticketId}...`, "info");
+      const diagnostic = ticketManager.getMcpDiagnostic();
+      if (diagnostic && !diagnostic.usable) {
+        ctx.ui.notify(
+          describeMcpDiagnostic(diagnostic, { mode: ctx.mode }),
+          diagnostic.code === "needs_auth" ? "warning" : "error",
+        );
+        return;
+      }
+
+      const current = ticketManager.getActiveTicket();
+      let loaded = Boolean(current && current.identifier === ticketId);
+
+      if (!loaded) {
         const loadRes = await ticketManager.loadTicket(ticketId);
-        if (!loadRes.ok) {
+        if (loadRes.ok) {
+          loaded = true;
+        } else if (loadRes.error !== "remote_required") {
           ctx.ui.notify(`Error al cargar ${ticketId}: ${loadRes.message}`, "error");
           return;
         }
       }
 
-      const startRes = await ticketManager.startWork();
-      if (!startRes.ok) {
-        ctx.ui.notify(`Error al iniciar ${ticketId}: ${startRes.message}`, "error");
-        return;
+      if (loaded) {
+        const startRes = await ticketManager.startWork();
+        if (startRes.ok) {
+          controller.enable(ticketId);
+          ctx.ui.notify(`Autonomía activada para ${ticketId}. Ejecutando workflow...`, "info");
+          try {
+            pi.sendUserMessage(AIES_CONTINUATION_PROMPT, { deliverAs: "followUp" });
+          } catch {}
+          return;
+        }
+        if (startRes.error !== "remote_required") {
+          ctx.ui.notify(`Error al iniciar ${ticketId}: ${startRes.message}`, "error");
+          return;
+        }
       }
 
+      // A Linear call needs the Parent: hand it the load + start sequence and let
+      // the autonomy workflow continue once the ticket is active.
       controller.enable(ticketId);
       ctx.ui.notify(`Autonomía activada para ${ticketId}. Ejecutando workflow...`, "info");
       try {
-        pi.sendUserMessage(AIES_CONTINUATION_PROMPT, { deliverAs: "followUp" });
+        pi.sendUserMessage(ticketRunPrompt(ticketId, { alreadyActive: loaded }), { deliverAs: "followUp" });
       } catch {}
     },
   });
