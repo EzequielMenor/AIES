@@ -340,6 +340,27 @@ describe("AIES MCP integration", () => {
       assert.equal(describeMcpDiagnostic(diagnostic, { mode: "tui" }), "");
     });
 
+    it("never reads an empty status snapshot as a missing server", () => {
+      // Captured verbatim from the adapter in a real AIES session: it publishes an
+      // empty snapshot before any server has been reconciled.
+      const state = applyMcpStatusEvent(createMcpIntegrationState(), {
+        version: 1,
+        servers: [],
+        totalTools: 0,
+        totalResources: 0,
+        connectedCount: 0,
+        disabledCount: 0,
+      });
+
+      assert.equal(state.adapterObserved, true);
+      assert.equal(toMcpIntegrationSnapshot(state).servers.length, 0);
+
+      const diagnostic = diagnoseMcpServer(state);
+      assert.equal(diagnostic.code, "unknown");
+      assert.equal(diagnostic.usable, true, "an empty snapshot must not block a call the adapter can still serve");
+      assert.equal(describeMcpDiagnostic(diagnostic, { mode: "tui" }), "");
+    });
+
     it("reports a missing server, a disabled server and a failed server", () => {
       const absent = applyMcpStatusEvent(createMcpIntegrationState(), { servers: [{ name: "other", status: "connected" }] });
       assert.equal(diagnoseMcpServer(absent).code, "server_missing");

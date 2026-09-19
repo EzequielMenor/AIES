@@ -144,7 +144,15 @@ export function diagnoseMcpServer(state: McpIntegrationState, options: McpDiagno
   if (options.adapterToolNames && !isMcpAdapterLoaded(options.adapterToolNames)) {
     return { code: "adapter_missing", usable: false, server };
   }
-  if (!state.adapterObserved) return { code: "unknown", usable: true, server };
+  // No snapshot yet, or a snapshot that names no server at all. The adapter
+  // publishes an empty snapshot on shutdown and publishes one before it has
+  // reconciled any server, so an empty list is not evidence that the configured
+  // server is missing: only a snapshot that lists other servers and omits this one
+  // is. Reporting a missing server here would block a call the adapter can still
+  // serve and would ask the user to repair a correct profile.
+  if (!state.adapterObserved || state.servers.size === 0) {
+    return { code: "unknown", usable: true, server };
+  }
 
   const entry = state.servers.get(server);
   if (!entry) return { code: "server_missing", usable: false, server };
