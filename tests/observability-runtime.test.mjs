@@ -105,6 +105,10 @@ describe("AIES observability runtime", () => {
     assert.equal(status.sourceInfo.baseDir, agentDir, "/aies-status came from somewhere else");
     assert.match(status.sourceInfo.path, /extensions\/aies-runtime\/index\.ts$/u);
 
+    // The command description is Spanish like every other AIES-facing label.
+    assert.match(status.description, /^Muestra el estado de la sesión AIES/u);
+    assert.equal(status.description.includes("Show"), false, status.description);
+
     const identity = commands.find((command) => command.name === "aies-info");
     assert.ok(identity, "the identity extension stopped working");
 

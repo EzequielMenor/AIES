@@ -28,6 +28,7 @@ import { renderStatusReport } from "../extensions/aies-runtime/status.ts";
 import { renderFooter, renderHeader } from "../extensions/aies-ui/footer.ts";
 import { renderActivityCard, renderActivityEntry } from "../extensions/aies-ui/activity.ts";
 import { approvalOptions, renderApprovalPrompt } from "../extensions/aies-ui/approval.ts";
+import { handlePermissionGate } from "../extensions/aies-agents/permissions.ts";
 
 const T0 = 1_700_000_000_000;
 const RULE_LINES = [
@@ -251,5 +252,21 @@ describe("Spanish critical copy", () => {
     const prompt = renderApprovalPrompt({ action: "Instalar dependencia", detail: "pnpm add zod" });
     assert.equal(prompt.title, "AIES necesita permiso");
     assert.match(prompt.message, /Instalar dependencia/u);
+  });
+
+  it("reports a user denial with the exact Spanish reason", async () => {
+    const selection = await handlePermissionGate(
+      { action: "ask", prompt: "Instalar dependencia" },
+      { hasUI: true, ui: { select: async () => "Denegar" } },
+    );
+    assert.equal(selection.allowed, false);
+    assert.equal(selection.reason, "Operación rechazada por el usuario.");
+
+    const confirmation = await handlePermissionGate(
+      { action: "ask", prompt: "Instalar dependencia" },
+      { hasUI: true, ui: { confirm: async () => false } },
+    );
+    assert.equal(confirmation.allowed, false);
+    assert.equal(confirmation.reason, "Operación rechazada por el usuario.");
   });
 });

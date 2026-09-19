@@ -186,7 +186,6 @@ function passedChecks(value: unknown): number | undefined {
 function activityFacts(role: string, details: Record<string, unknown> | undefined): Record<string, unknown> {
   const facts: Record<string, unknown> = {};
   if (!details) return facts;
-  if (typeof details.summary === "string" && details.summary) facts.summary = details.summary;
 
   if (role === "explore") {
     const evidence = arrayLength(details.evidence);
@@ -280,8 +279,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let autonomyEnabled = false;
   let autonomyStopReason: string | null = null;
 
-  // The last facts each role reported, kept for the DONE/BLOCKED summaries.
-  let lastWorkerSummary: string | undefined;
+  // The last verdict facts Verify reported, kept for the BLOCKED summary.
   let lastVerify: { criteriaPassed?: number; criteriaTotal?: number; checksPassed?: number } | undefined;
 
   /** Measurement and rendering must never surface as a Pi extension error. */
@@ -440,7 +438,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       linear: snapshot.ticket?.status ?? "Done",
       durationMs: Math.max(0, Date.now() - snapshot.startedAt),
     };
-    if (lastWorkerSummary) data.changes = [lastWorkerSummary];
     const verification = verificationText();
     if (verification) data.verification = verification;
     return { data, headline: ticket ? `✓ ${ticket} completado` : "✓ Tarea completada" };
@@ -489,9 +486,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
   /** Keep the facts the summaries need; never a model, which the parent cannot observe. */
   function rememberActivity(role: string, facts: Record<string, unknown>): void {
-    if (role === "worker" && typeof facts.summary === "string" && facts.summary) {
-      lastWorkerSummary = facts.summary;
-    }
     if (role === "verify") {
       lastVerify = {
         criteriaPassed: typeof facts.criteriaPassed === "number" ? facts.criteriaPassed : undefined,
@@ -783,7 +777,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       autonomySignal = "";
       autonomyEnabled = false;
       autonomyStopReason = null;
-      lastWorkerSummary = undefined;
       lastVerify = undefined;
 
       state = createState(now);

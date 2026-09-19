@@ -366,7 +366,12 @@ describe("AIES UI seam", () => {
     assert.equal(done.length, 1);
     assert.equal(done[0].data.kind, "done");
     assert.equal(done[0].data.ticket, "EZE-417");
-    assert.deepEqual(done[0].data.changes, ["Implementación lista"]);
+    assert.equal("changes" in done[0].data, false, "the durable DONE summary never carries a change list");
+    assert.equal(
+      JSON.stringify(done[0].data).includes("Implementación lista"),
+      false,
+      "the durable DONE summary never projects the raw child summary",
+    );
     assert.equal(done[0].data.linear, "Done");
 
     // A second identical event must not fire the transition again.
