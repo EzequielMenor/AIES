@@ -21,6 +21,16 @@ export function formatTokens(value: number | null | undefined): string {
   return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
 }
 
+/**
+ * Cost in dollars with two decimals (`$0.08`, `$0.10`). An unknown cost is an em
+ * dash, never `$0.00`: a zero the workflow did not measure must not read as a
+ * real zero. A negative or non-finite value is unknown too.
+ */
+export function formatCost(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "—";
+  return `$${value.toFixed(2)}`;
+}
+
 /** Duration as `mm:ss`, or `h:mm:ss` past an hour. */
 export function formatDuration(milliseconds: number): string {
   const total = Math.max(0, Math.floor((Number.isFinite(milliseconds) ? milliseconds : 0) / 1000));

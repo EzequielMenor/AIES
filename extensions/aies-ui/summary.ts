@@ -7,7 +7,9 @@
  */
 
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
-import { formatDuration, formatTokens, singleLine } from "./format.ts";
+import type { AgentRecord } from "../aies-agents/observatory.ts";
+import type { AgentsSnapshot } from "./agents.ts";
+import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, verificationStatusLabel } from "./vocabulary.ts";
 
@@ -36,6 +38,19 @@ const STOP_LABEL: Record<string, string> = {
   scope_change: "cambio de alcance",
 };
 
+export interface DoneSummaryAgent {
+  role: string;
+  glyph: string;
+  text: string;
+}
+
+/** Run token telemetry: `Tokens <total> (main X · agents Y)`. */
+export interface DoneSummaryTokens {
+  total: number;
+  main: number;
+  agents: number;
+}
+
 export interface DoneSummaryInput {
   ticket?: string;
   changes?: string[];
@@ -43,33 +58,93 @@ export interface DoneSummaryInput {
   linear?: string;
   durationMs?: number;
   commit?: string;
+  /** One indented row per finished child: `<role> <glyph> <text>`. */
+  agents?: DoneSummaryAgent[];
+  /** Run token telemetry, printed only when supplied. */
+  tokens?: DoneSummaryTokens;
+  /** Run cost; `null` renders as an em dash, `undefined` omits the row. */
+  cost?: number | null;
+  /** Real warnings to surface, each with a pointer to the full view. */
+  warnings?: string[];
 }
 
-/** DONE card: what changed, how it was verified, and where it landed. */
-export function renderDoneSummary(input: DoneSummaryInput = {}, options: { paint?: Paint } = {}): string[] {
+/**
+ * The compact DONE projection: a headline plus one indented row per fact, and
+ * only the rows that carry a value. When the width allows, the duration rides
+ * the headline; otherwise it becomes a `Tiempo` row.
+ */
+export function renderDoneSummary(
+  input: DoneSummaryInput = {},
+  options: { paint?: Paint; width?: number } = {},
+): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
-  const ticket = singleLine(input.ticket ?? "");
-  const blocks: string[] = [paint.fg("success", ticket ? `✓ ${ticket} completado` : "✓ Tarea completada")];
+  const width =
+    typeof options.width === "number" && Number.isFinite(options.width) && options.width > 0
+      ? Math.floor(options.width)
+      : undefined;
 
-  const changes = (input.changes ?? []).map((change) => singleLine(String(change))).filter(Boolean);
-  if (changes.length) {
-    blocks.push([paint.fg("muted", "Cambios"), ...changes.map((change) => `  ${change}`)].join("\n"));
+  const ticket = singleLine(input.ticket ?? "");
+  const headline = ticket ? `✓ ${ticket} · completado` : "✓ Tarea completada";
+  const duration =
+    typeof input.durationMs === "number" && Number.isFinite(input.durationMs)
+      ? formatDuration(input.durationMs)
+      : undefined;
+
+  const lines: string[] = [];
+  let headlineLine = headline;
+  let durationOnHeadline = false;
+  if (duration && width !== undefined) {
+    const gap = width - headline.length - duration.length;
+    if (gap >= 2) {
+      headlineLine = `${headline}${" ".repeat(gap)}${duration}`;
+      durationOnHeadline = true;
+    }
+  }
+  lines.push(paint.fg("success", headlineLine));
+
+  const agents = Array.isArray(input.agents) ? input.agents : [];
+  for (const agent of agents) {
+    const row = [singleLine(agent?.role ?? ""), singleLine(agent?.glyph ?? ""), singleLine(agent?.text ?? "")]
+      .filter(Boolean)
+      .join(" ");
+    if (row) lines.push(`  ${row}`);
   }
 
+  // The legacy structured inputs still render, but as flat rows: the verbose
+  // `Cambios` / `Verificación` blocks are gone.
+  if (agents.length === 0) {
+    for (const change of (input.changes ?? []).map((entry) => singleLine(String(entry))).filter(Boolean)) {
+      lines.push(`  ${change}`);
+    }
+  }
   const verification = singleLine(input.verification ?? "");
-  if (verification) blocks.push([paint.fg("muted", "Verificación"), `  ${verification}`].join("\n"));
+  if (verification && !agents.some((agent) => singleLine(agent?.role ?? "").toLowerCase() === "verify")) {
+    lines.push(`  Verify ✓ ${verification}`);
+  }
 
   const linear = singleLine(input.linear ?? "");
-  if (linear) blocks.push([paint.fg("muted", "Linear"), `  ${linear}`].join("\n"));
+  if (linear) lines.push(`  Linear ✓ ${linear}`);
 
   const commit = singleLine(input.commit ?? "");
-  if (commit) blocks.push([paint.fg("muted", "Git"), `  ${commit}`].join("\n"));
+  if (commit) lines.push(`  Git ${commit}`);
 
-  if (typeof input.durationMs === "number" && Number.isFinite(input.durationMs)) {
-    blocks.push([paint.fg("muted", "Tiempo"), `  ${formatDuration(input.durationMs)}`].join("\n"));
+  const tokens = input.tokens;
+  if (tokens && typeof tokens.total === "number" && Number.isFinite(tokens.total)) {
+    const main = Number.isFinite(tokens.main) ? formatTokens(tokens.main) : "—";
+    const agentsText = Number.isFinite(tokens.agents) ? formatTokens(tokens.agents) : "—";
+    lines.push(`  Tokens ${formatTokens(tokens.total)} (main ${main} · agents ${agentsText})`);
   }
 
-  return blocks.join("\n\n").split("\n");
+  if (input.cost !== undefined) lines.push(`  Coste ${formatCost(input.cost)}`);
+
+  const warnings = (input.warnings ?? []).map((entry) => singleLine(String(entry))).filter(Boolean);
+  if (warnings.length) {
+    for (const warning of warnings) lines.push(`! ${warning}`);
+    lines.push("  /aies-status detalle");
+  }
+
+  if (duration && !durationOnHeadline) lines.push(`  Tiempo ${duration}`);
+  return lines;
 }
 
 export interface BlockedSummaryInput {
@@ -182,8 +257,19 @@ export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: 
   return sections.map((section) => section.join("\n")).join("\n\n");
 }
 
-/** The `/aies-status` human view: grouped by concept, zeros omitted, under ~30 lines. */
-export function renderStatusOverview(snapshot: AiesSnapshot, now: number, options: { paint?: Paint } = {}): string {
+/** `completed · 00:31 · 12k`: the role's facts in one grouped value. */
+function agentSummary(record: AgentRecord, now: number): string {
+  const parts: string[] = [singleLine(record.status)];
+  if (typeof record.startedAt === "number") {
+    const end = typeof record.finishedAt === "number" ? record.finishedAt : now;
+    parts.push(formatDuration(Math.max(0, end - record.startedAt)));
+  }
+  if (typeof record.totalTokens === "number" && record.totalTokens > 0) parts.push(formatTokens(record.totalTokens));
+  return parts.join(" · ");
+}
+
+/** The `/aies-status` human view: grouped by concept, zeros omitted, under ~34 lines. */
+export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, options: { paint?: Paint } = {}): string {
   const paint = options.paint ?? PLAIN_PAINT;
   const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
   const sections: string[][] = [["AIES"]];
@@ -197,17 +283,24 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
   }
 
   // Ejecución is always worth a row: the stage is the headline answer to "what is
-  // it doing?", and a stopped autonomy owes the human the reason it stopped.
+  // it doing?". The model and the clock fold in here so the view stays grouped.
   const stage = deriveStage(snapshot);
   const autonomy = snapshot.autonomy;
+  const run = snapshot.runUsage;
   const runRows = [row("etapa", autonomy?.enabled ? `${stage} · autonomía activa` : stage)];
   if (autonomy) {
-    runRows.push(
-      row("transcurrido", `${formatDuration(now - snapshot.startedAt)} · continuaciones ${autonomy.continuationCount}`),
-    );
+    runRows.push(row("continuaciones", String(autonomy.continuationCount)));
     const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
     if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
+  const model = snapshot.model;
+  if (model?.label) {
+    const label = singleLine(model.label);
+    runRows.push(row("modelo", model.provider ? `${label} · ${singleLine(model.provider)}` : label));
+  }
+  const clock = [formatDuration(Math.max(0, now - snapshot.startedAt))];
+  if (run?.active && typeof run.startedAt === "number") clock.push(`run ${formatDuration(Math.max(0, now - run.startedAt))}`);
+  runRows.push(row("tiempo", clock.join(" · ")));
   sections.push([paint.fg("muted", "Ejecución"), ...runRows]);
 
   const verification = snapshot.verification;
@@ -229,8 +322,32 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
   ];
   sections.push([paint.fg("muted", "Contexto"), ...contextRows]);
 
+  // Usage: tokens and cost grouped together, zero rows omitted, an unknown cost
+  // rendered as an em dash rather than a zero.
+  const usageRows: string[] = [];
+  if (run && run.total.totalTokens > 0) {
+    usageRows.push(
+      row(
+        "Tokens",
+        `Main ${formatTokens(run.main.totalTokens)} · Agents ${formatTokens(run.agents.totalTokens)} · Total ${formatTokens(run.total.totalTokens)}`,
+      ),
+    );
+  }
+  if (run && (run.main.cost !== null || run.total.cost !== null)) {
+    usageRows.push(
+      row(
+        "Coste",
+        `Main ${formatCost(run.main.cost)} · Agents ${formatCost(run.agents.cost)} · Total ${formatCost(run.total.cost)}`,
+      ),
+    );
+  }
+  if (usageRows.length) sections.push([paint.fg("muted", "Uso"), ...usageRows]);
+
+  const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
   const delegations = snapshot.delegations;
-  if (delegations && delegations.total > 0) {
+  if (records.length) {
+    sections.push([paint.fg("muted", "Agentes"), ...records.map((record) => row(singleLine(record.role), agentSummary(record, now)))]);
+  } else if (delegations && delegations.total > 0) {
     const rows: string[] = [];
     const active = delegations.activeRole;
     for (const role of ["explore", "worker", "verify"]) {

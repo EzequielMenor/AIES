@@ -364,7 +364,7 @@ describe("observability rendering", () => {
     const footer = renderFooter(toSnapshot(filled()), T0 + 134_000);
 
     assert.equal(footer.split("\n").length, 1);
-    assert.equal(footer, "❈ AIES · listo · ctx 34k");
+    assert.equal(footer, "✧ AIES · listo · ctx 34k");
   });
 
   it("never puts counters, peak or the compaction count in the footer", () => {
@@ -682,8 +682,11 @@ describe("observability extension", () => {
         "turn_end",
       ],
     );
-    assert.deepEqual([...host.commands.keys()], ["aies-status"]);
+    // `/agents` (AIES-010C) is the second registered command: it projects the
+    // ephemeral observatory and, like `/aies-status`, intervenes in nothing.
+    assert.deepEqual([...host.commands.keys()], ["aies-status", "agents"]);
     assert.match(host.commands.get("aies-status").description, /solo medición/u);
+    assert.match(host.commands.get("agents").description, /agentes/u);
   });
 
   it("shows a footer line at session start", async () => {
@@ -691,7 +694,7 @@ describe("observability extension", () => {
     const { footer } = await host.start();
 
     assert.equal(footer.key, "aies");
-    assert.match(footer.text, /^❈ AIES · listo · ctx 10k$/u);
+    assert.match(footer.text, /^✧ AIES · listo · ctx 10k$/u);
   });
 
   it("counts a tool call and leaves the call untouched", async () => {

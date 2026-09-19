@@ -41,10 +41,18 @@ import {
   createState,
   fromSnapshot,
   toSnapshot,
+  type AiesSnapshot,
   type AiesState,
 } from "./state.ts";
 import { renderFooter, renderHeader } from "../aies-ui/footer.ts";
+import { PANEL_MIN_WIDTH, renderStatusPanel } from "../aies-ui/panel.ts";
 import { renderStatusReport } from "./status.ts";
+import {
+  renderAgentsMini,
+  renderAgentsView,
+  selectAgent,
+  type AgentsSnapshot,
+} from "../aies-ui/agents.ts";
 import {
   isActivityVisible,
   renderActivityCard,
@@ -71,6 +79,9 @@ const ENTRY_TYPE = "aies-metrics";
 
 /** One widget per active child, above the editor. */
 const ACTIVITY_KEY = "aies-activity";
+
+/** The compact observatory widget: one row per session child. */
+const AGENTS_KEY = "aies-agents";
 
 /** Durable transcript entries: one per finished child, one per workflow summary. */
 const AGENT_ENTRY_TYPE = "aies-agent";
@@ -157,7 +168,13 @@ interface UiSurface {
   setHeader?(factory: unknown): void;
   setWidget?(key: string, content: unknown, options?: unknown): void;
   notify?(message: string, type?: "info" | "warning" | "error"): void;
+  custom?(factory: unknown, options?: unknown): Promise<unknown>;
   theme?: unknown;
+}
+
+/** The slice of the injected keybinding manager `/agents` uses, when present. */
+interface KeybindingsLike {
+  matches?(data: string, binding: string): boolean;
 }
 
 function arrayLength(value: unknown): number | undefined {
@@ -277,7 +294,13 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let footerTui: WidgetTui | undefined;
   let headerTui: WidgetTui | undefined;
   let widgetRegistered = false;
+  let agentsWidgetTui: WidgetTui | undefined;
+  let agentsWidgetRegistered = false;
   let observatoryUnsubscribe: (() => void) | undefined;
+
+  // Whether the status panel owns the header band. Single source for the footer
+  // minimal form; recomputed on every render pass so a resize degrades cleanly.
+  let panelVisible = false;
 
   // Autonomy transitions are edges, not levels: a new signal is one transition.
   let autonomySignal = "";
@@ -302,6 +325,36 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * The real terminal width. `process.stdout.columns` is the only terminal-size
+   * source AIES reads: no query, no cursor movement. A host without a TTY
+   * reports `undefined` and the shell keeps its responsive fallbacks.
+   */
+  function terminalColumns(): number | undefined {
+    try {
+      const columns = process.stdout?.columns;
+      return typeof columns === "number" && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Recompute the single `panelVisible` boolean and return the measured width. */
+  function measurePanelVisibility(): number | undefined {
+    const columns = terminalColumns();
+    panelVisible = columns !== undefined && columns >= PANEL_MIN_WIDTH;
+    return columns;
+  }
+
+  /**
+   * The UI projection the renderers read: the snapshot plus the ephemeral agent
+   * records. `toSnapshot` never carries `agents`, so every surface builds the
+   * projection here and no two surfaces can disagree.
+   */
+  function uiSnapshot(): AgentsSnapshot {
+    return { ...toSnapshot(state), agents: state.agents };
   }
 
   function usageOf(ctx: ExtensionContext) {
@@ -512,17 +565,57 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   function doneSummary(): { data: DoneSummaryInput & { kind: "done" }; headline: string } {
-    const snapshot = toSnapshot(state);
+    const snapshot = uiSnapshot();
     const ticket = currentTicket();
     const data: DoneSummaryInput & { kind: "done" } = {
       kind: "done",
       ticket,
       linear: snapshot.ticket?.status ?? "Done",
-      durationMs: Math.max(0, Date.now() - snapshot.startedAt),
+      durationMs: Math.max(0, Date.now() - runStartedAt(snapshot)),
     };
     const verification = verificationText();
     if (verification) data.verification = verification;
+
+    // One compact row per session child: role, outcome glyph and the child's own
+    // already-bound result. Nothing here is re-narrated from the raw summary.
+    const agentRows = (snapshot.agents ?? []).map((record) => ({
+      role: capitalizeRole(record.role),
+      glyph: statusGlyph(record.status),
+      text: singleLineText(record.result),
+    }));
+    if (agentRows.length) data.agents = agentRows;
+
+    // Run telemetry straight from `runUsage`; a zero run prints neither row.
+    const run = snapshot.runUsage;
+    if (run && run.total.totalTokens > 0) {
+      data.tokens = { total: run.total.totalTokens, main: run.main.totalTokens, agents: run.agents.totalTokens };
+    }
+    if (run && run.total.cost !== null && (run.total.totalTokens > 0 || run.total.cost > 0)) {
+      data.cost = run.total.cost;
+    }
+
+    const warnings = doneWarnings(snapshot);
+    if (warnings.length) data.warnings = warnings;
+
     return { data, headline: ticket ? `✓ ${ticket} completado` : "✓ Tarea completada" };
+  }
+
+  /** Run wall-clock start: the ticket run when one exists, the session otherwise. */
+  function runStartedAt(snapshot: AiesSnapshot): number {
+    const startedAt = snapshot.runUsage?.startedAt;
+    return typeof startedAt === "number" ? startedAt : snapshot.startedAt;
+  }
+
+  /** A genuine warning only: a failed child, a protocol fault or a Linear sync failure. */
+  function doneWarnings(snapshot: AgentsSnapshot): string[] {
+    const warnings: string[] = [];
+    const records = snapshot.agents ?? [];
+    const notCompleted = records.filter((record) => record.status === "failed" || record.status === "blocked").length;
+    if (notCompleted === 1) warnings.push("1 agente no completó");
+    else if (notCompleted > 1) warnings.push(`${notCompleted} agentes no completaron`);
+    if (snapshot.verification?.status === "protocol_error") warnings.push("la verificación terminó con un error de protocolo");
+    if (state.autonomy?.stopReason === "linear_sync_failed") warnings.push("Linear no sincronizó");
+    return warnings;
   }
 
   function blockedVerification(): string | undefined {
@@ -598,7 +691,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
             render: (width: number): string[] => {
               const current = state.activity;
               if (!current) return [];
-              const snapshot = toSnapshot(state);
+              const snapshot = uiSnapshot();
               return renderActivityCard(current, deriveStage(snapshot), Date.now(), {
                 width,
                 paint: themePaint(theme as ThemeLike | undefined),
@@ -636,11 +729,69 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     widgetTui = undefined;
   }
 
-  /** Ask Pi to repaint the shell and the widget. Every surface is optional. */
+  /**
+   * The compact observatory widget. It renders one row per session child through
+   * the same factory form as the activity card, appears only in the TUI and only
+   * while the registry has records, and clears itself when the registry empties.
+   * No timer of its own: the observatory subscription and the single runtime
+   * clock drive its repaints.
+   */
+  function syncAgentsWidget(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui") return;
+    const ui = uiOf(ctx);
+    if (!ui || typeof ui.setWidget !== "function") return;
+
+    const records = state.agents;
+    const wanted = Array.isArray(records) && records.length > 0;
+
+    if (wanted) {
+      if (agentsWidgetRegistered) return;
+      try {
+        ui.setWidget(AGENTS_KEY, (tui: unknown, theme: unknown) => {
+          agentsWidgetTui = tui as WidgetTui;
+          return {
+            render: (width: number): string[] =>
+              renderAgentsMini(uiSnapshot(), Date.now(), {
+                width,
+                paint: themePaint(theme as ThemeLike | undefined),
+              }),
+            invalidate() {},
+          };
+        });
+        agentsWidgetRegistered = true;
+      } catch {
+        agentsWidgetRegistered = false;
+        agentsWidgetTui = undefined;
+      }
+      return;
+    }
+
+    if (agentsWidgetRegistered) clearAgentsWidget(ui);
+  }
+
+  function clearAgentsWidget(ui: UiSurface): void {
+    try {
+      ui.setWidget?.(AGENTS_KEY, undefined);
+    } catch {
+      // Clearing a widget that cannot be cleared is not an error.
+    }
+    agentsWidgetRegistered = false;
+    agentsWidgetTui = undefined;
+  }
+
+  function clearAgents(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    if (agentsWidgetRegistered && ui) clearAgentsWidget(ui);
+    agentsWidgetRegistered = false;
+    agentsWidgetTui = undefined;
+  }
+
+  /** Ask Pi to repaint the shell and the widgets. Every surface is optional. */
   function requestRender(): void {
     if (typeof footerTui?.requestRender === "function") footerTui.requestRender();
     if (typeof headerTui?.requestRender === "function") headerTui.requestRender();
     if (widgetRegistered && typeof widgetTui?.requestRender === "function") widgetTui.requestRender();
+    if (agentsWidgetRegistered && typeof agentsWidgetTui?.requestRender === "function") agentsWidgetTui.requestRender();
   }
 
   /**
@@ -656,10 +807,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         footerTui = tui as WidgetTui;
         return {
           render: (width: number): string[] => [
-            renderFooter(toSnapshot(state), Date.now(), {
+            renderFooter(uiSnapshot(), Date.now(), {
               width,
               cwd: ctx.cwd,
               paint: themePaint(theme as ThemeLike | undefined),
+              panelVisible,
             }),
           ],
           invalidate() {},
@@ -670,7 +822,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
   }
 
-  /** Install the responsive active-ticket header. No ticket means no header lines. */
+  /**
+   * Install the header band. Above `PANEL_MIN_WIDTH` the status panel owns the
+   * band and the separate ticket header is not rendered (the panel already
+   * carries the ticket identity); below it the responsive ticket header stays.
+   */
   function installHeader(ctx: ExtensionContext): void {
     const ui = uiOf(ctx);
     if (!ui || typeof ui.setHeader !== "function") return;
@@ -678,8 +834,14 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       ui.setHeader((tui: unknown, theme: unknown) => {
         headerTui = tui as WidgetTui;
         return {
-          render: (width: number): string[] =>
-            renderHeader(toSnapshot(state), width, { paint: themePaint(theme as ThemeLike | undefined) }),
+          render: (width: number): string[] => {
+            const paint = themePaint(theme as ThemeLike | undefined);
+            const columns = measurePanelVisibility();
+            if (panelVisible && columns !== undefined) {
+              return renderStatusPanel(uiSnapshot(), Date.now(), { width: columns, paint });
+            }
+            return renderHeader(toSnapshot(state), width, { paint });
+          },
           invalidate() {},
         };
       });
@@ -732,6 +894,20 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (widgetRegistered && typeof widgetTui?.requestRender === "function") {
       widgetTui.requestRender();
     }
+    if (agentsWidgetRegistered && typeof agentsWidgetTui?.requestRender === "function") {
+      agentsWidgetTui.requestRender();
+    }
+  }
+
+  /**
+   * The header string the memo compares. When the panel is visible the panel's
+   * own text (ticket, stage, elapsed) is the memo; otherwise the ticket header's.
+   */
+  function shellHeaderMemo(snapshot: AgentsSnapshot, now: number, columns: number | undefined): string {
+    if (panelVisible && columns !== undefined) {
+      return renderStatusPanel(snapshot, now, { width: columns }).join("\n");
+    }
+    return renderHeader(snapshot, SHELL_MEMO_WIDTH).join("\n");
   }
 
   /**
@@ -747,10 +923,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
     if (ctx.mode !== "tui") return;
 
-    const snapshot = toSnapshot(state);
+    const columns = measurePanelVisibility();
+    const snapshot = uiSnapshot();
     const now = Date.now();
-    const nextFooter = renderFooter(snapshot, now, { width: SHELL_MEMO_WIDTH, cwd: ctx.cwd });
-    const nextHeader = renderHeader(snapshot, SHELL_MEMO_WIDTH).join("\n");
+    const nextFooter = renderFooter(snapshot, now, { width: SHELL_MEMO_WIDTH, cwd: ctx.cwd, panelVisible });
+    const nextHeader = shellHeaderMemo(snapshot, now, columns);
     if (nextFooter !== footer || nextHeader !== header) {
       footer = nextFooter;
       header = nextHeader;
@@ -758,6 +935,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
 
     syncActivity(ctx);
+    syncAgentsWidget(ctx);
     armClock(ctx);
   }
 
@@ -874,9 +1052,16 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       observatoryUnsubscribe = observatory.subscribe((snapshot) => {
         guard(() => {
           state = applyAgents(state, snapshot);
+          syncAgentsWidget(ctx);
           requestRender();
         });
       });
+
+      // An ephemeral widget does not survive a session switch: drop the flag so
+      // the new session re-registers from its own (empty) registry.
+      agentsWidgetRegistered = false;
+      agentsWidgetTui = undefined;
+      panelVisible = false;
 
       state = createState(now);
       state = applySessionMeta(state, {
@@ -994,6 +1179,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     guard(persist);
     guard(() => clearActivity(ctx));
+    guard(() => clearAgents(ctx));
     guard(() => clearShell(ctx));
     stopClock();
     observatoryUnsubscribe?.();
@@ -1008,7 +1194,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         syncObservation(ctx);
         sampleRunUsage(ctx);
 
-        const snapshot = toSnapshot(state);
+        const snapshot = uiSnapshot();
         const now = Date.now();
         const trimmed = typeof args === "string" ? args.trim().toLowerCase() : "";
         const detailed = trimmed === "detalle" || trimmed === "all";
@@ -1018,6 +1204,52 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
         notify(ctx, message, "info");
       });
+    },
+  });
+
+  pi.registerCommand("agents", {
+    description: "Muestra los agentes de la sesión y el detalle del agente seleccionado",
+    handler: async (_args, ctx) => {
+      try {
+        state = applyModel(state, ctx.model);
+        syncObservation(ctx);
+        sampleRunUsage(ctx);
+
+        const ui = uiOf(ctx);
+        const custom = ui?.custom;
+
+        // print/json/rpc and any host without a dialog channel get the same text
+        // through notify, which is already a no-op where no channel exists.
+        if (ctx.mode !== "tui" || typeof custom !== "function") {
+          notify(ctx, renderAgentsView(state.agents, 0, Date.now()).join("\n"), "info");
+          return;
+        }
+
+        let selected = 0;
+        await custom((tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => {
+          const keys = agentKeys(keybindings);
+          return {
+            render: (width: number): string[] =>
+              renderAgentsView(state.agents, selected, Date.now(), {
+                width,
+                paint: themePaint(theme as ThemeLike | undefined),
+              }),
+            handleInput: (data: string): void => {
+              if (keys.cancel(data)) {
+                done(null);
+                return;
+              }
+              const direction = keys.direction(data);
+              if (!direction) return;
+              selected = selectAgent(state.agents, selected, direction);
+              if (typeof (tui as WidgetTui)?.requestRender === "function") (tui as WidgetTui).requestRender?.();
+            },
+            invalidate() {},
+          };
+        });
+      } catch {
+        // A UI failure degrades to silence and never reaches the conversation.
+      }
     },
   });
 }
@@ -1035,4 +1267,64 @@ function activityOf(data: unknown): ActivityRecord | undefined {
 
 function entryData(data: unknown): Record<string, unknown> {
   return data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
+}
+
+/** Collapse a value to one trimmed line, or an empty string. */
+function singleLineText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+}
+
+/** `Worker`: the role label the DONE row uses. */
+function capitalizeRole(role: unknown): string {
+  const text = singleLineText(role);
+  if (!text) return "Agente";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** The outcome glyph for a finished child: mirrors the observatory's own mapping. */
+function statusGlyph(status: unknown): string {
+  switch (status) {
+    case "completed":
+      return "✓";
+    case "failed":
+      return "✗";
+    case "blocked":
+      return "!";
+    default:
+      return "◆";
+  }
+}
+
+interface AgentKeys {
+  direction(data: string): "up" | "down" | "left" | "right" | undefined;
+  cancel(data: string): boolean;
+}
+
+/**
+ * Bind the `/agents` keys to the injected keybinding manager when the host
+ * provides one, with raw arrow/escape fallbacks so a partial host still works.
+ */
+function agentKeys(keybindings: unknown): AgentKeys {
+  const manager = keybindings as KeybindingsLike | undefined;
+  const matches = (data: string, binding: string): boolean => {
+    if (manager && typeof manager.matches === "function") {
+      try {
+        if (manager.matches(data, binding) === true) return true;
+      } catch {
+        // An unusable manager falls back to the raw sequences below.
+      }
+    }
+    return false;
+  };
+
+  return {
+    direction: (data) => {
+      if (matches(data, "tui.select.up") || data === "\x1b[A") return "up";
+      if (matches(data, "tui.select.down") || data === "\x1b[B") return "down";
+      if (matches(data, "tui.editor.cursorLeft") || data === "\x1b[D") return "left";
+      if (matches(data, "tui.editor.cursorRight") || data === "\x1b[C") return "right";
+      return undefined;
+    },
+    cancel: (data) => matches(data, "tui.select.cancel") || data === "\x1b" || data === "escape",
+  };
 }

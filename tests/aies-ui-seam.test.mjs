@@ -16,7 +16,6 @@ import {
   ContinuationController,
   setActiveContinuationController,
 } from "../extensions/aies-agents/autonomy/controller.ts";
-import { ACTIVITY_TTL_MS } from "../extensions/aies-ui/activity.ts";
 
 const ROOT = "/repo";
 const START_MS = 1_700_000_000_000;
@@ -214,8 +213,8 @@ describe("AIES UI seam", () => {
 
     assert.equal(host.footers.length, 1, "one custom footer for the session");
     const footer = host.mountFooter(29);
-    assert.equal(footer.text(), "❈ AIES · listo · ctx 10k");
-    assert.match(footer.text(), /^❈ AIES ·/u);
+    assert.equal(footer.text(), "✧ AIES · listo · ctx 10k");
+    assert.match(footer.text(), /^✧ AIES ·/u);
     for (const banned of ["peak", "tools", "cmp", "files"]) {
       assert.equal(footer.text().includes(banned), false, footer.text());
     }
@@ -235,7 +234,7 @@ describe("AIES UI seam", () => {
     host.options.contextUsage = { tokens: 20_000, contextWindow: 200_000, percent: 10 };
     await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "z" }] });
     assert.equal(host.renderRequests.footer, 1);
-    assert.equal(host.mountFooter(29).text(), "❈ AIES · listo · ctx 20k");
+    assert.equal(host.mountFooter(29).text(), "✧ AIES · listo · ctx 20k");
   });
 
   it("installs a ticket header and requests a render when the ticket appears", async () => {
@@ -253,7 +252,7 @@ describe("AIES UI seam", () => {
     assert.equal(host.renderRequests.header, 1, "a new ticket must repaint the header");
     const lines = host.mountHeader(80).lines();
     const text = lines.join("\n");
-    assert.match(text, /❈ EZE-422/u);
+    assert.match(text, /✧ EZE-422/u);
     assert.match(text, /Implement first-run guidance/u);
     assert.match(text, /In Progress/u);
 
@@ -273,21 +272,21 @@ describe("AIES UI seam", () => {
 
     const component = widget.factory({ requestRender() {} }, plainTheme);
     const lines = component.render(80);
-    assert.equal(lines[0], "◆ Worker");
-    assert.equal(lines[1], "  Implement the seam");
+    assert.match(lines[0], /╭─ ◆ Worker/u);
     assert.match(lines.join("\n"), /Worker/u);
     assert.match(lines.join("\n"), /Implement the seam/u);
+    assert.match(lines.at(-1), /^╰/u);
 
-    // The same component re-renders the finished card from live state.
+    // The finished child leaves the widget immediately; the durable entry is the trace.
     await host.emit("tool_result", {
       toolName: "aies_delegate",
       input: { role: "worker" },
       details: { status: "done", summary: "ok", changes: [{ file: "a.ts" }], checks: [{ check: "test", result: "passed" }] },
     });
-    assert.equal(component.render(80)[0], "✓ Worker · 00:00");
+    assert.deepEqual(component.render(80), []);
   });
 
-  it("appends one durable entry, clears the widget after the TTL and shows the finished state", async () => {
+  it("appends one durable entry, clears the widget at once and shows the finished state", async () => {
     const host = createHost();
     await host.start();
 
@@ -311,13 +310,9 @@ describe("AIES UI seam", () => {
     assert.equal(entries[0].data.activity.role, "verify");
     assert.equal(entries[0].data.activity.outcome, "done");
 
-    assert.equal(host.mountFooter(29).text(), "❈ AIES · DONE · ctx 10k");
-    assert.equal(host.widgets.some((widget) => widget.cleared === true), false, "the finished card lingers for its TTL");
-
-    timers.advance(ACTIVITY_TTL_MS + 1);
-    timers.lastInterval().fn();
-    assert.equal(host.widgets.at(-1).cleared, true, "the widget clears itself once the TTL passed");
-    assert.equal(host.mountFooter(29).text(), "❈ AIES · DONE · ctx 10k");
+    assert.equal(host.mountFooter(29).text(), "✧ AIES · DONE · ctx 10k");
+    assert.equal(host.widgets.some((widget) => widget.cleared === true), true, "the finished card must not linger");
+    assert.equal(host.mountFooter(29).text(), "✧ AIES · DONE · ctx 10k");
   });
 
   it("renders the durable entry renderers for a finished child", async () => {

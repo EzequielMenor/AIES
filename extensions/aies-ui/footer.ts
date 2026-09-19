@@ -2,11 +2,16 @@
  * The AIES shell: the full custom footer Pi renders while AIES is active, and
  * the responsive active-ticket header.
  *
- * One footer line, always: `❈ AIES · <ticket> · <STAGE> · ctx <n> · [alarms] ·
+ * One footer line, always: `✧ AIES · <ticket> · <STAGE> · ctx <n> · [alarms] ·
  * [AUTO] · [V:PASS]` with the compact cwd and model appended only when the width
  * leaves room. The renderer measures plain text, decides what fits, then paints:
  * colors never affect layout, identity, ticket and alarms are never dropped, and
  * a narrow terminal clips the tail as a last resort.
+ *
+ * When a status panel is already on screen (`panelVisible`), the footer drops to
+ * its minimal form: identity, ticket, stage and context plus the alarms. The
+ * facts the panel already shows (model, cwd, AUTO, V:PASS) are omitted so the
+ * human is not told the same thing twice.
  *
  * The header is small: a boxed identity at normal widths and one compact line at
  * narrow widths. Both renderers read a snapshot and return strings; neither ever
@@ -19,7 +24,7 @@ import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, isCompacting, isContextPressure, verificationIndicator, type Stage } from "./vocabulary.ts";
 
 /** The fixed brand identity of the footer. */
-const IDENTITY = "❈ AIES";
+const IDENTITY = "✧ AIES";
 
 /** The idle placeholder: no ticket, nothing in flight. */
 const IDLE_LABEL = "listo";
@@ -36,6 +41,11 @@ export interface FooterOptions {
   paint?: Paint;
   /** The session working directory, shown compactly only when the width permits. */
   cwd?: string;
+  /**
+   * When a status panel already shows model, cwd, AUTO and V:PASS, the footer
+   * renders its minimal form instead of repeating them.
+   */
+  panelVisible?: boolean;
 }
 
 /** Options for `renderHeader`. */
@@ -78,7 +88,7 @@ function compactPath(path: string): string {
   return index >= 0 ? trimmed.slice(index + 1) : trimmed;
 }
 
-function buildSegments(snapshot: AiesSnapshot): Segment[] {
+function buildSegments(snapshot: AiesSnapshot, minimal: boolean): Segment[] {
   const segments: Segment[] = [{ text: IDENTITY, color: "text" }];
 
   const stage = deriveStage(snapshot);
@@ -110,9 +120,12 @@ function buildSegments(snapshot: AiesSnapshot): Segment[] {
     segments.push({ text: "SANDBOX OFF", color: "error" });
   }
 
-  if (snapshot.autonomy?.enabled) segments.push({ text: "AUTO", color: "accent", drop: "auto" });
-
-  if (indicator === "V:PASS" && stage !== "DONE") segments.push({ text: "V:PASS", color: "success", drop: "vpass" });
+  // The panel already carries autonomy and a valid PASS, so the minimal footer
+  // omits them instead of repeating the same fact twice.
+  if (!minimal) {
+    if (snapshot.autonomy?.enabled) segments.push({ text: "AUTO", color: "accent", drop: "auto" });
+    if (indicator === "V:PASS" && stage !== "DONE") segments.push({ text: "V:PASS", color: "success", drop: "vpass" });
+  }
 
   return segments;
 }
@@ -139,11 +152,13 @@ export function renderFooter(snapshot: AiesSnapshot, now: number, options: Foote
   const paint = options.paint ?? PLAIN_PAINT;
   const width = positiveWidth(options.width);
   const cwd = typeof options.cwd === "string" ? options.cwd : "";
+  const minimal = options.panelVisible === true;
 
-  let segments = buildSegments(snapshot);
+  let segments = buildSegments(snapshot, minimal);
   // The optional segments are only ever considered when a width is known, which
   // is what makes them "opportunistic": they never appear in a width-less render.
-  if (width !== undefined) segments = [...segments, ...optionalSegments(snapshot, cwd)];
+  // The minimal footer omits them entirely, because the panel already shows them.
+  if (!minimal && width !== undefined) segments = [...segments, ...optionalSegments(snapshot, cwd)];
 
   let plain = joinPlain(segments);
 
@@ -188,7 +203,7 @@ export function renderHeader(snapshot: AiesSnapshot, width: number | undefined, 
   const inner = boxWidth - 4;
   if (inner < 8) return [paint.fg("accent", clip(compact, available ?? compact.length))];
 
-  const label = `❈ ${identifier}`;
+  const label = `✧ ${identifier}`;
   const top = `╭─ ${label} ${"─".repeat(Math.max(0, boxWidth - label.length - 5))}╮`;
   const bottom = `╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`;
 

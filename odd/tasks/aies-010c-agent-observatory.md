@@ -50,8 +50,8 @@ interactive `/agents` view over session-local child facts.
 |---|---|---|---|
 | T1 Baseline, Pi/Gentle audit and design freeze | complete | Mapped AIES-010B seams, Pi 0.85.1 usage/UI APIs, selective Gentle patterns, the EZE-423 invalid-load defect, responsive layout and six bounded work units. | `a13e97f` |
 | T2 Linear invalid-load boundary | complete | Rejects remote issues without non-empty `identifier`/`id` before state mutation, keeps the previous ticket on invalid refresh, renders a Spanish failure, and proves `no_pending_remote` is the expected stale-replay guard. | `70ad842` |
-| T3 Ephemeral Agent Observatory and exact usage | complete | Added the pure session-local registry, mechanical Spanish activity derivation, real child `SessionStats` usage sampling that survives disposal, event-driven child wiring, and run-scoped Main/Agents/Total aggregation with incremental Parent sampling. | pending commit |
-| T4 Observatory presentation and `/agents` | pending | Add active card, compact agents/status widget, interactive keyboard navigation, richer `/aies-status`, responsive footer fallback and compact DONE projection. | — |
+| T3 Ephemeral Agent Observatory and exact usage | complete | Added the pure session-local registry, mechanical Spanish activity derivation, real child `SessionStats` usage sampling that survives disposal, event-driven child wiring, and run-scoped Main/Agents/Total aggregation with incremental Parent sampling. | `832b549` |
+| T4 Observatory presentation and `/agents` | complete | Added the boxed status panel, panel-aware minimal footer, boxed live card with no lingering finished card, mini agents widget, interactive `/agents`, telemetry in `/aies-status` and the compact DONE projection. | pending commit |
 | T5 Quiet generic tool rendering | pending | Use Pi-supported renderer overrides for compact successful `bash/read/grep/find/edit/write`, native expansion for raw detail and automatically visible failures, without changing tool execution/model content. | — |
 | T6 Documentation, full verification and real smokes | pending | Update architecture/UX/decision docs, run full/isolation/shell checks, compare startup/render cadence, validate cmux + 80 columns + headless, and complete safe live `/aies-run` plus `/agents` smoke. | — |
 
@@ -68,9 +68,13 @@ interactive `/agents` view over session-local child facts.
   from Parent session entries/run baseline and never includes child usage because
   delegated child sessions remain in-memory and `aies_delegate` returns no nested
   `usage` field.
-- Wide status surface: a compact Pi widget, not a sidebar/runtime replacement;
-  hidden at the narrow breakpoint. Footer is minimal while it is present and the
-  rich fallback otherwise.
+- Wide status surface: the boxed panel is rendered through `ctx.ui.setHeader` in
+  the wide band (`>= 100` columns, two inner columns, at most 8 lines), a compact
+  single-column box from 72 columns, and nothing below that. It replaces the
+  ticket header in those bands instead of duplicating it, is not a sidebar and
+  steals no editor width. Footer is minimal while the panel is present and the
+  rich fallback otherwise. The live card and the mini agents list stay widgets
+  above the editor.
 - `/agents`: one Pi `ctx.ui.custom()` component, arrow navigation and Escape;
   no extra commands or full-screen framework.
 - Generic tools: keep Pi execution/result shapes and global native
@@ -145,3 +149,17 @@ capture, routing/autonomy/permission/context-policy redesign, push or PR.
   clean. Independent verification confirmed all seven invariants with no blocker:
   one timer still owned by `aies-runtime`, no `sendMessage`, and unchanged
   `aies_delegate` handoff shapes and child tool surfaces.
+- T4a RED failed on the missing `panel.ts`/`agents.ts` modules, the missing
+  `formatCost` export and the retired `ACTIVITY_TTL_MS` seam contract; GREEN 145/145
+  focused. Identity is now the single `✧` glyph; a finished child clears its widget
+  immediately, so the durable entry is the only trace and the smoke's duplicated
+  `✓ Worker` rows cannot recur.
+- T4b RED failed 7/9 on the panel band, footer minimality, the `aies-agents`
+  widget, `/agents` navigation and the DONE telemetry; GREEN 10/10. The stale
+  command-inventory assertion in `tests/observability.test.mjs` was updated to
+  `["aies-status", "agents"]` because `/agents` is an explicit product requirement.
+- T4 independent verification: 556/556 tests, isolation green, shell syntax clean,
+  all eight invariants PASS with no blocker. It found one real cosmetic defect —
+  a long mini-widget detail collided with the elapsed column
+  (`Verificando npm test02:00`); fixed by clipping to `DETAIL_WIDTH - 1` with a
+  RED-first regression, now rendering `Verificando npm … 02:00`. Suite 557/557.

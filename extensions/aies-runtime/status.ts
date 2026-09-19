@@ -7,7 +7,8 @@
  */
 
 import type { AiesSnapshot } from "./state.ts";
-import { formatDuration, formatTokens } from "../aies-ui/format.ts";
+import type { AgentsSnapshot } from "../aies-ui/agents.ts";
+import { formatCost, formatDuration, formatTokens, singleLine } from "../aies-ui/format.ts";
 import { renderFooter } from "../aies-ui/footer.ts";
 import { verificationStatusLabel } from "../aies-ui/vocabulary.ts";
 
@@ -51,8 +52,50 @@ function ticketVerifyLabel(snapshot: AiesSnapshot): string {
   return verificationStatusLabel(status);
 }
 
+/**
+ * The `/aies-status detalle` observatory sections. They carry the raw per-child
+ * facts the human overview deliberately omits: agent ids, tool counts, usage
+ * buckets and recent mechanical activity. Only rendered when there is something
+ * to show, so an empty session keeps the report shape.
+ */
+function observatoryRows(snapshot: AgentsSnapshot): string[] {
+  const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
+  const rows: string[] = [];
+
+  for (const record of snapshot.agents ?? []) {
+    const facts: string[] = [singleLine(String(record.status))];
+    if (typeof record.toolCount === "number" && record.toolCount > 0) facts.push(`${record.toolCount} herramientas`);
+    if (typeof record.totalTokens === "number" && record.totalTokens > 0) facts.push(formatTokens(record.totalTokens));
+    if (typeof record.cost === "number") facts.push(formatCost(record.cost));
+    const id = singleLine(String(record.id ?? record.role ?? "agente"));
+    rows.push(row(id, facts.join(" · ")));
+
+    const paths = Array.isArray(record.changedPaths) ? record.changedPaths : [];
+    if (paths.length) rows.push(`    ${"archivos".padEnd(LABEL_WIDTH - 2)}${paths.join(", ")}`);
+
+    const activities = Array.isArray(record.activities) ? record.activities : [];
+    const texts = activities.map((activity) => singleLine(String(activity?.text ?? ""))).filter(Boolean);
+    if (texts.length) rows.push(`    ${"actividad".padEnd(LABEL_WIDTH - 2)}${texts.join(" · ")}`);
+  }
+
+  return rows;
+}
+
+function runUsageRows(snapshot: AgentsSnapshot): string[] {
+  const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
+  const run = snapshot.runUsage;
+  if (!run) return [];
+  const rows = [
+    row("main", `${formatTokens(run.main.totalTokens)} · ${formatCost(run.main.cost)}`),
+    row("agents", `${formatTokens(run.agents.totalTokens)} · ${formatCost(run.agents.cost)}`),
+    row("total", `${formatTokens(run.total.totalTokens)} · ${formatCost(run.total.cost)}`),
+  ];
+  if (run.baseline) rows.push(row("baseline", `${formatTokens(run.baseline.totalTokens)} · ${formatCost(run.baseline.cost)}`));
+  return rows;
+}
+
 /** The `/aies-status` report: the same numbers, unfolded for a human. */
-export function renderStatusReport(snapshot: AiesSnapshot, now: number): string {
+export function renderStatusReport(snapshot: AgentsSnapshot, now: number): string {
   const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
   const section = (title: string, rows: string[]) => [`${title}:`, ...rows, ""];
 
@@ -160,6 +203,15 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
       row("motivo de parada", snapshot.stopReason ?? "-"),
       row("sesión", snapshot.sessionId ?? "-"),
     ]),
+    ...(snapshot.agents && snapshot.agents.length ? section("Observatorio", observatoryRows(snapshot)) : []),
+    ...(hasRunUsage(snapshot) ? section("Uso del run", runUsageRows(snapshot)) : []),
     "Mide, no gobierna: ninguna métrica cambia el comportamiento.",
   ].join("\n");
+}
+
+/** The run usage section only appears once the run actually measured something. */
+function hasRunUsage(snapshot: AgentsSnapshot): boolean {
+  const run = snapshot.runUsage;
+  if (!run) return false;
+  return run.total.totalTokens > 0 || (typeof run.total.cost === "number" && run.total.cost > 0);
 }

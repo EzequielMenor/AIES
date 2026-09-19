@@ -6,12 +6,12 @@
  * shown as `0` or `—`; a broken record degrades to silence, never a guess.
  */
 
-import { clip, formatDuration, singleLine } from "./format.ts";
+import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import type { Stage } from "./vocabulary.ts";
 
-/** How long a finished card lingers on the widget before it clears itself. */
-export const ACTIVITY_TTL_MS = 60_000;
+/** At or above this width the live card is boxed; below it stays three plain lines. */
+const BOXED_ACTIVITY_MIN_WIDTH = 48;
 
 /** One child delegation as the UI reads it. Fields are optional and unreadable input is ignored. */
 export interface ActivityRecord {
@@ -34,6 +34,18 @@ export interface ActivityRecord {
   /** verify: blocking defects. */
   blockingDefects?: number;
   model?: string;
+  /** The resolved child model label, when the observatory reported one. */
+  modelLabel?: string;
+  /** The resolved child provider label, when the observatory reported one. */
+  providerLabel?: string;
+  /** Tokens the child reported; a missing count is omitted, never shown as zero. */
+  totalTokens?: number;
+  /** Child cost; `null`/undefined is unknown and renders as an em dash only where a value is expected. */
+  cost?: number | null;
+  /** Mechanical, already-Spanish activity text (`Editando main.ts`). */
+  currentActivity?: string | null;
+  /** Paths the child changed, when it reported any. */
+  changedPaths?: string[];
 }
 
 function isPositive(value: number | undefined): value is number {
@@ -180,16 +192,58 @@ function liveSubtitle(activity: ActivityRecord, stage: Stage, ticketTitle: strin
   }
 }
 
-/** True while a child is running, or for the TTL after it finished. */
+/**
+ * True while a child is running. A finished child is not a live surface: the
+ * durable transcript entry is its single remaining trace, so the widget never
+ * lingers with a stale card.
+ */
 export function isActivityVisible(activity: ActivityRecord, now: number): boolean {
+  void now;
   if (!activity) return false;
-  if (typeof activity.finishedAt !== "number") return true;
-  return now - activity.finishedAt < ACTIVITY_TTL_MS;
+  return typeof activity.finishedAt !== "number";
+}
+
+/** The "what it is doing" line: the mechanical activity wins over the task text. */
+function activityLine(activity: ActivityRecord, stage: Stage, ticketTitle: string | undefined): string {
+  const mechanical = singleLine(activity.currentActivity ?? "");
+  if (mechanical) return mechanical;
+  return liveSubtitle(activity, stage, ticketTitle);
+}
+
+/** The current file or command line: the last changed path, when the child reported one. */
+function currentFileLine(activity: ActivityRecord): string | undefined {
+  const paths = activity.changedPaths;
+  if (!Array.isArray(paths) || paths.length === 0) return undefined;
+  const last = singleLine(String(paths[paths.length - 1] ?? ""));
+  return last || undefined;
+}
+
+/** The metric line: elapsed always, then each fact only when the child reported it. */
+function metricsLine(activity: ActivityRecord, elapsed: string): string {
+  const parts = [elapsed];
+  const model = singleLine(activity.modelLabel ?? activity.model ?? "");
+  if (model) parts.push(model);
+  if (isPositive(activity.totalTokens)) parts.push(`${formatTokens(activity.totalTokens)} tokens`);
+  if (typeof activity.cost === "number") parts.push(formatCost(activity.cost));
+  return parts.join(" · ");
+}
+
+/** A boxed card: role on the top border, one content line per fact, nothing invented. */
+function boxedCard(role: string, content: string[], width: number, paint: Paint): string[] {
+  const inner = Math.max(1, width - 4);
+  const label = ` ◆ ${role} `;
+  const dashes = Math.max(0, width - 3 - label.length);
+  const lines = [paint.fg("accent", `╭─${label}${"─".repeat(dashes)}╮`)];
+  for (const line of content) {
+    lines.push(`│ ${clip(line, inner).padEnd(inner)} │`);
+  }
+  lines.push(paint.fg("accent", `╰${"─".repeat(Math.max(0, width - 2))}╯`));
+  return lines;
 }
 
 /**
- * The card for the widget: `[]` when nothing should show, otherwise the live
- * three-line card or the finished one/two-line card.
+ * The card for the widget while a child runs: the boxed card at width 48 and
+ * above, otherwise the plain three lines. A finished child renders nothing.
  */
 export function renderActivityCard(
   activity: ActivityRecord,
@@ -201,40 +255,27 @@ export function renderActivityCard(
   const width = positiveWidth(options.width);
   if (!isActivityVisible(activity, now)) return [];
 
-  const live = typeof activity.finishedAt !== "number";
-  if (live) {
-    const head = paint.fg("accent", `◆ ${roleLabel(activity.role)}`);
+  const role = roleLabel(activity.role);
+  const line = activityLine(activity, stage, options.ticketTitle);
+  const elapsed = formatDuration(now - activity.startedAt);
 
-    const rawSubtitle = liveSubtitle(activity, stage, options.ticketTitle);
-    const shownSubtitle = width !== undefined ? clip(rawSubtitle, width - 2) : singleLine(rawSubtitle);
-    const subtitle = shownSubtitle ? paint.fg("muted", `  ${shownSubtitle}`) : "";
-
-    const elapsed = formatDuration(now - activity.startedAt);
-    const elapsedText = options.showModel && activity.model ? `${elapsed} · ${activity.model}` : elapsed;
-    const elapsedLine = paint.fg("dim", `  ${elapsedText}`);
-
-    return [head, subtitle, elapsedLine].filter((line) => line !== "");
+  if (width !== undefined && width >= BOXED_ACTIVITY_MIN_WIDTH) {
+    const content = [line, currentFileLine(activity), metricsLine(activity, elapsed)].filter(
+      (entry): entry is string => Boolean(entry),
+    );
+    return boxedCard(role, content, width, paint);
   }
 
-  const color = outcomeColor(activity.outcome);
-  const verdict = verdictFor(activity.role, activity.outcome);
-  const duration = durationOf(activity);
-
-  let head = `${outcomeGlyph(activity.outcome)} ${roleLabel(activity.role)}`;
-  if (verdict) head += ` · ${verdict}`;
-  if (duration) head += ` · ${duration}`;
-
-  const lines = [paint.fg(color, head)];
-  const factList = facts(activity);
-  if (factList.length) {
-    let factText = factList.join(" · ");
-    if (width !== undefined) factText = clip(factText, width - 2);
-    if (factText) lines.push(paint.fg("muted", `  ${factText}`));
-  }
-  return lines;
+  const head = paint.fg("accent", `◆ ${role}`);
+  const shownLine = width !== undefined ? clip(line, width - 2) : singleLine(line);
+  const subtitle = shownLine ? paint.fg("muted", `  ${shownLine}`) : "";
+  const model = singleLine(activity.modelLabel ?? activity.model ?? "");
+  const elapsedText = options.showModel && model ? `${elapsed} · ${model}` : elapsed;
+  const elapsedLine = paint.fg("dim", `  ${elapsedText}`);
+  return [head, subtitle, elapsedLine].filter((entry) => entry !== "");
 }
 
-/** The durable transcript line for a finished child. */
+/** The durable transcript line for a finished child: one line, tokens and cost included. */
 export function renderActivityEntry(activity: ActivityRecord, options: { paint?: Paint } = {}): string {
   const paint = options.paint ?? PLAIN_PAINT;
   const parts = [`${outcomeGlyph(activity.outcome)} ${roleLabel(activity.role)}`];
@@ -242,6 +283,8 @@ export function renderActivityEntry(activity: ActivityRecord, options: { paint?:
   if (verdict) parts.push(verdict);
   const duration = durationOf(activity);
   if (duration) parts.push(duration);
+  if (isPositive(activity.totalTokens)) parts.push(formatTokens(activity.totalTokens));
+  if (typeof activity.cost === "number") parts.push(formatCost(activity.cost));
 
   let line = parts.join(" · ");
   const factList = facts(activity);

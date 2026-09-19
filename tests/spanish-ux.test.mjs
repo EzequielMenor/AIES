@@ -121,19 +121,23 @@ describe("identity projection", () => {
 describe("Spanish critical copy", () => {
   it("renders the idle footer in Spanish with the AIES identity glyph", () => {
     const footer = renderFooter(toSnapshot(applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 })), T0);
-    assert.equal(footer, "❈ AIES · listo · ctx 31k");
+    assert.equal(footer, "✧ AIES · listo · ctx 31k");
     assert.equal(footer.includes("ready"), false);
   });
 
   it("renders the activity facts in Spanish instead of `checks passed`", () => {
-    const lines = renderActivityCard(
-      { role: "worker", task: "", startedAt: T0, finishedAt: T0 + 51_000, outcome: "done", changedFiles: 3, checksPassed: 3, checksTotal: 3 },
-      "IDLE",
-      T0 + 51_000,
-    );
-    const text = lines.join("\n");
-    assert.match(text, /checks aprobados/u);
-    assert.equal(text.includes("checks passed"), false, text);
+    const entry = renderActivityEntry({
+      role: "worker",
+      task: "",
+      startedAt: T0,
+      finishedAt: T0 + 51_000,
+      outcome: "done",
+      changedFiles: 3,
+      checksPassed: 3,
+      checksTotal: 3,
+    });
+    assert.match(entry, /checks aprobados/u);
+    assert.equal(entry.includes("checks passed"), false, entry);
   });
 
   it("renders the ticket header in Spanish-free technical terms with AUTO", () => {
@@ -234,13 +238,14 @@ describe("Spanish critical copy", () => {
     assert.equal(report.includes("NONE"), false, report);
   });
 
-  it("never leaks a raw child summary into the finished card or the durable entry", () => {
+  it("never leaks a raw child summary and keeps the finished child as a single durable trace", () => {
     const leaked = "raw child summary that must never reach the default UI";
     const finished = { role: "worker", task: "", startedAt: T0, finishedAt: T0 + 5_000, outcome: "done", summary: leaked };
 
+    // A finished child is no longer widget-visible: the durable entry is the
+    // one remaining trace, and it never re-renders the raw child summary.
     const card = renderActivityCard(finished, "IDLE", T0 + 5_000);
-    assert.equal(card.join("\n").includes(leaked), false, card.join("\n"));
-    assert.deepEqual(card, ["✓ Worker · 00:05"]);
+    assert.deepEqual(card, []);
 
     const entry = renderActivityEntry(finished);
     assert.equal(entry.includes(leaked), false, entry);
