@@ -1,7 +1,7 @@
 /**
  * Test suite for AIES-006: Permission Boundaries & Sandbox Enforcement.
  *
- * Covers the 12 core requirements:
+ * Covers the 13 core requirements:
  * 1. Explore tool surface unchanged (read-only tools, no bash/edit/write).
  * 2. Worker workspace-write (write & edit inside workspace permitted).
  * 3. Worker escape denied (writes outside workspace and secret file modifications rejected).
@@ -14,9 +14,13 @@
  * 10. Sandbox unavailable degradation: graceful fallback for Worker, strict halt for Verify.
  * 11. No regex security theatre: syscall-level enforcement, not binary name matching.
  * 12. Observability: telemetry counters, /aies-status report, and footer indicators.
+ * 13. Host Keychain withdrawal: child sandboxes (Worker and Verify) cannot reach
+ *     securityd, so the host's stored MCP credentials stay out of reach.
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +63,7 @@ import {
   isSandboxSupported,
   isSandboxViolation,
   resetSandbox,
+  withdrawKeychainAccess,
 } from "../extensions/aies-agents/sandbox.ts";
 import {
   createVerifyBashToolDefinition,
@@ -618,6 +623,104 @@ describe("AIES-006 Permission Boundaries", () => {
       state = applyPermissionsSync(state, { sandbox: "active" });
       const activeFooter = renderFooter(toSnapshot(state), 2000);
       assert.ok(!activeFooter.includes("SANDBOX OFF"));
+    });
+  });
+
+  describe("13. Host Keychain stays out of reach of child sandboxes", () => {
+    it("withdraws Keychain access when the Seatbelt profile carries the security block", () => {
+      const anchor =
+        "; Specific mach-lookup permissions for security operations\n" +
+        '(allow mach-lookup (global-name "com.apple.SecurityServer"))';
+      const wrapped =
+        "env SANDBOX_RUNTIME=1 /usr/bin/sandbox-exec -p '(version 1)\n(deny default)' " +
+        `'${anchor}' ` +
+        "/bin/bash -c 'echo hi'";
+
+      const withdrawn = withdrawKeychainAccess(wrapped);
+
+      const anchorIndex = wrapped.indexOf(anchor);
+      assert.notEqual(anchorIndex, -1, "fixture must carry the runtime's security block");
+      const expected =
+        `${wrapped.slice(0, anchorIndex)}${anchor}\n` +
+        "; AIES: the Keychain belongs to the host; children must not reach securityd\n" +
+        '(deny mach-lookup (global-name "com.apple.securityd.xpc"))\n' +
+        '(deny mach-lookup (global-name "com.apple.SecurityServer"))' +
+        `${wrapped.slice(anchorIndex + anchor.length)}`;
+      assert.equal(withdrawn, expected, "only the two deny rules may be appended, after the runtime's own allows");
+      assert.ok(
+        withdrawn.indexOf('(deny mach-lookup (global-name "com.apple.securityd.xpc"))') > withdrawn.indexOf(anchor),
+        "the deny rules must land after the runtime's allows, never before",
+      );
+      assert.ok(withdrawn.endsWith("/bin/bash -c 'echo hi'"), "the wrapped command must survive untouched");
+    });
+
+    it("fails closed when the profile has no recognisable Keychain security block", () => {
+      assert.throws(
+        () => withdrawKeychainAccess("/usr/bin/sandbox-exec -p '(version 1)(deny default)' /bin/bash -c 'echo hi'"),
+        /could not be withdrawn/,
+      );
+    });
+
+    it("leaves a child unable to enumerate the host Keychain (Worker and Verify)", async () => {
+      if (process.platform !== "darwin" || !isSandboxSupported()) {
+        return;
+      }
+
+      for (const role of ["worker", "verify"]) {
+        const result = await executeSandboxedCommand("security list-keychains 2>&1 || true", fixtureDir, { role });
+
+        assert.doesNotMatch(
+          result.stdout,
+          /keychain-db/,
+          `${role} must not be able to list the host keychains: ${result.stdout}`,
+        );
+        assert.match(
+          `${result.stdout}${result.stderr}`,
+          /SecKeychainCopySearchList|SecKeychainSearchCreateFromAttributes|not valid|denied/i,
+          `${role} should report a failed Keychain primitive: ${result.stdout}${result.stderr}`,
+        );
+      }
+    });
+
+    it("keeps the host's stored MCP credentials unreachable from Worker and Verify", async () => {
+      // Empirical guard on the real token: skipped unless this host actually has
+      // pi-mcp-adapter's credential store and the package that reads it.
+      const keyringDir = [
+        join(process.env.AIES_HOME ?? "", "agent", "npm", "node_modules", "@napi-rs", "keyring"),
+        join(homedir(), ".pi", "agent", "npm", "node_modules", "@napi-rs", "keyring"),
+      ].find((dir) => existsSync(join(dir, "package.json")));
+      if (process.platform !== "darwin" || !isSandboxSupported() || !keyringDir) {
+        return;
+      }
+
+      const account = `sha256-${createHash("sha256").update("linear", "utf8").digest("hex")}`;
+      const service = "pi-mcp-adapter.oauth";
+      const entry = spawnSync("security", ["find-generic-password", "-s", service, "-a", account], {
+        encoding: "utf8",
+      });
+      if (entry.status !== 0) {
+        return; // No stored credential on this host: nothing to protect.
+      }
+
+      // Prints only a byte count, never the secret.
+      const script =
+        `const { Entry } = require(${JSON.stringify(keyringDir)});` +
+        `try { const v = new Entry(${JSON.stringify(service)}, ${JSON.stringify(account)}).getPassword();` +
+        `process.stdout.write(v ? "credential:" + Buffer.byteLength(v, "utf8") : "no-credential"); }` +
+        `catch (error) { process.stdout.write("blocked:" + String(error && error.message).slice(0, 40)); }`;
+
+      // Control: proves the probe works and the entry really exists on this host.
+      const host = spawnSync("node", ["-e", script], { encoding: "utf8" });
+      assert.match(host.stdout.trim(), /^credential:[1-9]\d*$/, "control: the host must read its own stored credential");
+
+      for (const role of ["worker", "verify"]) {
+        const result = await executeSandboxedCommand(`node -e ${JSON.stringify(script)}`, fixtureDir, { role });
+        assert.doesNotMatch(
+          result.stdout.trim(),
+          /^credential:/,
+          `${role} must not recover the host's stored credential: ${result.stdout.trim()}`,
+        );
+      }
     });
   });
 });

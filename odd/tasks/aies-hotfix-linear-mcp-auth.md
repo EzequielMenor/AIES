@@ -106,3 +106,34 @@ which is why every real call above succeeded without authenticating again.
 
 No AIES-011 work, no additional MCP servers, no new direct tools, no Linear GraphQL
 or SDK migration, no `/aies-linear-auth` wrapper, no polling, no second CLI.
+
+## T10 - child Keychain access (AIES-006 invariant)
+
+AIES-006 promises credentials stay in the Parent/host. OAuth broke that: the
+adapter stores Linear's credentials in the macOS login Keychain (service
+`pi-mcp-adapter.oauth`, account `sha256-<sha256("linear")>`), and a sandboxed AIES
+child could still read them.
+
+**Measured hole.** Through AIES's own production runner `executeSandboxedCommand`,
+with an ACTIVE Seatbelt sandbox whose outside-write control correctly failed with
+"Operation not permitted": role `worker` running `node` + `@napi-rs/keyring` (the
+same primitive the adapter uses) returned `len=502` for the Linear credential, and
+role `verify` returned the same `len=502`. `security find-generic-password -w` is
+already blocked from any process by the item's ACL, so the CLI is not the hole; the
+in-process `SecItemCopyMatching` path is.
+
+**Cause.** `@anthropic-ai/sandbox-runtime` (0.0.76) hard-codes `(allow mach-lookup)`
+for `com.apple.securityd.xpc` and `com.apple.SecurityServer` in its macOS profile
+and exposes no option to withdraw them (`allowMachLookup` is additive).
+`filesystem.denyRead` cannot help because securityd reads the keychain, not the
+sandboxed process. Nested `sandbox-exec` is impossible (`sandbox_apply: Operation
+not permitted`).
+
+**Fix.** SBPL resolves an operation by its LAST matching rule, so
+`withdrawKeychainAccess` appends denies for both Mach services after the runtime's
+own security block, withdrawing Keychain access for the whole sandboxed subtree. It
+fails closed: a profile without exactly one recognisable security block is refused
+instead of run.
+
+**Measured result after the fix.** `len=502` became `null`, while `node -e '1+1'`,
+`ls`, `git status` and the outside-write denial all behaved exactly as before.

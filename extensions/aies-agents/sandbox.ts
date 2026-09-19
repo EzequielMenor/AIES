@@ -282,6 +282,55 @@ export function isSandboxViolation(text: string): boolean {
 }
 
 /**
+ * macOS Keychain withdrawal for child sandboxes (AIES-006 credential invariant).
+ *
+ * `@anthropic-ai/sandbox-runtime` hard-codes `(allow mach-lookup)` for the two
+ * Mach services Keychain Services needs and offers no option to withdraw them
+ * (`allowMachLookup` only adds). A sandboxed child could therefore still call
+ * `SecItemCopyMatching` - the primitive `pi-mcp-adapter` stores the host's MCP
+ * credentials with - and read the host's tokens. File-level `denyRead` cannot
+ * help: securityd reads the keychain, not the sandboxed process.
+ *
+ * SBPL decides an operation by its last matching rule - the runtime implements
+ * its own read denies exactly that way - so appending denies after the runtime's
+ * security block withdraws Keychain access from the whole sandboxed subtree.
+ */
+const MACOS_KEYCHAIN_SECURITY_BLOCK =
+  "; Specific mach-lookup permissions for security operations\n" +
+  '(allow mach-lookup (global-name "com.apple.SecurityServer"))';
+
+const MACOS_KEYCHAIN_WITHDRAWAL = [
+  "; AIES: the Keychain belongs to the host; children must not reach securityd",
+  '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
+  '(deny mach-lookup (global-name "com.apple.SecurityServer"))',
+].join("\n");
+
+/**
+ * Withdraw macOS Keychain access from a Seatbelt-wrapped command.
+ *
+ * The profile is handed to `sandbox-exec -p` as shell-quoted text, so the injected
+ * rules are kept apostrophe-free and leave that quoting untouched.
+ *
+ * Fail closed: a profile this function cannot recognise is a profile whose Keychain
+ * access was NOT withdrawn, so running it would silently expose the host's
+ * credentials to a child.
+ */
+export function withdrawKeychainAccess(wrappedCommand: string): string {
+  const occurrences = wrappedCommand.split(MACOS_KEYCHAIN_SECURITY_BLOCK).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      "Refusing to run a sandboxed child command: the macOS Seatbelt profile did not contain " +
+        `exactly one Keychain security block (found ${occurrences}), so the host Keychain could not be ` +
+        "withdrawn and its credentials would be reachable from inside the sandbox",
+    );
+  }
+  return wrappedCommand.replace(
+    MACOS_KEYCHAIN_SECURITY_BLOCK,
+    `${MACOS_KEYCHAIN_SECURITY_BLOCK}\n${MACOS_KEYCHAIN_WITHDRAWAL}`,
+  );
+}
+
+/**
  * Execute a command inside the OS sandbox for the specified role.
  */
 export async function executeSandboxedCommand(
@@ -307,7 +356,9 @@ export async function executeSandboxedCommand(
 
   await syncSandboxConfig(role, cwd, configOptions);
 
-  const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
+  const wrapped = await SandboxManager.wrapWithSandbox(command);
+  // Seatbelt profiles only exist on macOS; other platforms never carry this block.
+  const wrappedCommand = process.platform === "darwin" ? withdrawKeychainAccess(wrapped) : wrapped;
 
   return new Promise((resolveResult, reject) => {
     let stdoutBuffer = "";
