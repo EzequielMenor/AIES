@@ -169,12 +169,36 @@ export function readIssueTeam(raw: LinearIssueRaw): string | undefined {
   return undefined;
 }
 
+function asNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * The usable Linear identity of a remote issue payload, in preference order:
+ * the human `identifier`, then the raw `id`. The `uuid` the real MCP projection
+ * always carries is Linear's internal key, not the human ticket key, so it is
+ * never accepted as the user-facing identity. A payload that carries none of
+ * the accepted keys cannot name a Linear ticket and must be rejected before it
+ * reaches normalization or mutates active state.
+ */
+export function readIssueIdentity(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as { identifier?: unknown; id?: unknown };
+  return asNonEmptyString(record.identifier) ?? asNonEmptyString(record.id);
+}
+
+/** True when a remote issue payload carries a usable Linear identity. */
+export function hasUsableIssueIdentity(raw: unknown): boolean {
+  return readIssueIdentity(raw) !== undefined;
+}
+
 /**
  * Normalizes a raw Linear issue payload into a lean ActiveTicket representation.
  */
 export function normalizeTicketContract(raw: LinearIssueRaw): ActiveTicket {
-  const identifier = raw.identifier || raw.id;
-  const id = raw.id || identifier;
+  const identity = readIssueIdentity(raw);
+  const identifier = identity ?? "";
+  const id = asNonEmptyString(raw.id) ?? identity ?? "";
   const title = (raw.title || "").trim();
   const description = (raw.description || "").trim();
 

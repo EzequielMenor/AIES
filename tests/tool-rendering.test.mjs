@@ -200,6 +200,7 @@ describe("aies_ticket presentation", () => {
       network_failure: "falló la red",
       permission_denied: "sin permisos",
       not_found: "ticket no encontrado",
+      invalid_remote_payload: "respuesta inválida de Linear",
       invalid_transition: "transición inválida",
       remote_conflict: "conflicto remoto",
       no_pending_remote: "sin operación pendiente",

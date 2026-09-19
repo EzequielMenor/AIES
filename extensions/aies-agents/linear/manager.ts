@@ -16,6 +16,7 @@ import type { VerificationState } from "../verification.ts";
 import {
   describeRemoteDirective,
   formatCompactContract,
+  hasUsableIssueIdentity,
   normalizeTicketContract,
   readIssueState,
 } from "./contract.ts";
@@ -298,6 +299,14 @@ export class TicketManager {
       return { ok: false, error: "not_found", message: `Ticket "${trimmedId}" not found on Linear.` };
     }
 
+    if (!hasUsableIssueIdentity(raw)) {
+      return {
+        ok: false,
+        error: "invalid_remote_payload",
+        message: `Linear returned an issue without usable identity (no identifier, id or uuid) for "${trimmedId}". The ticket was not activated.`,
+      };
+    }
+
     this.activeTicket = normalizeTicketContract(raw);
     this.workState = "loaded";
     this.changedPaths.clear();
@@ -503,6 +512,13 @@ export class TicketManager {
       const fresh = await this.createTransport().getIssue(active.identifier);
       if (!fresh) {
         return { ok: false, error: "not_found", message: "Ticket no longer exists on remote." };
+      }
+      if (!hasUsableIssueIdentity(fresh)) {
+        return {
+          ok: false,
+          error: "invalid_remote_payload",
+          message: `Linear returned an issue without usable identity (no identifier, id or uuid) for "${active.identifier}". The active ticket was left unchanged.`,
+        };
       }
       this.activeTicket = normalizeTicketContract(fresh);
       return {

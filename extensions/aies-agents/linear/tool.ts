@@ -128,6 +128,7 @@ const TICKET_ERROR_MESSAGE: Record<string, string> = {
   permission_denied: "sin permisos",
   // Ticket state
   not_found: "ticket no encontrado",
+  invalid_remote_payload: "respuesta inválida de Linear",
   invalid_transition: "transición inválida",
   remote_conflict: "conflicto remoto",
   no_pending_remote: "sin operación pendiente",

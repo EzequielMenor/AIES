@@ -48,8 +48,8 @@ interactive `/agents` view over session-local child facts.
 
 | Task | Status | Outcome | Commit |
 |---|---|---|---|
-| T1 Baseline, Pi/Gentle audit and design freeze | complete | Mapped AIES-010B seams, Pi 0.85.1 usage/UI APIs, selective Gentle patterns, the EZE-423 invalid-load defect, responsive layout and six bounded work units. | pending commit |
-| T2 Linear invalid-load boundary | pending | Reject remote issue payloads without usable identity before normalization/state mutation; prove no `undefined`/`Unknown` active ticket and classify `pending_remote` replay behavior. | — |
+| T1 Baseline, Pi/Gentle audit and design freeze | complete | Mapped AIES-010B seams, Pi 0.85.1 usage/UI APIs, selective Gentle patterns, the EZE-423 invalid-load defect, responsive layout and six bounded work units. | `a13e97f` |
+| T2 Linear invalid-load boundary | complete | Rejects remote issues without non-empty `identifier`/`id` before state mutation, keeps the previous ticket on invalid refresh, renders a Spanish failure, and proves `no_pending_remote` is the expected stale-replay guard. | pending commit |
 | T3 Ephemeral Agent Observatory and exact usage | pending | Add lifecycle registry, mechanical activity events, model/provider, tools, paths, ring buffer and real Parent/Agents/Total token/cost aggregation without double counting. | — |
 | T4 Observatory presentation and `/agents` | pending | Add active card, compact agents/status widget, interactive keyboard navigation, richer `/aies-status`, responsive footer fallback and compact DONE projection. | — |
 | T5 Quiet generic tool rendering | pending | Use Pi-supported renderer overrides for compact successful `bash/read/grep/find/edit/write`, native expansion for raw detail and automatically visible failures, without changing tool execution/model content. | — |
@@ -121,3 +121,12 @@ capture, routing/autonomy/permission/context-policy redesign, push or PR.
 - A CodeGraph initialization probe created `.codegraph/` and `.cursor/`; the
   tooling incident was isolated and both generated directories were removed.
   They are outside AIES-010C and must not reappear.
+- T2 RED reproduced a truthy `{ foo: "bar" }` MCP replay activating an identity-less
+  ticket. GREEN validates non-empty `identifier`/`id` before state mutation,
+  rejects uuid-only payloads, preserves the active ticket on invalid refresh and
+  maps the collapsed error to `respuesta inválida de Linear`.
+- `no_pending_remote` is expected replay protection: it occurs only after the
+  pending operation was consumed; repeating the action without `remote` safely
+  re-derives the directive. No transport behavior changed.
+- T2 independent focused verification: 75/75 tests pass across Linear,
+  tool-rendering and smoke-linear; `git diff --check` passes.

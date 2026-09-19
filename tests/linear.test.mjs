@@ -48,6 +48,7 @@ import {
 import { createTicketTool } from "../extensions/aies-agents/linear/tool.ts";
 import {
   FakeLinearTransport,
+  HostMediatedLinearTransport,
   LinearTransportError,
 } from "../extensions/aies-agents/linear/transport.ts";
 // LinearIssueRaw type omitted in .mjs test file
@@ -801,6 +802,151 @@ Ensure timeout is bounded
       assert.equal(resolveTargetStatus(statuses, "started")?.id, "progress");
       assert.equal(resolveTargetStatus(statuses, "completed")?.id, "done");
       assert.equal(resolveTargetStatus(statuses, "unstarted")?.id, "todo");
+    });
+  });
+
+  describe("18. Invalid remote payload boundary (TicketManager + HostMediated transport)", () => {
+    // No transport override: the manager uses the real HostMediatedLinearTransport,
+    // so these exercises the genuine Parent-mediated seam.
+    const mediatedManager = () => new TicketManager({ getVerification: () => createVerificationState() });
+
+    // Captured from a real `get_issue` call: `identifier` and `id` are the human
+    // key, `uuid` is the stable Linear id, and the state is flat with `statusType`.
+    const realIssue = {
+      id: "EZE-423",
+      identifier: "EZE-423",
+      uuid: "767a81fb-454e-4656-94b7-cf5319a509e6",
+      title: "Agent observatory",
+      description: "Acceptance criteria:\n\n* something",
+      status: "Todo",
+      statusType: "unstarted",
+      stateHistory: [{ state: { id: "state-todo", name: "Todo", type: "unstarted" }, endedAt: null }],
+      project: "AIES",
+      team: "Eze",
+    };
+
+    it("refuses a truthy but incomplete payload instead of activating an undefined ticket", async () => {
+      // The transport hands the Parent's answer back verbatim, however incomplete
+      // it is: rejecting it is the manager's boundary, not the transport's.
+      const transport = new HostMediatedLinearTransport({ "linear:get_issue(id=\"EZE-423\")": { foo: "bar" } });
+      assert.deepEqual(await transport.getIssue("EZE-423"), { foo: "bar" });
+
+      const manager = mediatedManager();
+      const first = await manager.loadTicket("EZE-423");
+      assert.equal(first.ok, false);
+      assert.equal(first.error, "remote_required");
+      assert.equal(first.directive.tool, "get_issue");
+
+      const second = await manager.submitRemote({ foo: "bar" });
+      assert.equal(second.ok, false, "an identity-less payload must never activate a ticket");
+      assert.equal(second.error, "invalid_remote_payload");
+      assert.equal(manager.getActiveTicket(), null);
+      assert.equal(manager.getPendingDirective(), null);
+    });
+
+    it("never projects the literal 'undefined' or a bogus 'Unknown' status", async () => {
+      const manager = mediatedManager();
+      await manager.loadTicket("EZE-423");
+      const result = await manager.submitRemote({
+        content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.error, "invalid_remote_payload");
+      assert.doesNotMatch(result.message ?? "", /undefined/);
+      assert.equal(manager.getActiveTicket(), null);
+    });
+
+    it("rejects a payload whose only identity is the uuid, never using it as the ticket identifier", async () => {
+      // Real `get_issue` carries `id`/`identifier` (EZE-423) plus a separate
+      // `uuid`. The uuid is Linear's internal key, not the human ticket key, so a
+      // payload that carries only the uuid cannot name a ticket and must be
+      // rejected instead of surfacing the uuid as the user-facing identifier.
+      const manager = mediatedManager();
+      await manager.loadTicket("EZE-423");
+      const result = await manager.submitRemote({
+        uuid: "767a81fb-454e-4656-94b7-cf5319a509e6",
+        title: "Agent observatory",
+        status: "Todo",
+        statusType: "unstarted",
+        team: "Eze",
+      });
+      assert.equal(result.ok, false, "a uuid-only payload must not become the user-facing identifier");
+      assert.equal(result.error, "invalid_remote_payload");
+      assert.equal(manager.getActiveTicket(), null);
+      assert.equal(manager.getPendingDirective(), null);
+    });
+
+    it("rejects an invalid refresh payload without clobbering the active ticket", async () => {
+      const manager = mediatedManager();
+      await manager.loadTicket("EZE-423");
+      assert.equal((await manager.submitRemote(realIssue)).ok, true);
+      assert.equal(manager.getActiveTicket().identifier, "EZE-423");
+
+      const refresh = await manager.refresh();
+      assert.equal(refresh.error, "remote_required");
+      const bad = await manager.submitRemote({ data: null });
+      assert.equal(bad.ok, false);
+      assert.equal(bad.error, "invalid_remote_payload");
+      assert.equal(manager.getActiveTicket().identifier, "EZE-423");
+    });
+
+    it("fails closed through the tool without a remote directive or self-debug instructions", async () => {
+      const tool = createTicketTool(mediatedManager());
+      const first = await tool.execute("c1", { action: "load", ticketId: "EZE-423" }, undefined, undefined, {
+        mode: "print",
+      });
+      assert.equal(first.isError, true);
+      assert.equal(first.details.directive.tool, "get_issue");
+
+      const second = await tool.execute(
+        "c2",
+        { action: "load", ticketId: "EZE-423", remote: { unexpected: true } },
+        undefined,
+        undefined,
+        { mode: "print" },
+      );
+      assert.equal(second.isError, true);
+      assert.equal(second.details.error, "invalid_remote_payload");
+      assert.equal(second.details.directive, undefined);
+      assert.equal(second.details.instruction, undefined);
+      assert.doesNotMatch(second.content[0].text, /mcp\(|source|inspect|debug/i);
+    });
+  });
+
+  describe("19. Pending remote replay semantics", () => {
+    const mediatedManager = () => new TicketManager({ getVerification: () => createVerificationState() });
+    const realIssue = {
+      id: "EZE-423",
+      identifier: "EZE-423",
+      title: "Agent observatory",
+      description: "",
+      status: "Todo",
+      statusType: "unstarted",
+      team: "Eze",
+    };
+
+    // `no_pending_remote` is the stale/replayed-answer guard, not a defect: a
+    // Pending answer is refused only when no operation is actually in flight, and
+    // the message names the recovery. Repeating the action without `remote`
+    // re-derives the directive, so a valid pending answer is never lost.
+    it("refuses a stale replay once no operation is pending, and retries cleanly", async () => {
+      const manager = mediatedManager();
+      const first = await manager.loadTicket("EZE-423");
+      assert.equal(first.error, "remote_required");
+
+      const activated = await manager.submitRemote(realIssue);
+      assert.equal(activated.ok, true);
+      assert.equal(manager.getPendingDirective(), null);
+
+      const stale = await manager.submitRemote(realIssue);
+      assert.equal(stale.ok, false);
+      assert.equal(stale.error, "no_pending_remote");
+      assert.match(stale.message ?? "", /Repeat the action without `remote`/);
+
+      const retried = await manager.refresh();
+      assert.equal(retried.error, "remote_required");
+      assert.equal(retried.directive.tool, "get_issue");
+      assert.deepEqual(retried.directive.args, { id: "EZE-423" });
     });
   });
 });
