@@ -141,10 +141,12 @@ a bearer token over OAuth, edit the server in `$AIES_HOME/agent/mcp.json`
 (`auth: "bearer"`, `bearerTokenEnv: "LINEAR_API_KEY"`); that is a deliberate opt-out
 of the OAuth path.
 
-The Linear server exposes 66 tools. AIES keeps them behind the adapter's single
-`mcp` proxy tool, so a session pays for one tool's schema instead of the catalog,
-and `lifecycle: "lazy"` means no connection is made at startup. Credentials are
-stored by the adapter in the OS credential store, never in this repository.
+The Linear server exposes 66 tools. AIES keeps them behind the adapter's proxy
+tools for that server (`mcp`, plus one `mcp__linear` namespace proxy once the
+server's catalog is cached), so a session pays for two small definitions instead of
+the catalog. `lifecycle: "lazy"` means no connection is made at startup, and
+credentials are stored by the adapter in the OS credential store, never in this
+repository.
 
 ## Repository layout
 

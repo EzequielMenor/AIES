@@ -167,9 +167,18 @@ describe("AIES MCP integration", () => {
         assert.ok(commands.includes("mcp-auth"), "/mcp-auth must come from the adapter");
 
         const tools = loaded.extensions.flatMap((extension) => [...extension.tools.keys()]);
-        assert.deepEqual(tools, [MCP_PROXY_TOOL], "the AIES profile registers exactly one MCP tool");
+        // The adapter always registers the `mcp` gateway, and adds one
+        // `mcp__<server>` namespace proxy per proxy-only server once that server's
+        // catalog is cached. This profile is fresh, so only the gateway exists.
+        // Either way the Linear tools stay behind a proxy and no Linear schema is
+        // resident.
+        for (const name of tools) {
+          assert.ok(name === MCP_PROXY_TOOL || name.startsWith("mcp__"), `${name} is not an MCP proxy tool`);
+        }
         assert.ok(!tools.some((name) => name.startsWith("linear_")), "no Linear schema may be resident");
-        assert.ok(!tools.includes("mcpScript"), "scriptMode is off, so only the proxy tool exists");
+        assert.ok(!tools.some((name) => name.includes("__linear__")), "the Linear tools must stay behind a proxy");
+        assert.ok(!tools.includes("mcpScript"), "scriptMode is off, so no script tool exists");
+        assert.deepEqual(tools, [MCP_PROXY_TOOL], "a fresh profile with no cached catalog registers only the gateway");
       } finally {
         if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = previous;

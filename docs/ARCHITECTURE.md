@@ -500,7 +500,9 @@ PI_MCP_CONFIG_MODE=exclusive  ->  the adapter reads only that mcp.json
   `scripts/seed-profile-config.mjs`. User additions to either file survive, and only
   the declared package, server and settings are restored.
 - **Surface**: no `directTools` and `scriptMode: false`, so the 66 tools of the
-  Linear server stay behind the single `mcp` proxy tool.
+  Linear server stay behind the adapter's proxy tools for that server (`mcp`, plus
+  one `mcp__linear` namespace proxy once its catalog is cached) and no Linear
+  schema is resident.
 - **Diagnostics**: `extensions/aies-agents/mcp/integration.ts` reads the adapter's
   versioned status channel and turns a missing adapter, a missing server, a disabled
   server, a failed server or missing authentication into an instruction that is real
