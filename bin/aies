@@ -53,6 +53,11 @@ bash "$AIES_REPO/scripts/bootstrap-profile.sh" >/dev/null
 export PI_CODING_AGENT_DIR="$AIES_AGENT_DIR"
 unset PI_CODING_AGENT_SESSION_DIR
 
+# The MCP adapter would otherwise merge host-global MCP configs that live outside
+# the isolated profile (~/.config/mcp/mcp.json, ~/.agents/mcp.json) and the active
+# project's .mcp.json. AIES declares exactly one MCP server, in its own profile.
+export PI_MCP_CONFIG_MODE=exclusive
+
 if [ "$print_info" -eq 1 ]; then
   printf 'AIES_REPO=%s\n' "$AIES_REPO"
   printf 'AIES_HOME=%s\n' "$AIES_HOME"

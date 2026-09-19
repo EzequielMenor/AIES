@@ -24,6 +24,10 @@ const AIES = join(REPO, "bin", "aies");
 const PI_PROFILE = join(homedir(), ".pi", "agent");
 const DEFAULT_AIES_HOME = join(homedir(), ".local", "share", "aies");
 
+/** Packages the repository template declares for the AIES profile. */
+const DECLARED_PACKAGES =
+  JSON.parse(readFileSync(join(REPO, "profile", "settings.json"), "utf8")).packages ?? [];
+
 /** Snapshot of files that must never change when AIES runs. */
 const WATCHED = ["settings.json", "auth.json", "models.json"].map((name) => join(PI_PROFILE, name));
 
@@ -159,7 +163,15 @@ describe("AIES isolation", () => {
     assert.equal(readlinkSync(extensions), join(REPO, "extensions"));
 
     const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-    assert.deepEqual(settings.packages, [], "a fresh AIES profile starts with no packages");
+    assert.deepEqual(
+      [...(settings.packages ?? [])].sort(),
+      [...DECLARED_PACKAGES].sort(),
+      "the AIES profile loads exactly the packages the repository declares and inherits nothing from the ambient profile",
+    );
+    assert.ok(
+      DECLARED_PACKAGES.includes("npm:pi-mcp-adapter"),
+      "the AIES profile loads exactly the MCP adapter it needs, and inherits nothing from the ambient profile",
+    );
   });
 
   it("stores sessions inside the isolated profile", () => {
@@ -204,9 +216,21 @@ describe("AIES isolation", () => {
       : [];
 
     const listing = runAies(env, ["list"]);
-    const leaked = ambient.filter((entry) => listing.includes(typeof entry === "string" ? entry : entry.source));
+    const source = (entry) => (typeof entry === "string" ? entry : entry.source);
 
+    // Only what the repository declares is legitimate; an ambient package is a
+    // leak unless the template also declares it.
+    const leaked = ambient.filter(
+      (entry) => !DECLARED_PACKAGES.includes(source(entry)) && listing.includes(source(entry)),
+    );
     assert.deepEqual(leaked, [], `ambient packages leaked into the AIES profile: ${JSON.stringify(leaked)}`);
+
+    const missing = DECLARED_PACKAGES.filter((entry) => !listing.includes(source(entry)));
+    assert.deepEqual(
+      missing,
+      [],
+      `the AIES profile failed to declare a required package: ${JSON.stringify(missing)}`,
+    );
   });
 
   it("leaves the ambient Pi profile untouched", () => {

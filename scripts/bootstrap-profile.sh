@@ -51,3 +51,13 @@ fi
 if [ ! -e "$AIES_AGENT_DIR/aies.json" ] && [ -e "$AIES_REPO/profile/aies.json" ]; then
   cp "$AIES_REPO/profile/aies.json" "$AIES_AGENT_DIR/aies.json"
 fi
+
+# Reconcile the declared package list and the declared MCP servers. Pi installs
+# the declared package itself on its next launch; this script never touches the
+# network. Idempotent: a second run rewrites nothing.
+if command -v node >/dev/null 2>&1; then
+  node "$AIES_REPO/scripts/seed-profile-config.mjs" "$AIES_REPO/profile" "$AIES_AGENT_DIR" \
+    || printf 'aies: profile reconciliation failed; continuing with the existing profile\n' >&2
+else
+  printf 'aies: node not found; skipping profile reconciliation\n' >&2
+fi

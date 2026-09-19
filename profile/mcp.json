@@ -1,0 +1,12 @@
+{
+  "settings": {
+    "scriptMode": false
+  },
+  "mcpServers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "auth": "oauth",
+      "lifecycle": "lazy"
+    }
+  }
+}
