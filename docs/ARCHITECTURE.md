@@ -79,13 +79,20 @@ profile.
 The smallest thing that answers "which profile am I actually running in?":
 
 - on `session_start`: a notice with the resolved agent directory;
+- on `before_agent_start`: the one resident Parent rule (AIES-010B) — answer in
+  Spanish, keep commands, code, technical names and identifiers in their original
+  language, and do not narrate internal steps the UI already shows. It is
+  appended once and skipped when already present;
 - `/aies-info`: extension path, agent dir, project config directory name, cwd,
   run mode.
 
 It asks Pi directly (`getAgentDir()`, `VERSION`, `CONFIG_DIR_NAME`) instead of
 reading `process.env`, so what it prints is Pi's own resolution, not AIES's
-assumption. The footer status line is not its business: since AIES-002 the
-runtime observer owns it, and that line starts with `AIES` too.
+assumption. The footer and the ticket header are not its business: since AIES-002
+the runtime observer owns them and renders both from one snapshot.
+
+Child sessions are created with `noExtensions: true`, so they never load this
+extension and never receive the Parent rule: their prompts stay technical.
 
 ## The runtime observer (`extensions/aies-runtime/`)
 
@@ -178,7 +185,7 @@ aies_delegate({
 |---|---|---|---|---|
 | `explore` | Read-only codebase investigation | `read`, `grep`, `find`, `ls`, `tgrep` | `bash`, `edit`, `write` | `agents/explore.md` |
 | `worker` | Concrete work unit implementation | `read`, `grep`, `find`, `ls`, `tgrep`, `edit`, `write`, guarded `bash` | Destructive/remote bash (`git clean`, `reset --hard`, `git push`, `sudo`, mass `rm`) | `agents/worker.md` |
-| `verify` | Independent proof of the real artifact | `read`, `grep`, `find`, `ls`, `tgrep`, read-only guarded `bash` | `edit`, `write`, and every mutating command (mutating git, file deletion or movement, in-place editing, dependency installation, file redirection, command substitution) | `agents/verify.md` |
+| `verify` | Independent proof of the real artifact | `read`, `grep`, `find`, `ls`, `tgrep`, read-only guarded `bash`, and the `aies_verify_complete` completion tool | `edit`, `write`, and every mutating command (mutating git, file deletion or movement, in-place editing, dependency installation, file redirection, command substitution) | `agents/verify.md` |
 
 ### Delegation lifecycle and isolation guarantees
 
@@ -213,12 +220,12 @@ Parent Session (AgentSession)
 | `extensions/aies-agents/command-guard.ts` | The command mechanics and rules Worker and Verify share, parameterised by role |
 | `extensions/aies-agents/worker-guard.ts` | Worker command policy and guarded bash tool definition |
 | `extensions/aies-agents/verify-guard.ts` | Verify read-only command policy and guarded bash tool definition |
-| `extensions/aies-agents/handoff.ts` | Structured parsers and defensive formatters for the three handoffs, plus the failure signature |
+| `extensions/aies-agents/handoff.ts` | Structured parsers and defensive formatters for the three handoffs, the Verify verdict/protocol-error split, and the failure signature |
 | `extensions/aies-agents/verification.ts` | Verification record, PASS invalidation, requirement rule, repair policy and prompts |
 | `extensions/aies-agents/model.ts` | Model resolution: env (`AIES_<ROLE>_MODEL`) > `aies.json` (`agents.<role>.model`) > parent model |
 | `extensions/aies-agents/explore.ts` | Isolated Explore child agent runner |
 | `extensions/aies-agents/worker.ts` | Isolated Worker child agent runner |
-| `extensions/aies-agents/verify.ts` | Isolated Verify child agent runner |
+| `extensions/aies-agents/verify.ts` | Isolated Verify child agent runner, including the schema-validated `aies_verify_complete` completion tool |
 | `extensions/aies-agents/routing.ts` | Parent routing policy, soft signals, and hard guardrails |
 | `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool supporting the three roles |
 | `extensions/aies-agents/index.ts` | Extension entry point: registers `aies_delegate`, the routing hooks, and the verification record |
@@ -255,9 +262,22 @@ proving: Verify has no `edit`, no `write`, and a shell that refuses to write.
 
 | Verdict | Meaning |
 |---|---|
-| `pass` | Every verifiable criterion is satisfied, the relevant checks pass, and no blocking defect is known. A PASS requires evidence: a verdict without any evidence is downgraded to `blocked` when the handoff is parsed |
+| `pass` | Every verifiable criterion is satisfied, the relevant checks pass, and no blocking defect is known. A PASS requires evidence: the completion tool rejects a PASS with no per-criterion evidence, or one carrying a blocking defect, as an `invalid_completion` protocol error rather than a verdict |
 | `fail` | The repository violates a criterion, or a reproducible defect related to the change exists, with its path and evidence |
 | `blocked` | The verdict cannot be reached for a cause external to the change: missing credential, unreachable service, unavailable dependency, unrunnable check, persistent infrastructure flake, or a genuinely ambiguous criterion |
+
+The verdict itself is captured structurally. The isolated Verify child calls the
+schema-validated completion tool `aies_verify_complete`, and the parent reads the
+captured call, not the child's final prose. Exactly one valid completion is
+authoritative: an invalid attempt is rejected host-side so the child may correct
+it once in the same turn, while a missing completion, an invalid-only sequence or
+a second valid completion is a `protocol_error`, its own fact with codes
+`missing_completion | invalid_completion | duplicate_completion | session_failure`.
+It is never read as `pass`, `fail` or `blocked`: it consumes one attempt, spends
+zero repair budget, sets the footer indicator `V:ERROR`, and `planVerification`
+stops the loop without an automatic retry. A captured verdict survives a later
+prose or provider-continuation failure, because the completion, not the stream,
+is the authority.
 
 ### Verification state and invalidation
 
@@ -266,7 +286,7 @@ for the footer.
 
 | Field | Meaning |
 |---|---|
-| `status` | `none \| running \| pass \| fail \| blocked` |
+| `status` | `none \| running \| pass \| fail \| blocked \| protocol_error` |
 | `attempts` | Verification runs started (ceiling of 4) |
 | `repairs` | Worker runs started while a FAIL was awaiting repair (ceiling of 2) |
 | `revision` | Monotonic behaviour-bearing revision: one per relevant parent mutation or Worker run. A documentation-only change does not move it |
@@ -503,6 +523,11 @@ PI_MCP_CONFIG_MODE=exclusive  ->  the adapter reads only that mcp.json
   Linear server stay behind the adapter's proxy tools for that server (`mcp`, plus
   one `mcp__linear` namespace proxy once its catalog is cached) and no Linear
   schema is resident.
+- **Presentation settings**: `profile/mcp.json` also pins the adapter's quiet
+  result mode — `toolResultRendering: "compact"`, `collapsedResultLines: 1`,
+  `notifyOnStartupConnect: false`, `mcpFooterStatus: "off"`. They change only how
+  an MCP result is drawn; the `mcp` schema, the model-visible content and the
+  parent-mediated `remote_required -> mcp -> replay` flow are unchanged.
 - **Diagnostics**: `extensions/aies-agents/mcp/integration.ts` reads the adapter's
   versioned status channel and turns a missing adapter, a missing server, a disabled
   server, a failed server or missing authentication into an instruction that is real
@@ -595,21 +620,29 @@ Session snapshot persistence records `aies-autonomy` state entries across `/resu
 
 ## Presentation layer (`extensions/aies-ui/`)
 
-AIES-010 turns the functional phases into one readable experience without adding
-intelligence. The presentation layer is pure and Pi-free; Pi remains the UI
-runtime.
+AIES-010 and AIES-010B turn the functional phases into one readable experience
+without adding intelligence. The presentation layer is pure and Pi-free; Pi
+remains the UI runtime.
 
 ```
 extensions/aies-ui/          pure: snapshot -> strings, no Pi import, no state
   paint.ts                   semantic colors behind an injected Paint adapter
   format.ts                  formatTokens, formatDuration, clip, singleLine
   vocabulary.ts              deriveStage + independent indicators
-  footer.ts                  renderFooter with width degradation
+  footer.ts                  renderFooter/renderHeader with width degradation
   activity.ts                live child card, finished line, entry data
   approval.ts                structured permission prompt
-  summary.ts                 DONE/BLOCKED cards and the /aies-status overview
-extensions/aies-runtime/     the only writer of the footer and the widget
+  summary.ts                 DONE/BLOCKED cards, /aies-status overview, /aies-run status
+extensions/aies-runtime/     the only writer of the footer, the header and the widget
 ```
+
+AIES-010B replaces the AIES `setStatus` footer segment with a full custom footer
+and adds a responsive active-ticket header, both installed by `aies-runtime` and
+both read from the same snapshot. All AIES user-facing copy is Spanish; commands,
+code, paths, identifiers, models and the technical tokens (`IDLE`..`DONE`,
+`PASS`/`FAIL`/`BLOCKED`, `V:*`, `AUTO`) stay in their original language.
+`/aies-status` defaults to the human overview and keeps the full telemetry behind
+`detalle`/`all`.
 
 ### Authority boundary
 
@@ -631,14 +664,15 @@ One stage dimension: `IDLE, EXPLORE, WORK, VERIFY, REPAIR, WAIT, BLOCKED, DONE`,
 derived by `deriveStage` from the active delegation, the verification record and
 the autonomy stop reason, in that documented order. Autonomy (`AUTO`), context
 health (`ctx 42k`, `ctx 104k !`, `compactando…`), verification (`V:PASS`,
-`V:FAIL`, `V:STALE`) and permissions (`PERM`, `SANDBOX OFF`) are independent
-indicators and are never folded into the stage.
+`V:FAIL`, `V:STALE`, `V:ERROR`) and permissions (`PERM`, `SANDBOX OFF`) are
+independent indicators and are never folded into the stage.
 
 ### Pi surfaces and ownership
 
 | Surface | Pi API | Owner | Lifetime |
 |---|---|---|---|
-| Footer segment `aies` | `ctx.ui.setStatus` | `aies-runtime` | until cleared or session end |
+| Custom footer | `ctx.ui.setFooter` | `aies-runtime` | until cleared or session end |
+| Ticket header | `ctx.ui.setHeader` | `aies-runtime` | until cleared or session end |
 | Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs, plus a 60s tail |
 | Finished child / DONE / BLOCKED entries | `pi.appendEntry` + `pi.registerEntryRenderer` | `aies-runtime` | persisted in the session file |
 | Permission prompt | `ctx.ui.confirm` | `aies-agents` | until answered |
@@ -647,21 +681,36 @@ One timer exists, owned by `aies-runtime`: 1s while a child is active, 5s
 otherwise, cleared on shutdown and unreferenced so it can never hold the process
 open.
 
+### AIES tool rendering
+
+Only the two AIES-owned tools receive presentation hooks. `aies_ticket` and
+`aies_delegate` define `renderCall`/`renderResult` that project structured args
+and details into one compact Spanish row, hide settled chrome, keep a real error
+visible when collapsed, and print the original content byte-identical when
+expanded. The hooks never touch execution, `content`, `details`, the error flag or
+the schema, and they never send a conversation message. Generic Pi tools keep
+Pi's own rendering; the external `mcp` tool is not wrapped or replaced. The
+adapter's quiet result mode is pinned in `profile/mcp.json` (see above), which
+changes only the drawing of an MCP result.
+
 ### No context pollution
 
 Pi distinguishes a *message* (`pi.sendMessage`, which participates in the LLM
 context) from a *custom entry* (`pi.appendEntry`, documented as not sent to the
 LLM). AIES uses `sendMessage` for zero UI purposes. Progress, the live card, the
-finished-child line and the DONE/BLOCKED summaries use `setStatus`, `setWidget`,
-`notify` and `appendEntry` + `registerEntryRenderer`, so everything the human
-watches stays invisible to the model. `tests/aies-ui-seam.test.mjs` fails if any
-UI path starts sending messages.
+finished-child line and the DONE/BLOCKED summaries use `setFooter`, `setHeader`,
+`setWidget`, `notify` and `appendEntry` + `registerEntryRenderer`, so everything
+the human watches stays invisible to the model. `tests/aies-ui-seam.test.mjs`
+fails if any UI path starts sending messages, and fails if the retired
+`setStatus` is used again.
 
 ### Degradation
 
 - Narrow terminal: the footer drops segments by documented priority
-  (`V:PASS` -> `AUTO` -> stage -> `ctx`) and keeps identity, ticket and alarms;
-  the activity card clips its subtitle.
+  (model -> cwd -> `V:PASS` -> `AUTO` -> stage -> `ctx`) and keeps identity,
+  ticket and alarms (`V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`, `SANDBOX OFF`);
+  the ticket header collapses to one line and the activity card clips its
+  subtitle.
 - No UI (print, json, RPC without dialogs): no widget, no status, no entries. The
   workflow is unchanged and `/aies-status` still answers.
 - A failing projection is swallowed: observation is optional, Pi's behaviour is not.
@@ -686,12 +735,24 @@ the real Pi profile), so the suite proves both isolation and override.
 | verification invariants (AIES-005) | the read-only command policy, the handoff rules, PASS invalidation, the repair budget and the repeated-failure stop, driven directly (`tests/verify.test.mjs`) |
 | verification end to end | Parent -> Worker leaves a real defect -> Verify FAIL -> repair -> fresh Verify PASS on a fixture (`tests/smoke-verify.test.mjs`) |
 | presentation invariants (AIES-010) | footer vocabulary and width degradation, stage derivation, activity lifecycle, approval prompt and DONE/BLOCKED summaries, driven directly from real snapshots (`tests/aies-ui.test.mjs`) |
-| presentation is context-free (AIES-010) | a fake `ExtensionAPI` records every call; the UI path must use only `setStatus`/`setWidget`/`appendEntry`/`notify` and never `sendMessage` (`tests/aies-ui-seam.test.mjs`) |
+| presentation is context-free (AIES-010) | a fake `ExtensionAPI` records every call; the UI path must use only `setFooter`/`setHeader`/`setWidget`/`appendEntry`/`notify` and never `sendMessage`, and it fails if the retired `setStatus` is used (`tests/aies-ui-seam.test.mjs`) |
+| Verify completion authority (AIES-010B) | the schema-validated `aies_verify_complete` tool as the sole verdict source, `protocol_error` separated from `pass`/`fail`/`blocked`, one attempt with zero repairs and no rerun, and a captured verdict that survives a failing final prose (`tests/verify.test.mjs`, `tests/smoke-verify.test.mjs`) |
+| Spanish presentation (AIES-010B) | the resident Parent rule, the Spanish identity/footer/status/approval copy, the responsive ticket header, and the absence of a raw child summary in the card or entry, driven directly (`tests/spanish-ux.test.mjs`) |
+| AIES tool rendering (AIES-010B) | `aies_ticket`/`aies_delegate` compact pending/success/error rows, visible collapsed errors and byte-identical expanded content (`tests/tool-rendering.test.mjs`), plus the effective compact MCP presentation settings (`tests/isolation.test.mjs`) |
 | skills policy | RPC `get_commands` contains zero `source: "skill"` entries |
 | package isolation | `aies list` output excludes every package of the ambient profile |
 | non-regression | sha256 of the ambient profile's `settings.json`, `auth.json`, `models.json` and the session directory listing are unchanged |
 
-No credentials and no model calls are involved, so the suite runs anywhere.
+No credentials and no model calls are involved, so the suite runs anywhere. The
+checks above are unit and integration checks: they prove the wiring, not a live
+Linear workflow. The shell additionally ran by hand in a real TUI — `/aies-status`
+and `/aies-status detalle` render in Spanish in cmux, and the shell renders
+correctly in an 80-column `tmux`. The end-to-end ticket smoke did **not** finish:
+in the isolated profile the only CLI model credential returned an Anthropic 401
+invalid API key, so the `EZE-422` workflow stopped before any AIES tool executed
+and the ticket remains `In Progress`. That is an environment credential failure,
+not a product defect, and nothing here should be read as a verified real Linear
+`Done`.
 
 ## Generated versus versioned
 

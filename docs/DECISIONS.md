@@ -383,6 +383,98 @@ Parent retains model API keys and coordinates from the host; child tool executio
 
 ---
 
+## D18 - AIES-010B presentation shell: a full Spanish shell, quiet AIES plumbing, and UI-only MCP settings
+
+**Decision.**
+1. While an AIES session is active, `aies-runtime` installs a full custom footer
+   with `ctx.ui.setFooter` and a responsive active-ticket header with
+   `ctx.ui.setHeader`, and restores Pi's built-in footer and header on shutdown.
+   The AIES `setStatus` segment is retired. Both surfaces render from the same
+   snapshot (this refines D16 item 2, which owned a footer status key) and feed no
+   workflow decision.
+2. All AIES user-facing copy is Spanish. Commands, code, paths, identifiers,
+   models, the stage tokens (`IDLE`..`DONE`), the verdict tokens
+   (`PASS`/`FAIL`/`BLOCKED`), the `V:*` indicators and `AUTO` stay in their
+   original language.
+3. One short resident rule is appended to the Parent system prompt once per agent
+   start (`before_agent_start`, idempotent): answer in Spanish, keep technical
+   identifiers in their original language, and do not narrate steps the UI already
+   shows. Children are created with `noExtensions: true` and never receive it, so
+   their prompts stay technical.
+4. AIES-owned tool plumbing renders quietly. `aies_ticket` and `aies_delegate`
+   receive presentation-only `renderCall`/`renderResult` hooks that never mutate
+   execution results, `content`, `details`, the error flag or the schema; expanded
+   detail is the original text unchanged; a real error stays visible when
+   collapsed; an unknown internal error code degrades to a safe Spanish phrase;
+   generic Pi tools keep Pi's rendering; and the external `mcp` tool is not
+   wrapped or replaced.
+5. The adapter's quiet result mode is pinned in `profile/mcp.json`
+   (`toolResultRendering: "compact"`, `collapsedResultLines: 1`,
+   `notifyOnStartupConnect: false`, `mcpFooterStatus: "off"`). These are
+   presentation settings only: the `mcp` schema, the model-visible content and the
+   parent-mediated `remote_required -> mcp -> replay` flow are unchanged.
+6. `/aies-status` keeps the human overview as the default and the full telemetry
+   behind `detalle`/`all`; both read the same snapshot and cannot disagree.
+
+**Why.** The AIES-010 footer was a status segment that grew one segment per
+phase and mixed Spanish and English inside a single line, while AIES-owned tool
+plumbing printed raw contract text and internal error codes next to Pi's native
+tool rows. A presentation phase should make the AIES workflow legible without
+changing the workflow: a single shell, Spanish copy for the human, and quiet rows
+with the raw content one expansion away. Pinning the MCP result mode in the
+profile is the only admissible way to influence the adapter's drawing, because an
+extension cannot wrap an arbitrary tool it does not own.
+
+**Consequence.** Fewer always-visible elements remain, while the human still gets
+the same information on demand and the technical identifiers keep their meaning.
+No behavioural authority changes: routing, verification, permissions, sandbox,
+Context Governor thresholds, Linear policy, autonomy and the repair budget keep
+their semantics. Detailed reference: `docs/UX.md` §§5, 9, 13, 21 and 22.
+
+---
+
+## D19 - Verify completion authority: one tool call is the verdict, a protocol error is not a verdict
+
+**Decision.**
+1. The isolated Verify child reports its verdict through the schema-validated
+   tool `aies_verify_complete`, after inspecting the artifact and running the
+   checks; the prompt instructs a single call. Exactly one valid completion is
+   authoritative, and the parent reads the captured call, never the child's final
+   prose, which may be empty or malformed.
+2. A missing completion, an invalid-only sequence or a second valid completion is
+   a `protocol_error`, its own fact with codes `missing_completion |
+   invalid_completion | duplicate_completion | session_failure`. It carries no
+   domain status and is never read as `pass`, `fail` or `blocked`.
+3. A captured verdict survives a later prose or provider-continuation failure:
+   the completion, not the stream, is the authority.
+4. A protocol error consumes one verification attempt, spends zero repair budget,
+   sets the verification status `protocol_error` (footer indicator `V:ERROR`), and
+   `planVerification` stops the loop without an automatic retry.
+5. A `pass` is still validated host-side: it must represent and pass every supplied
+   criterion, each with its own non-empty evidence, and it must not carry a
+   blocking defect. The completion tool rejects an invalid attempt so the child may
+   correct it once in the same turn, while a second valid completion is a protocol
+   error.
+
+**Why.** The AIES-010B baseline reproduced the failure this decision removes: on
+`EZE-422`, Verify's substantive evidence passed, but malformed final JSON was
+converted into a domain `blocked` verdict and retried three times. Treating a
+handoff failure as a verdict fabricates a domain signal from a protocol fault,
+and retrying a malformed completion burns budget on a formatting problem. Making
+one validated tool call the sole authority, and giving a handoff failure its own
+non-domain fact, keeps PASS/FAIL/BLOCKED honest and stops the loop instead of
+mislabeling it.
+
+**Consequence.** A protocol fault surfaces to the human as `V:ERROR` /
+`error de protocolo`; the parent does not retry automatically and must fix the
+Verify configuration or re-delegate the verification. `pass`, `fail` and
+`blocked` keep their existing meaning, evidence rules and repair budget. This
+supersedes the D11 rule that a PASS without evidence is downgraded to `blocked`:
+a PASS without evidence is now rejected as an `invalid_completion` protocol
+error, never silently turned into a different domain verdict.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

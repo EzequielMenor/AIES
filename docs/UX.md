@@ -32,16 +32,19 @@ AIES adds no terminal renderer of its own. It uses Pi's public extension API:
 
 | Surface | Pi API | Lifetime |
 |---|---|---|
-| Footer segment | `ctx.ui.setStatus(key, text)` | until cleared or session end |
+| Custom footer | `ctx.ui.setFooter(factory)` | until cleared or session end |
+| Ticket header | `ctx.ui.setHeader(factory)` | until cleared or session end |
 | Widget above/below the editor | `ctx.ui.setWidget(key, factory or lines, { placement })` | until cleared |
 | Durable transcript line | `pi.appendEntry(type, data)` + `pi.registerEntryRenderer(type, fn)` | persists in the session file |
 | Transient notification | `ctx.ui.notify(text, level)` | until it scrolls away |
 | Interactive dialog | `ctx.ui.select` / `confirm` / `input` / `custom` | until answered |
 | Theme colors | `ctx.ui.theme.fg(color, text)` | per render |
 
-Pi's own surfaces (transcript, tool rows, editor, spinner, compaction loader,
-keybindings) stay Pi's. AIES does not replace the footer, the editor, or the
-header.
+Pi's own surfaces (transcript, generic tool rows, editor, spinner, compaction
+loader, keybindings) stay Pi's. While an AIES session is active, AIES installs
+its own footer and ticket header — both rendered from the same snapshot — and
+restores Pi's built-in footer and header on shutdown. The editor is never
+replaced.
 
 ### The no-context-pollution guarantee
 
@@ -55,7 +58,7 @@ Pi keeps two different things apart:
   `registerEntryRenderer` draws it in the transcript for the human.
 
 AIES uses `sendMessage` for exactly zero UI purposes. Progress, activity cards,
-permission notices, and completion summaries go through `setStatus`,
+permission notices, and completion summaries go through `setFooter`, `setHeader`,
 `setWidget`, `notify`, or `appendEntry` + `registerEntryRenderer`. Everything the
 human sees about progress is therefore invisible to the model, and no
 "Worker started / Worker completed" line is ever billed as context.
@@ -106,7 +109,7 @@ answers *"where is the work?"*; indicators answer *"what else is true?"*.
 
 | Stage | Meaning | Color |
 |---|---|---|
-| `IDLE` | nothing in flight | none (footer shows `ready`) |
+| `IDLE` | nothing in flight | none (footer shows `listo`) |
 | `EXPLORE` | an Explore child is running | accent |
 | `WORK` | a Worker child is running for a change not under repair | accent |
 | `REPAIR` | a Worker child is running while a Verify FAIL is open | accent |
@@ -135,25 +138,31 @@ Indicators are never folded into the stage:
 | `AUTO` | on / off | only when autonomy is enabled |
 | context | `ctx 42k` / `ctx 104k !` | always |
 | compaction | `compactando…` | while compacting |
-| verification | `V:PASS`, `V:FAIL`, `V:STALE` | only when it adds information |
+| verification | `V:PASS`, `V:FAIL`, `V:STALE`, `V:ERROR` | only when it adds information |
 | permissions | `PERM` | only after a denial |
 
 `V:BLOCKED`, `V:?` and `V:none` are deliberately **not** footer vocabulary: when a
-verification is blocked or running, the stage already says it.
+verification is blocked or running, the stage already says it. `V:ERROR` is the
+exception: a verification protocol fault is not the stage's to express, so it
+keeps its own indicator.
 
-## 5. Footer
+## 5. Shell: footer and ticket header
+
+While an AIES session is active, `aies-runtime` installs a custom footer with
+`ctx.ui.setFooter`, replacing Pi's built-in footer (the older AIES `setStatus`
+segment is gone) and restoring the original on shutdown. It is one line:
 
 ```
-AIES · EZE-417 · WORK · ctx 42k · AUTO
-AIES · EZE-417 · VERIFY · ctx 45k · AUTO
-AIES · EZE-417 · DONE · ctx 46k
-AIES · ready · ctx 31k
+❈ AIES · EZE-417 · WORK · ctx 42k · AUTO
+❈ AIES · EZE-417 · VERIFY · ctx 45k · AUTO
+❈ AIES · EZE-417 · DONE · ctx 46k
+❈ AIES · listo · ctx 31k
 ```
 
 - One line. Never a second line, never a panel, never `key=value`.
-- `ready` appears only when the stage is `IDLE`. While work is in flight and there
-  is no ticket, the line simply omits the token (`AIES · EXPLORE · ctx 42k`):
-  `ready` next to `EXPLORE` would read as a contradiction.
+- `listo` appears only when the stage is `IDLE`. While work is in flight and there
+  is no ticket, the line simply omits the token (`❈ AIES · EXPLORE · ctx 42k`):
+  `listo` next to `EXPLORE` would read as a contradiction.
 - `V:PASS` is printed when it is the newest thing worth knowing — and suppressed
   when the stage is already `DONE`, which means exactly the same thing. Once a
   parent mutation invalidates the PASS, the stage reverts to `IDLE` and the line
@@ -163,6 +172,8 @@ AIES · ready · ctx 31k
 - No percentages, no ceiling, no `peak:`, no tool counts, no elapsed time. Elapsed
   time belongs to the activity card (§6) and to `/aies-status`.
 - Autonomy is silent when off: there is no `AUTO OFF`.
+- The parent model and a compact cwd are opportunistic: appended only when the
+  terminal leaves room, and the first two segments the width degradation drops.
 
 ### Narrow terminals
 
@@ -171,19 +182,40 @@ segment until the line fits, then truncates as a last resort.
 
 | Segment | Drop priority |
 |---|---|
-| `V:PASS` | dropped first |
+| model | dropped first |
+| compact cwd | next |
+| `V:PASS` | next |
 | `AUTO` | next |
 | stage | next |
 | `ctx N` | next (the bare number is tried before dropping) |
-| `AIES`, ticket, alarms (`ctx N !`, `compactando…`, `V:FAIL`, `V:STALE`, `PERM`, `SANDBOX OFF`) | never dropped |
+| `AIES`, ticket, alarms (`ctx N !`, `compactando…`, `V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`, `SANDBOX OFF`) | never dropped |
 
 A segment that is itself an alarm is never dropped, and the pressured context
 segment stops being droppable: at 32 columns the line reads
-`AIES · EZE-417 · ctx 104k ! · c…` rather than silently losing the warning. Below
+`❈ AIES · EZE-417 · ctx 104k ! · c…` rather than silently losing the warning. Below
 that, the tail is clipped; identity, ticket and the leading alarm survive.
 
 Width is measured on the plain text before painting, so no ANSI dependency is
 needed to decide what fits.
+
+### Ticket header
+
+`aies-runtime` also installs a small header with `ctx.ui.setHeader`, rendered
+from the same snapshot as the footer and showing the active ticket identity:
+
+```
+╭─ ❈ EZE-417 ─────────────────────────────────────────╮
+│ Implement first-run guidance                        │
+│ In Progress · AUTO                                  │
+╰─────────────────────────────────────────────────────╯
+```
+
+- No active ticket means no header lines at all.
+- Below 60 columns it collapses to one compact line
+  (`EZE-417 · In Progress · AUTO`); otherwise the boxed identity grows to at most
+  64 columns.
+- The header is identity, not workflow: like the footer it is a projection and
+  never feeds a decision.
 
 ## 6. Agent activity
 
@@ -213,8 +245,11 @@ reading its transcript.*
 - Exactly one widget, key `aies-activity`, above the editor.
 - Updated in place by re-rendering from state; never a new message per event.
 - No tool calls, no file reads, no reasoning, no transcript.
-- The "what it is doing" line is the delegation's own `task` text, clipped to the
-  available width. It is authority, not a decorated guess.
+- The "what it is doing" line prefers the active ticket title for a Worker (so a
+  Parent-authored English task prompt does not leak into the default UI), then
+  the delegation's own `task` text, then a Spanish role phrase, clipped to the
+  available width. A Verify card reports its criterion count instead. It is
+  authority, not a decorated guess.
 - Elapsed time comes from the single runtime timer.
 
 ### Finished (briefly, then durable)
@@ -247,6 +282,9 @@ transcript through `appendEntry` + `registerEntryRenderer`. It costs no context,
 survives session reload, and is what remains once the widget is gone. Ten
 children produce ten short lines, not ten cards.
 
+Both the card and the durable line render structured facts only. A child's
+free-form `summary` is never re-rendered; it stays in the internal handoff.
+
 ### Glyphs
 
 ```
@@ -275,9 +313,18 @@ transcript through Pi's own tool rows.
 Verify must be unmistakable:
 
 ```
-✓ Verify · PASS · 00:27        ✗ Verify · FAIL              ! Verify · BLOCKED
-  4/4 criterios                  1 defecto bloqueante        la verificación no pudo concluir
+✓ Verify · PASS · 00:27     ✗ Verify · FAIL              ! Verify · BLOCKED                    ⚠ Verify · ERROR
+  4/4 criterios               1 defecto bloqueante        la verificación no pudo concluir     error de protocolo
 ```
+
+The verdict is never read from the child's prose. The isolated Verify child must
+produce one valid `aies_verify_complete` call, and the parent reads that captured
+call. One invalid attempt may be corrected in the same turn; a missing completion,
+an invalid-only completion or a second valid completion is a
+`protocol_error`, shown as `V:ERROR` / `error de protocolo` — never `PASS`,
+`FAIL` or `BLOCKED`. It consumes one attempt, spends zero repair budget and stops
+the loop without an automatic retry, so a malformed handoff cannot fabricate a
+domain verdict or burn repair cycles.
 
 Repair is a stage transition, not a controller trace. The sequence
 
@@ -370,28 +417,28 @@ zeros omitted, no duplicated fact.
 AIES
 
 Ticket
-  identifier        EZE-417
-  status            In Progress
-  title             Implement first-run guidance
+  id                EZE-417
+  situación         In Progress
+  título            Implement first-run guidance
 
-Run
-  stage             DONE · autonomía activa
+Ejecución
+  etapa             DONE · autonomía activa
   transcurrido      04:20 · continuaciones 3
 
 Verificación
   estado            PASS
   intentos          1
-  repairs           1 / 2
+  reparaciones      1 / 2
 
 Contexto
   actual            42k / 150k · verde
-  peak              51k
-  compactions       0
+  pico              51k
+  compactaciones    0
 
 Agentes
-  explore           done
-  worker            done
-  verify            done
+  explore           terminado
+  worker            terminado
+  verify            terminado
 
 Permisos
   sandbox           active
@@ -401,9 +448,9 @@ Permisos
 Rules:
 
 - Sections are omitted when they have no value (`Ticket` without a ticket,
-  `Verificación` before anything ran, `Agentes` with no delegations). `Run` is the
-  one exception: the stage is the headline answer to "what is it doing?", so it
-  is always printed, and a stopped autonomy always carries why it stopped.
+  `Verificación` before anything ran, `Agentes` with no delegations). `Ejecución`
+  is the one exception: the stage is the headline answer to "what is it doing?",
+  so it is always printed, and a stopped autonomy always carries why it stopped.
 - Rows keep the `  <label><value>` layout so the same reader works in the terminal
   and in tests.
 - Autonomy stop reasons are printed in Spanish (`necesita tu intervención`), never
@@ -460,11 +507,11 @@ commands printing the same report is the duplication this phase removes.
 extensions/aies-ui/            pure presentation, no Pi import, no state
   format.ts                    formatTokens, formatDuration, clip, paint adapter
   vocabulary.ts                deriveStage, indicators
-  footer.ts                    renderFooter + width degradation
+  footer.ts                    renderFooter/renderHeader + width degradation
   activity.ts                  live card, finished line, entry data
   approval.ts                  renderApprovalPrompt
-  summary.ts                   DONE / BLOCKED cards, /aies-status report
-extensions/aies-runtime/       the only writer of the footer and the widgets
+  summary.ts                   DONE / BLOCKED cards, /aies-status overview, /aies-run status
+extensions/aies-runtime/       the only writer of the footer, the header and the widget
   index.ts                     Pi events -> state -> strings
 extensions/aies-agents/        feeds the approval prompt with the policy reason
 ```
@@ -473,9 +520,9 @@ Rules:
 
 - `aies-ui` imports nothing from Pi and holds no state. Every function is
   `state -> string`.
-- Exactly one owner per Pi surface: `aies-runtime` owns the footer key `aies`,
-  the widget key `aies-activity` and the entry renderers; `aies-agents` owns the
-  approval dialog.
+- Exactly one owner per Pi surface: `aies-runtime` owns the footer, the ticket
+  header, the widget key `aies-activity` and the entry renderers; `aies-agents`
+  owns the approval dialog.
 - Painting is injected (`Paint`), so the same renderer works uncolored in tests
   and headless.
 - No `packages/ui`, no component registry, no virtual DOM, no state management.
@@ -645,3 +692,53 @@ calls, not a prompt. `/aies-run` still starts the work itself when it can, so an
 in-process transport stays synchronous.
 
 Headless modes (`print`, `json`, `rpc`) never try to start an OAuth flow.
+
+## 21. Language: Spanish UX, original technical identifiers
+
+AIES user-facing copy is Spanish. That rule lives in one place: a single resident
+instruction appended to the Parent system prompt once per agent start
+(`before_agent_start`, idempotent):
+
+> Responde siempre al usuario en castellano. Mantén comandos, código, nombres
+> técnicos e identificadores en su idioma original. No narres pasos internos si
+> la UI ya los representa.
+
+Child sessions are created with `noExtensions: true`, so they never receive it and
+their prompts stay technical.
+
+The boundary is deliberate:
+
+| Spanish (visible UX) | Original language (technical) |
+|---|---|
+| Footer words (`listo`, `compactando…`), overview labels and section titles (`Ejecución`, `Verificación`, `Contexto`, `Agentes`, `Permisos`) | Stage tokens `IDLE`..`DONE`, `AUTO`, verdict tokens `PASS`/`FAIL`/`BLOCKED`, indicators `V:*` |
+| Activity facts (`3 archivos modificados`, `checks aprobados`, `4/4 criterios`) | Ticket identifiers (`EZE-417`), Linear `status` values, model ids, session ids |
+| Approval dialog (`AIES necesita permiso`, `Permitir una vez`, `Denegar`) and telemetry labels in `/aies-status detalle` | Commands, code, paths, tool names and technical telemetry values such as model, zone and sandbox identifiers |
+
+A raw internal code never reaches the visible row: known Linear error codes map to
+a short Spanish phrase and an unknown code degrades to a safe fallback.
+
+## 22. Quiet AIES tool rendering and MCP presentation settings
+
+AIES-owned plumbing is compact by default; the raw content stays one expansion
+away.
+
+| Tool | Collapsed | Expanded |
+|---|---|---|
+| `aies_ticket` | one row: pending (`⟳ EZE-422 · cargando…`), settled (`✓ EZE-422 · cargado`), a `remote_required` handoff (`→ Linear · <tool>`) or a visible error (`✗ EZE-422 · verificación denegada`) | the complete original text, byte-identical |
+| `aies_delegate` | one short role line before the card exists (`◆ Worker · trabajando…`), nothing on success once the activity card owns the surface, or a visible failure (`✗ Worker · falló`) | the complete original handoff, byte-identical |
+
+Boundaries:
+
+- Presentation hooks change only the human projection. They never mutate the
+  execution result, `content`, `details`, the error flag or the schema.
+- Errors stay visible; only routine success and intermediate plumbing collapse.
+  A Verify protocol fault reads `error de protocolo de verificación`.
+- Generic Pi tools keep Pi's own rendering. AIES does not wrap or replace Pi's
+  tool rows for tools it does not own, and the external `mcp` tool is not wrapped
+  at all.
+- Renderers never send a conversation message: no UI path calls `sendMessage`.
+- The adapter's quiet result mode is pinned in `profile/mcp.json` —
+  `toolResultRendering: "compact"`, `collapsedResultLines: 1`,
+  `notifyOnStartupConnect: false`, `mcpFooterStatus: "off"`. These are
+  presentation settings only: the `mcp` schema and the parent-mediated
+  `remote_required → mcp → replay` flow are unchanged.
