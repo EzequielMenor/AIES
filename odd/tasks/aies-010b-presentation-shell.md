@@ -44,7 +44,7 @@ Only these documentation files may change:
 | T1 Baseline and design map | complete | Audited the latest real EZE-422 session, quantified visible noise, re-audited exact gentle-pi 3.2.1 and Pi 0.85.1 APIs, and froze the presentation/protocol seams below. | `11fd177` |
 | T2 Spanish shell and ticket identity | complete | Added the resident Spanish rule, responsive ticket header and AIES footer, Spanish status/approval/DONE/BLOCKED projections, safer agent-card copy and invariant tests. | `bba2ede` |
 | T3 Quiet AIES plumbing and agent cards | complete | Added compact Spanish `aies_ticket` rendering, card-first `aies_delegate` rendering, visible collapsed errors, complete expanded detail and effective compact Linear MCP settings. | `89a0c0f` |
-| T4 Verify protocol hardening | pending | Reproduce the EZE-422 false BLOCKED, separate verdict from handoff failure, recover mechanically without rerunning Verify, and add regression coverage. | — |
+| T4 Verify protocol hardening | complete | Reproduced EZE-422, made a schema-validated child completion tool the sole verdict authority, separated `protocol_error` from domain verdicts, and prevented repair/retry on protocol faults. | `73af9e3` |
 | T5 Documentation and real-run evidence | pending | Update the three allowed docs, run full/isolation/headless/PTY checks, perform the safe real E2E smoke, capture before/after metrics and close the task record. | — |
 
 ## Baseline EZE-422
@@ -134,6 +134,9 @@ converted into a domain `blocked` verdict and retried three times.
 - T2 native review lineage `review-19dac445e85037cd` could not capture its reviewer because the Pi host relay returned `MissingSessionID` twice; no review verdict or authority acknowledgement was produced.
 - T3 focused verification: 86/86 pass; independent full verification: 411/411 pass plus isolation and shell syntax.
 - T3 native review lineage `review-f74ac7fe1328db6d` could not capture its reviewer because the Pi host relay returned `MissingSessionID`; no review verdict or authority acknowledgement was produced.
+- T4 deterministic regression and smoke verification: 212/212 focused checks and 439/439 full/isolation checks pass; shell syntax passes.
+- T4 independent verifier confirmed the EZE-422 free-form PASS pattern now becomes `protocol_error` once, with zero repairs and no automatic rerun; captured tool verdicts survive malformed or failing final prose.
+- T4 native review lineage `review-8f0a4e587dc336a6` could not capture its reviewer because the Pi host relay returned `MissingSessionID`; no review verdict or authority acknowledgement was produced.
 - Real baseline session located at:
   `~/.local/share/aies/agent/sessions/--Users-ezequielmenor-Proyectos-Developer-aies-smoke--/2026-09-19T14-37-13-751Z_01a0ba19-9497-7401-8142-d9e10e631d26.jsonl`.
 
