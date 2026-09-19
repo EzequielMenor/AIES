@@ -49,7 +49,6 @@ import { createTicketTool } from "../extensions/aies-agents/linear/tool.ts";
 import {
   FakeLinearTransport,
   LinearTransportError,
-  McpLinearTransport,
 } from "../extensions/aies-agents/linear/transport.ts";
 // LinearIssueRaw type omitted in .mjs test file
 import { isCommandPermittedInWorker } from "../extensions/aies-agents/worker-guard.ts";

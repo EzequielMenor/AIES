@@ -1,20 +1,29 @@
 /**
  * AIES-008: Linear Transport Layer.
  *
- * Separates transport mechanics from workflow policy.
- * Provides:
- * - LinearTransport interface
- * - LinearTransportError classification
- * - FakeLinearTransport (in-memory deterministic fake for test suite)
- * - McpLinearTransport (MCP proxy/tool integration for runtime)
+ * Separates transport mechanics from workflow policy. Provides:
+ * - `LinearTransport`: the policy-facing seam, kept fakeable for tests.
+ * - `LinearTransportError`: typed failure classification.
+ * - `FakeLinearTransport`: deterministic in-memory transport for the test suite.
+ * - `HostMediatedLinearTransport`: the runtime transport.
+ *
+ * AIES owns no MCP transport. Pi exposes no programmatic tool invocation to
+ * extensions, so the only MCP client in an AIES session is the Parent agent,
+ * through the `mcp` proxy tool registered by `pi-mcp-adapter`. The runtime
+ * transport therefore never sends a request: it declares the exact MCP call it
+ * needs and fails with `remote_required`, the Parent performs that call and hands
+ * its result back, and the interrupted operation is replayed over the accumulated
+ * answers until it completes. Replay is pure, because every remote value comes
+ * from an answer the Parent already supplied.
  */
 
-import type { LinearIssueRaw, LinearIssueUpdate, LinearStatus } from "./types.ts";
+import type { LinearIssueRaw, LinearIssueUpdate, LinearRemoteDirective, LinearStatus } from "./types.ts";
 
 export type LinearErrorCode =
   | "not_found"
   | "auth_unavailable"
   | "mcp_unavailable"
+  | "remote_required"
   | "permission_denied"
   | "network_failure"
   | "invalid_transition"
@@ -22,12 +31,26 @@ export type LinearErrorCode =
 
 export class LinearTransportError extends Error {
   readonly code: LinearErrorCode;
+  /** Present for `remote_required`: the exact call the Parent has to perform. */
+  readonly directive?: LinearRemoteDirective;
 
-  constructor(code: LinearErrorCode, message: string, options?: { cause?: unknown }) {
-    super(message, options);
+  constructor(
+    code: LinearErrorCode,
+    message: string,
+    options?: { cause?: unknown; directive?: LinearRemoteDirective },
+  ) {
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "LinearTransportError";
     this.code = code;
+    this.directive = options?.directive;
   }
+}
+
+/** A missing remote value the Parent has to fetch through the MCP proxy tool. */
+export function isLinearRemoteRequired(
+  error: unknown,
+): error is LinearTransportError & { directive: LinearRemoteDirective } {
+  return error instanceof LinearTransportError && error.code === "remote_required" && error.directive !== undefined;
 }
 
 export interface LinearTransport {
@@ -173,122 +196,148 @@ export class FakeLinearTransport implements LinearTransport {
   }
 }
 
+/** MCP server AIES declares for Linear in `profile/mcp.json`. */
+export const LINEAR_MCP_SERVER = "linear";
+
+/** Linear MCP tool names whose arguments were verified against the live server. */
+const LINEAR_TOOLS = {
+  getIssue: "get_issue",
+  saveIssue: "save_issue",
+  listIssueStatuses: "list_issue_statuses",
+  saveComment: "save_comment",
+} as const;
+
+/** Stable identity of one MCP call: same server, same tool, same arguments. */
+export function linearRemoteKey(server: string, tool: string, args: Record<string, unknown>): string {
+  const rendered = Object.keys(args)
+    .sort()
+    .map((key) => `${key}=${JSON.stringify(args[key]) ?? "null"}`);
+  return rendered.length > 0 ? `${server}:${tool}(${rendered.join(",")})` : `${server}:${tool}`;
+}
+
+function asTextParts(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const texts: string[] = [];
+  for (const part of value) {
+    if (!part || typeof part !== "object" || typeof (part as { text?: unknown }).text !== "string") return undefined;
+    texts.push((part as { text: string }).text);
+  }
+  return texts.join("");
+}
+
+function parseJsonPayload(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * MCP-backed transport reusing existing MCP infrastructure or proxy.
+ * Reduce whatever the Parent hands back from the `mcp` proxy tool to the payload
+ * the Linear tool actually returned: a JSON text part, a structured result, or the
+ * value itself.
  */
-export type McpToolCaller = (
-  server: string,
-  tool: string,
-  args: Record<string, unknown>,
-) => Promise<unknown>;
+export function unwrapMcpAnswer(value: unknown): unknown {
+  if (typeof value === "string") return parseJsonPayload(value) ?? value;
+  if (Array.isArray(value)) return parseJsonPayload(asTextParts(value) ?? "") ?? value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const text = asTextParts(record.content);
+    if (text !== undefined) {
+      const parsed = parseJsonPayload(text);
+      return parsed !== undefined ? parsed : text;
+    }
+    if (record.structuredContent !== undefined) return record.structuredContent;
+  }
+  return value;
+}
 
-export class McpLinearTransport implements LinearTransport {
-  private toolCaller?: McpToolCaller;
+/**
+ * Read a Parent-supplied answer. The key is optional: the answer may be the bare
+ * value for the pending call, or `{ key, value }` to name the call explicitly.
+ */
+export function readRemoteAnswer(value: unknown): { key?: string; value: unknown } {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as { key?: unknown; value?: unknown };
+    if (typeof record.key === "string" && record.key.trim() && "value" in record) {
+      return { key: record.key.trim(), value: record.value };
+    }
+  }
+  return { value };
+}
 
-  constructor(toolCaller?: McpToolCaller) {
-    this.toolCaller = toolCaller;
+function normalizeStatuses(value: unknown): LinearStatus[] {
+  if (Array.isArray(value)) return value as LinearStatus[];
+  if (value && typeof value === "object") {
+    const record = value as { statuses?: unknown; states?: unknown; nodes?: unknown };
+    for (const candidate of [record.statuses, record.states, record.nodes]) {
+      if (Array.isArray(candidate)) return candidate as LinearStatus[];
+    }
+  }
+  return [];
+}
+
+/**
+ * Runtime Linear transport.
+ *
+ * Every call is answered from work the Parent already completed, or fails with a
+ * `remote_required` directive for the first call that is still missing. It never
+ * opens a connection, never holds a credential and never reads the environment.
+ */
+export class HostMediatedLinearTransport implements LinearTransport {
+  private readonly answers: Readonly<Record<string, unknown>>;
+  private readonly server: string;
+
+  constructor(answers: Readonly<Record<string, unknown>> = {}, server: string = LINEAR_MCP_SERVER) {
+    this.answers = answers;
+    this.server = server;
   }
 
-  private async call(toolName: string, args: Record<string, unknown>): Promise<unknown> {
-    if (!this.toolCaller) {
-      // Check if API key or auth is available in environment
-      if (!process.env.LINEAR_API_KEY) {
-        throw new LinearTransportError(
-          "auth_unavailable",
-          "Linear authentication is not configured. Configure LINEAR_API_KEY or run /mcp-auth linear.",
-        );
-      }
-      throw new LinearTransportError(
-        "mcp_unavailable",
-        "Linear MCP tool caller is not registered in this runtime context.",
-      );
+  private answer<T>(tool: string, args: Record<string, unknown>, purpose: string): T {
+    const key = linearRemoteKey(this.server, tool, args);
+    if (Object.prototype.hasOwnProperty.call(this.answers, key)) {
+      return this.answers[key] as T;
     }
-
-    try {
-      return await this.toolCaller("linear", toolName, args);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/not found|404/i.test(msg)) {
-        throw new LinearTransportError("not_found", msg, { cause: err });
-      }
-      if (/unauthorized|forbidden|auth/i.test(msg)) {
-        throw new LinearTransportError("auth_unavailable", msg, { cause: err });
-      }
-      if (/conflict|409/i.test(msg)) {
-        throw new LinearTransportError("remote_conflict", msg, { cause: err });
-      }
-      if (/network|fetch|timeout|econnrefused/i.test(msg)) {
-        throw new LinearTransportError("network_failure", msg, { cause: err });
-      }
-      throw new LinearTransportError("mcp_unavailable", msg, { cause: err });
-    }
+    const directive: LinearRemoteDirective = { key, server: this.server, tool, args, purpose };
+    throw new LinearTransportError("remote_required", `Linear remote call required: ${tool} (${purpose})`, {
+      directive,
+    });
   }
 
   async getIssue(id: string): Promise<LinearIssueRaw | null> {
-    try {
-      const res = (await this.call("get_issue", { id })) as any;
-      if (!res) return null;
-      // Handle tool result formatting if wrapped in text content
-      if (res && typeof res === "object") {
-        if ("content" in res && Array.isArray(res.content) && res.content[0]?.text) {
-          try {
-            return JSON.parse(res.content[0].text) as LinearIssueRaw;
-          } catch {
-            // Text is not JSON
-          }
-        }
-        return res as LinearIssueRaw;
-      }
-      return null;
-    } catch (err) {
-      if (err instanceof LinearTransportError && err.code === "not_found") {
-        return null;
-      }
-      throw err;
-    }
+    const value = this.answer<unknown>(LINEAR_TOOLS.getIssue, { id }, "read the ticket contract");
+    if (!value || typeof value !== "object") return null;
+    return value as LinearIssueRaw;
   }
 
   async updateIssue(id: string, update: LinearIssueUpdate): Promise<LinearIssueRaw> {
-    const params: Record<string, unknown> = { id };
-    if (update.statusId || update.stateId) {
-      params.stateId = update.statusId || update.stateId;
-    }
-    if (update.title !== undefined) params.title = update.title;
-    if (update.description !== undefined) params.description = update.description;
+    const args: Record<string, unknown> = { id };
+    const stateRef = update.statusId ?? update.stateId;
+    if (stateRef) args.state = stateRef;
+    if (update.title !== undefined) args.title = update.title;
+    if (update.description !== undefined) args.description = update.description;
 
-    const res = (await this.call("save_issue", params)) as any;
-    if (res && typeof res === "object") {
-      if ("content" in res && Array.isArray(res.content) && res.content[0]?.text) {
-        try {
-          return JSON.parse(res.content[0].text) as LinearIssueRaw;
-        } catch {}
-      }
-      return res as LinearIssueRaw;
-    }
+    const value = this.answer<unknown>(LINEAR_TOOLS.saveIssue, args, "update the ticket");
+    if (value && typeof value === "object") return value as LinearIssueRaw;
     return { id, identifier: id, title: "" };
   }
 
   async getStatuses(teamIdOrProjectId?: string): Promise<LinearStatus[]> {
-    const params: Record<string, unknown> = {};
-    if (teamIdOrProjectId) {
-      params.teamId = teamIdOrProjectId;
+    const team = teamIdOrProjectId?.trim();
+    if (!team) {
+      throw new LinearTransportError(
+        "mcp_unavailable",
+        "Cannot resolve Linear workflow states: the active ticket does not expose its team.",
+      );
     }
-    const res = (await this.call("list_issue_statuses", params)) as any;
-    if (Array.isArray(res)) return res as LinearStatus[];
-    if (res && typeof res === "object") {
-      if ("statuses" in res && Array.isArray(res.statuses)) return res.statuses as LinearStatus[];
-      if ("content" in res && Array.isArray(res.content) && res.content[0]?.text) {
-        try {
-          const parsed = JSON.parse(res.content[0].text);
-          if (Array.isArray(parsed)) return parsed as LinearStatus[];
-          if (parsed && typeof parsed === "object" && Array.isArray(parsed.statuses)) return parsed.statuses;
-        } catch {}
-      }
-    }
-    return [];
+    const value = this.answer<unknown>(LINEAR_TOOLS.listIssueStatuses, { team }, "resolve the team workflow states");
+    return normalizeStatuses(value);
   }
 
   async addComment(id: string, body: string): Promise<void> {
-    await this.call("save_comment", { issueId: id, body });
+    this.answer<unknown>(LINEAR_TOOLS.saveComment, { issueId: id, body }, "record the ticket comment");
   }
 }

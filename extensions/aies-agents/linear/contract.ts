@@ -6,7 +6,7 @@
  * bloat while preserving exact goal, acceptance criteria, and constraints.
  */
 
-import type { ActiveTicket, LinearIssueRaw } from "./types.ts";
+import type { ActiveTicket, LinearIssueRaw, LinearRemoteDirective } from "./types.ts";
 
 export interface CriteriaExtractionResult {
   criteria: string[];
@@ -262,6 +262,29 @@ export function formatCompactContract(ticket: ActiveTicket): string {
     formatted = formatted.slice(0, 2400) + "\n[... truncated for context hygiene ...]";
   }
   return formatted;
+}
+
+/**
+ * The exact instruction the Parent needs to satisfy one pending Linear call: the
+ * `mcp` proxy call to run, and how to hand its result back. AIES does not speak
+ * MCP itself, so this string is the whole transport contract between them.
+ */
+export function describeRemoteDirective(directive: LinearRemoteDirective): string {
+  return [
+    "Linear remote call required.",
+    "",
+    "AIES does not speak MCP itself: the Parent session performs every Linear read",
+    "and write with the `mcp` proxy tool registered by pi-mcp-adapter.",
+    "",
+    "Run this call:",
+    `  mcp({ server: ${JSON.stringify(directive.server)}, tool: ${JSON.stringify(directive.tool)}, args: ${JSON.stringify(directive.args)} })`,
+    "",
+    "Then repeat the same AIES action, passing the returned value as `remote`:",
+    '  aies_ticket({ action: "<same action>", ..., remote: <the value returned by mcp> })',
+    "",
+    `Reason: ${directive.purpose}.`,
+    `Remote key: ${directive.key}`,
+  ].join("\n");
 }
 
 /**

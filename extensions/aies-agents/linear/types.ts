@@ -63,6 +63,23 @@ export interface LinearIssueUpdate {
   description?: string;
 }
 
+/**
+ * One Linear call the Parent session has to perform with the `mcp` proxy tool.
+ * AIES never sends it: it only describes it.
+ */
+export interface LinearRemoteDirective {
+  /** Stable identity of the exact call; echo it back with the result. */
+  key: string;
+  /** MCP server name, as declared in the AIES profile. */
+  server: string;
+  /** MCP tool name. */
+  tool: string;
+  /** Exact arguments for the MCP tool. */
+  args: Record<string, unknown>;
+  /** Why the call is needed, shown to the Parent. */
+  purpose: string;
+}
+
 export interface ActiveTicket {
   id: string;
   identifier: string;
@@ -87,6 +104,8 @@ export interface TicketOperationResult {
   contract?: string;
   error?: string;
   message?: string;
+  /** Present when `error` is `remote_required`: the call the Parent must run. */
+  directive?: LinearRemoteDirective;
   details?: Record<string, unknown>;
 }
 

@@ -12,8 +12,8 @@
  * - Scenario C: Remote conflict before Done:
  *     Parent loads EZE-103 -> Worker + Verify PASS -> Remote issue closed externally ->
  *     Parent attempts complete -> Remote conflict detected and completion blocked.
- * - Scenario D: Read-only check for missing credentials:
- *     McpLinearTransport without LINEAR_API_KEY safely throws auth_unavailable.
+ * - Scenario D: The runtime transport does not speak MCP: it asks the Parent for
+ *     the exact `mcp` proxy call, and no environment variable can bypass that.
  */
 
 import assert from "node:assert/strict";
@@ -35,7 +35,7 @@ import {
 } from "../extensions/aies-agents/linear/contract.ts";
 import { TicketManager } from "../extensions/aies-agents/linear/manager.ts";
 import { createTicketTool } from "../extensions/aies-agents/linear/tool.ts";
-import { FakeLinearTransport, McpLinearTransport } from "../extensions/aies-agents/linear/transport.ts";
+import { FakeLinearTransport, HostMediatedLinearTransport, isLinearRemoteRequired } from "../extensions/aies-agents/linear/transport.ts";
 import {
   applyVerifyResult,
   applyVerifyStart,
@@ -431,28 +431,31 @@ describe("AIES-008 Real Smoke: Linear Ticket Workflow End-to-End", () => {
     }
   });
 
-  it("Scenario D: Read-only check for missing credentials safely yields auth_unavailable", async () => {
-    // Save ambient LINEAR_API_KEY if any, and ensure unset
-    const savedKey = process.env.LINEAR_API_KEY;
-    delete process.env.LINEAR_API_KEY;
+  it("Scenario D: the runtime transport asks the Parent for the exact MCP call", async () => {
+    await assert.rejects(
+      () => new HostMediatedLinearTransport().getIssue("EZE-999"),
+      (err) => {
+        assert.ok(isLinearRemoteRequired(err));
+        assert.equal(err.code, "remote_required");
+        assert.equal(err.directive.server, "linear");
+        assert.equal(err.directive.tool, "get_issue");
+        assert.deepEqual(err.directive.args, { id: "EZE-999" });
+        return true;
+      },
+    );
 
+    // The old LINEAR_API_KEY fallback is gone: no ambient variable can make the
+    // runtime transport reach Linear by itself.
+    const saved = process.env.LINEAR_API_KEY;
+    process.env.LINEAR_API_KEY = "not-a-real-key";
     try {
-      const transport = new McpLinearTransport();
       await assert.rejects(
-        async () => {
-          await transport.getIssue("EZE-999");
-        },
-        (err) => {
-          assert.ok(err instanceof Error);
-          assert.equal(err.code, "auth_unavailable");
-          assert.match(err.message, /Linear authentication is not configured/);
-          return true;
-        },
+        () => new HostMediatedLinearTransport().getIssue("EZE-999"),
+        (err) => err.code === "remote_required",
       );
     } finally {
-      if (savedKey !== undefined) {
-        process.env.LINEAR_API_KEY = savedKey;
-      }
+      if (saved === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = saved;
     }
   });
 });
