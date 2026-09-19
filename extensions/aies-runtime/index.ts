@@ -68,6 +68,7 @@ import {
 } from "../aies-ui/summary.ts";
 import { deriveStage } from "../aies-ui/vocabulary.ts";
 import { themePaint } from "../aies-ui/paint.ts";
+import { registerQuietTools } from "./quiet-tools.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
@@ -1070,6 +1071,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       });
       state = applyModel(state, ctx.model);
       if (event.reason !== "new") restore(ctx, now);
+
+      // Quiet rendering for the six generic Pi tools, with the real session cwd.
+      // Idempotent per host: a reload or resume in the same directory registers
+      // nothing new and leaks no instance. Its own guard keeps a partial host
+      // from taking the footer, header or widgets down with it.
+      guard(() => registerQuietTools(pi, ctx.cwd));
 
       if (ctx.mode === "tui") {
         installFooter(ctx);

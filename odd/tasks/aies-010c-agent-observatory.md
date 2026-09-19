@@ -51,8 +51,8 @@ interactive `/agents` view over session-local child facts.
 | T1 Baseline, Pi/Gentle audit and design freeze | complete | Mapped AIES-010B seams, Pi 0.85.1 usage/UI APIs, selective Gentle patterns, the EZE-423 invalid-load defect, responsive layout and six bounded work units. | `a13e97f` |
 | T2 Linear invalid-load boundary | complete | Rejects remote issues without non-empty `identifier`/`id` before state mutation, keeps the previous ticket on invalid refresh, renders a Spanish failure, and proves `no_pending_remote` is the expected stale-replay guard. | `70ad842` |
 | T3 Ephemeral Agent Observatory and exact usage | complete | Added the pure session-local registry, mechanical Spanish activity derivation, real child `SessionStats` usage sampling that survives disposal, event-driven child wiring, and run-scoped Main/Agents/Total aggregation with incremental Parent sampling. | `832b549` |
-| T4 Observatory presentation and `/agents` | complete | Added the boxed status panel, panel-aware minimal footer, boxed live card with no lingering finished card, mini agents widget, interactive `/agents`, telemetry in `/aies-status` and the compact DONE projection. | pending commit |
-| T5 Quiet generic tool rendering | pending | Use Pi-supported renderer overrides for compact successful `bash/read/grep/find/edit/write`, native expansion for raw detail and automatically visible failures, without changing tool execution/model content. | — |
+| T4 Observatory presentation and `/agents` | complete | Added the boxed status panel, panel-aware minimal footer, boxed live card with no lingering finished card, mini agents widget, interactive `/agents`, telemetry in `/aies-status` and the compact DONE projection. | `22481aa` |
+| T5 Quiet generic tool rendering | complete | Re-registered the six generic tools through the documented Pi pattern with delegated execution, compact `›` rows, always-visible bounded errors and byte-identical native expansion. | pending commit |
 | T6 Documentation, full verification and real smokes | pending | Update architecture/UX/decision docs, run full/isolation/shell checks, compare startup/render cadence, validate cmux + 80 columns + headless, and complete safe live `/aies-run` plus `/agents` smoke. | — |
 
 ## Design freeze
@@ -163,3 +163,12 @@ capture, routing/autonomy/permission/context-policy redesign, push or PR.
   a long mini-widget detail collided with the elapsed column
   (`Verificando npm test02:00`); fixed by clipping to `DETAIL_WIDTH - 1` with a
   RED-first regression, now rendering `Verificando npm … 02:00`. Suite 557/557.
+- T5 uses the documented `built-in-tool-renderer` pattern: public `create*Tool(cwd)`
+  instances delegate `execute` unchanged, and only `renderCall`/`renderResult` are
+  added. The native shell is kept, so a failed result keeps Pi's error framing.
+  `bash` duration is deliberately absent because the public details never carry it.
+- T5 independent verification: 7/7 invariants PASS, 607/607 tests, isolation green,
+  shell syntax clean. Real renders confirmed `› read  src/calculator.js ✓`,
+  `✗ bash  npm test` with three bounded error lines, and byte-identical expanded
+  output. Two cosmetic notes recorded: a trailing blank line in expanded raw text
+  (faithful to the bytes) and no live-TUI render proof yet — T6 covers that.

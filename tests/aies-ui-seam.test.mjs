@@ -81,6 +81,7 @@ function createHost(overrides = {}) {
   const footers = [];
   const headers = [];
   const renderRequests = { footer: 0, header: 0 };
+  const tools = [];
 
   const pi = {
     on(event, handler) {
@@ -88,6 +89,9 @@ function createHost(overrides = {}) {
     },
     registerCommand(name, command) {
       commands.set(name, command);
+    },
+    registerTool(tool) {
+      tools.push(tool);
     },
     getActiveTools() {
       return options.activeTools;
@@ -174,7 +178,7 @@ function createHost(overrides = {}) {
     await emit("session_start", { reason });
   }
 
-  return { pi, ctx, options, emit, start, handlers, commands, appended, notifications, widgets, renderers, sendMessages, footers, headers, renderRequests, mountFooter, mountHeader };
+  return { pi, ctx, options, emit, start, handlers, commands, appended, notifications, widgets, renderers, sendMessages, footers, headers, renderRequests, tools, mountFooter, mountHeader };
 }
 
 const plainTheme = { fg: (_color, text) => text };
@@ -194,6 +198,32 @@ describe("AIES UI seam", () => {
   it("never uses sendMessage or sendUserMessage for UI", async () => {
     const host = createHost();
     await host.start();
+
+    // The six quiet generic tools register at session start, and none of them
+    // reaches the conversation: rendering is a pure projection.
+    assert.deepEqual(
+      host.tools.map((tool) => tool.name),
+      ["read", "bash", "grep", "find", "edit", "write"],
+      "the quiet surface owns exactly the six generic tools",
+    );
+
+    for (const tool of host.tools) {
+      assert.equal(typeof tool.renderCall, "function", tool.name);
+      assert.equal(typeof tool.renderResult, "function", tool.name);
+
+      const theme = { fg: (_color, value) => value, bold: (value) => value };
+      const context = {
+        args: {},
+        executionStarted: true,
+        isPartial: true,
+        expanded: false,
+        isError: false,
+      };
+      tool.renderCall({}, theme, context).render(120);
+      tool
+        .renderResult({ content: [{ type: "text", text: "raw" }], details: {} }, { expanded: false, isPartial: false }, theme, context)
+        .render(120);
+    }
 
     await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement it" } });
     await host.emit("tool_result", {
