@@ -1,6 +1,10 @@
 {
   "settings": {
-    "scriptMode": false
+    "scriptMode": false,
+    "toolResultRendering": "compact",
+    "collapsedResultLines": 1,
+    "notifyOnStartupConnect": false,
+    "mcpFooterStatus": "off"
   },
   "mcpServers": {
     "linear": {

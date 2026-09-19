@@ -118,6 +118,95 @@ function verifyRequestError(params: DelegateParams): string | undefined {
   return undefined;
 }
 
+/**
+ * Presentation only (AIES-010B). The delegation card and its durable entry are
+ * the primary surface; these hooks keep the tool row quiet and expose the raw
+ * handoff only on expansion. Execution, `content`, `details` and the schema are
+ * untouched.
+ */
+
+/** Minimal structural `Component`: Pi renders whatever `render(width)` returns. */
+interface ToolRowComponent {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+/** A row that occupies no space, so Pi hides the tool line entirely. */
+const EMPTY_ROW: ToolRowComponent = { render: () => [], invalidate() {} };
+
+function textRow(text: string): ToolRowComponent {
+  const lines = text.length > 0 ? text.split("\n") : [];
+  return { render: () => lines, invalidate() {} };
+}
+
+/** The slice of Pi's theme this projection uses; colors always come from the host. */
+interface RowTheme {
+  fg(color: string, text: string): string;
+}
+
+/** The exact marker `execute` uses for a rejected verify request; presentation reads it, never rewrites it. */
+const VERIFY_REQUEST_REJECTED = "Verify request rejected:";
+
+/** Collapsed rows are AIES-owned copy: an arbitrary or raw `details.error` never reaches the user. */
+const DELEGATE_ERROR_FALLBACK = "falló la operación";
+
+const DELEGATE_ROLE_LABEL: Record<string, string> = {
+  explore: "Explore",
+  worker: "Worker",
+  verify: "Verify",
+};
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function delegateRole(args: Record<string, unknown>): string {
+  const role = nonEmptyString(args.role);
+  if (!role) return "Agente";
+  return DELEGATE_ROLE_LABEL[role] ?? role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+/** The complete text Pi handed back, unchanged. */
+function resultText(result: { content?: ReadonlyArray<{ type?: string; text?: string }> }): string {
+  const parts: string[] = [];
+  for (const block of result?.content ?? []) {
+    if (block && block.type === "text" && typeof block.text === "string") parts.push(block.text);
+  }
+  return parts.join("\n");
+}
+
+/** A short role line: identifies the child without repeating the task prompt. */
+function delegateRunningRow(args: Record<string, unknown>, theme: RowTheme): string {
+  return theme.fg("accent", `◆ ${delegateRole(args)} · trabajando…`);
+}
+
+/**
+ * A concise visible failure. Derived from structured details first, so a raw
+ * handoff never becomes the collapsed row; a rejected verify request is the one
+ * prose marker the tool itself emits. An arbitrary `details.error` code degrades
+ * to a safe Spanish phrase instead of leaking the internal identifier.
+ */
+function delegateFailureReason(result: { content?: ReadonlyArray<{ type?: string; text?: string }>; details?: unknown }, isError: boolean): string | undefined {
+  const details = asRecord(result?.details);
+  if (details) {
+    const status = nonEmptyString(details.status);
+    if (status === "failed") return "falló";
+    if (status === "blocked") return "bloqueado";
+    if (nonEmptyString(details.error)) return DELEGATE_ERROR_FALLBACK;
+  }
+  if (isError === true) return "falló";
+  if (resultText(result).startsWith(VERIFY_REQUEST_REJECTED)) return "solicitud de verificación rechazada";
+  return undefined;
+}
+
+function delegateErrorRow(args: Record<string, unknown>, reason: string, theme: RowTheme): string {
+  return theme.fg("error", `✗ ${delegateRole(args)} · ${reason}`);
+}
+
 export function createDelegateTool(
   options?: CreateDelegateToolOptions,
 ): ToolDefinition<typeof DelegateParamsSchema, DelegateHandoff> {
@@ -138,6 +227,23 @@ export function createDelegateTool(
       "Do NOT mark a work unit verified yourself: only a valid 'verify' PASS supports that claim.",
     ],
     parameters: DelegateParamsSchema,
+    renderShell: "self",
+    renderCall(args, theme, context) {
+      // The activity card owns the surface from the moment execution starts, so the
+      // call chrome disappears then. Before that, one short role line is enough.
+      if (context?.executionStarted === true) return EMPTY_ROW;
+      return textRow(delegateRunningRow(args as Record<string, unknown>, theme as unknown as RowTheme));
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      const args = (context?.args ?? {}) as Record<string, unknown>;
+      const paint = theme as unknown as RowTheme;
+      if (isPartial) return textRow(delegateRunningRow(args, paint));
+      if (expanded) return textRow(resultText(result));
+
+      const reason = delegateFailureReason(result, context?.isError === true);
+      if (reason) return textRow(delegateErrorRow(args, reason, paint));
+      return EMPTY_ROW;
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
       const { role, task, context } = params;
       const agentDir = getAgentDir();
@@ -197,7 +303,7 @@ export function createDelegateTool(
         const invalid = verifyRequestError(params);
         if (invalid) {
           return {
-            content: [{ type: "text", text: `Verify request rejected: ${invalid}` }],
+            content: [{ type: "text", text: `${VERIFY_REQUEST_REJECTED} ${invalid}` }],
             isError: true,
           };
         }

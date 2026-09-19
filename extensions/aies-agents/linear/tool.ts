@@ -64,6 +64,148 @@ export const TicketParamsSchema = Type.Object({
 
 export type TicketParams = Static<typeof TicketParamsSchema>;
 
+/**
+ * Presentation only (AIES-010B). These helpers project structured args/details
+ * into one compact Spanish row and expose the original text on expansion. They
+ * never touch execution, `content`, `details`, error flags or the schema.
+ */
+
+/** Minimal structural `Component`: Pi renders whatever `render(width)` returns. */
+interface ToolRowComponent {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+/** A row that occupies no space, so Pi hides the tool line entirely. */
+const EMPTY_ROW: ToolRowComponent = { render: () => [], invalidate() {} };
+
+function textRow(text: string): ToolRowComponent {
+  const lines = text.length > 0 ? text.split("\n") : [];
+  return { render: () => lines, invalidate() {} };
+}
+
+/** The slice of Pi's theme this projection uses; colors always come from the host. */
+interface RowTheme {
+  fg(color: string, text: string): string;
+}
+
+const TICKET_ACTION_VERB: Record<string, string> = {
+  load: "cargando",
+  start: "iniciando",
+  complete: "completando",
+  block: "bloqueando",
+  comment: "comentando",
+  show: "mostrando",
+  refresh: "actualizando",
+};
+
+const TICKET_ACTION_DONE: Record<string, string> = {
+  load: "cargado",
+  start: "iniciado",
+  complete: "completado",
+  block: "bloqueado",
+  comment: "comentado",
+  show: "mostrado",
+  refresh: "actualizado",
+};
+
+/**
+ * Collapsed rows are AIES-owned copy, so an internal code never reaches the user.
+ * Every code the workflow or the transport can emit maps to one short Spanish phrase.
+ */
+const TICKET_ERROR_MESSAGE: Record<string, string> = {
+  // Validation
+  missing_ticket_id: "falta el ID del ticket",
+  missing_evidence: "falta la evidencia",
+  missing_comment: "falta el comentario",
+  empty_comment: "el comentario está vacío",
+  invalid_id: "ID de ticket inválido",
+  unsupported_action: "acción no soportada",
+  // MCP, auth, network and permissions
+  mcp_unavailable: "MCP no disponible",
+  auth_unavailable: "autenticación requerida",
+  network_failure: "falló la red",
+  permission_denied: "sin permisos",
+  // Ticket state
+  not_found: "ticket no encontrado",
+  invalid_transition: "transición inválida",
+  remote_conflict: "conflicto remoto",
+  no_pending_remote: "sin operación pendiente",
+  no_active_ticket: "no hay ticket activo",
+  ticket_in_progress: "otro ticket en curso",
+  verify_gate_denied: "verificación denegada",
+  sync_error: "error de sincronización",
+  comment_failed: "no se pudo comentar",
+  refresh_failed: "no se pudo actualizar",
+};
+
+/** Safe fallback: an unknown or future code never becomes the visible row. */
+const TICKET_ERROR_FALLBACK = "falló la operación";
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** The ticket identity: call args first, structured details second. */
+function ticketIdentifier(args: Record<string, unknown>, details: unknown): string | undefined {
+  const fromArgs = nonEmptyString(args.ticketId);
+  if (fromArgs) return fromArgs;
+  const ticket = asRecord(asRecord(details)?.ticket);
+  return ticket ? nonEmptyString(ticket.identifier) : undefined;
+}
+
+function ticketAction(args: Record<string, unknown>): string {
+  return nonEmptyString(args.action) ?? "show";
+}
+
+/** The pending line: one short row while the operation is in flight. */
+function ticketPendingRow(args: Record<string, unknown>, theme: RowTheme): string {
+  const id = ticketIdentifier(args, undefined);
+  const verb = TICKET_ACTION_VERB[ticketAction(args)] ?? "consultando";
+  const label = id ? `${id} · ${verb}` : `Linear · ${verb}`;
+  return theme.fg("warning", `⟳ ${label}…`);
+}
+
+/** The Parent-mediated handoff: a compact Linear row, never an error dump. */
+function ticketHandoffRow(details: Record<string, unknown>, theme: RowTheme): string {
+  const directive = asRecord(details.directive);
+  const tool = directive ? nonEmptyString(directive.tool) : undefined;
+  return theme.fg("accent", tool ? `→ Linear · ${tool}` : "→ Linear");
+}
+
+/**
+ * A real ticket error stays visible when collapsed; the detail lives in the
+ * expanded view. The row always speaks Spanish: known codes are mapped, any
+ * other code degrades to a safe phrase instead of printing the raw identifier.
+ */
+function ticketErrorRow(args: Record<string, unknown>, details: Record<string, unknown>, theme: RowTheme): string {
+  const id = ticketIdentifier(args, details);
+  const code = nonEmptyString(details.error);
+  const message = (code && TICKET_ERROR_MESSAGE[code]) || TICKET_ERROR_FALLBACK;
+  return theme.fg("error", `✗ ${id ? `${id} · ` : ""}${message}`);
+}
+
+/** The normal collapsed flow: identity, action and outcome, never the contract. */
+function ticketDoneRow(args: Record<string, unknown>, details: Record<string, unknown>, theme: RowTheme): string {
+  if (details.active === false) return theme.fg("muted", "Linear · sin ticket activo");
+  const id = ticketIdentifier(args, details);
+  const done = TICKET_ACTION_DONE[ticketAction(args)] ?? "listo";
+  return theme.fg("success", `✓ ${id ? `${id} · ` : ""}${done}`);
+}
+
+/** The complete text Pi handed back, unchanged. */
+function resultText(result: { content?: ReadonlyArray<{ type?: string; text?: string }> }): string {
+  const parts: string[] = [];
+  for (const block of result?.content ?? []) {
+    if (block && block.type === "text" && typeof block.text === "string") parts.push(block.text);
+  }
+  return parts.join("\n");
+}
+
 /** Session mode as this tool needs it. Anything unknown is treated as headless. */
 function sessionMode(ctx: { mode?: string } | undefined): string {
   return typeof ctx?.mode === "string" ? ctx.mode : "print";
@@ -94,6 +236,28 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
     promptGuidelines: [
       "Linear is reached only through the `mcp` proxy tool: when `aies_ticket` answers `remote_required`, run the exact `mcp` call it names and repeat the same `aies_ticket` action with `remote` set to the value `mcp` returned. Never invent a value.",
     ],
+    renderShell: "self",
+    renderCall(args, theme, context) {
+      // While the operation is in flight, one short pending row. Once settled, the
+      // result slot carries the whole flow so the call chrome disappears.
+      if (context?.isPartial === false) return EMPTY_ROW;
+      return textRow(ticketPendingRow(args as Record<string, unknown>, theme as unknown as RowTheme));
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      const args = (context?.args ?? {}) as Record<string, unknown>;
+      const paint = theme as unknown as RowTheme;
+      if (isPartial) return textRow(ticketPendingRow(args, paint));
+      if (expanded) return textRow(resultText(result));
+
+      const details = asRecord(result.details);
+      const error = details ? nonEmptyString(details.error) : undefined;
+      if (error) {
+        return textRow(
+          error === "remote_required" ? ticketHandoffRow(details!, paint) : ticketErrorRow(args, details!, paint),
+        );
+      }
+      return textRow(ticketDoneRow(args, details ?? {}, paint));
+    },
     parameters: TicketParamsSchema,
     async execute(_toolCallId, params: TicketParams, _signal, _onUpdate, ctx) {
       const action = params.action;

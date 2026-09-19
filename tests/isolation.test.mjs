@@ -269,6 +269,31 @@ describe("AIES isolation", () => {
     }
   });
 
+  it("pins the adapter's compact MCP presentation without touching the Linear server", () => {
+    const repoConfig = JSON.parse(readFileSync(join(REPO, "profile", "mcp.json"), "utf8"));
+
+    // The adapter reads `settings` from the MCP config file, so the pin lives there
+    // and the Linear server definition, auth and lazy lifecycle stay untouched.
+    assert.deepEqual(repoConfig.mcpServers, {
+      linear: { url: "https://mcp.linear.app/mcp", auth: "oauth", lifecycle: "lazy" },
+    });
+    assert.equal(repoConfig.settings.scriptMode, false);
+    assert.equal(repoConfig.settings.toolResultRendering, "compact");
+    assert.equal(repoConfig.settings.collapsedResultLines, 1);
+    assert.equal(repoConfig.settings.notifyOnStartupConnect, false);
+    assert.equal(repoConfig.settings.mcpFooterStatus, "off");
+
+    runAies(env, ["--aies-info"]);
+    const seeded = JSON.parse(readFileSync(join(agentDir, "mcp.json"), "utf8"));
+    assert.equal(seeded.settings.toolResultRendering, "compact");
+    assert.equal(seeded.settings.collapsedResultLines, 1);
+    assert.equal(seeded.settings.notifyOnStartupConnect, false);
+    assert.equal(seeded.settings.mcpFooterStatus, "off");
+    assert.deepEqual(Object.keys(seeded.mcpServers), ["linear"]);
+    assert.equal(seeded.mcpServers.linear.url, "https://mcp.linear.app/mcp");
+    assert.equal(seeded.mcpServers.linear.lifecycle, "lazy");
+  });
+
   it("leaves the ambient Pi profile untouched", () => {
     assert.deepEqual(fingerprintProfile(), baseline);
   });
