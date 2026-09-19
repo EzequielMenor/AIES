@@ -32,6 +32,8 @@ import {
   extractAcceptanceCriteria,
   formatCompactContract,
   normalizeTicketContract,
+  readIssueState,
+  readIssueTeam,
   buildExploreContract,
   buildWorkerContract,
   buildVerifyContract,
@@ -722,6 +724,84 @@ Ensure timeout is bounded
       const completed = resolveTargetStatus(customStatuses, "completed");
       assert.equal(completed?.id, "s-3");
       assert.equal(completed?.name, "Listo");
+    });
+  });
+
+  describe("17. Real Linear MCP payload shapes", () => {
+    // Captured from a real `get_issue` call: Linear's MCP projection reports the
+    // workflow state as a flat status name plus `statusType`, keeps the state id
+    // only in `stateHistory`, and exposes `project` and `team` as plain strings.
+    const realMcpIssue = {
+      id: "EZE-422",
+      uuid: "767a81fb-454e-4656-94b7-cf5319a509e6",
+      title: "`src/calculator.js` implements `multiply()` incorrectly.",
+      description: "Acceptance criteria:\n\n* `multiply(3, 4)` returns `12`\n* existing tests pass",
+      status: "Todo",
+      statusType: "unstarted",
+      stateHistory: [
+        {
+          state: { id: "3a0392c2-60b3-4461-9ec5-c163e9813ff9", name: "Todo", type: "unstarted" },
+          startedAt: "2026-09-19T13:32:55.243Z",
+          endedAt: null,
+        },
+      ],
+      project: "AIES",
+      team: "Eze",
+      teamId: "433440dd-bd9a-40d0-a54b-89e10b6f482b",
+      labels: [],
+      url: "https://linear.app/eze33/issue/EZE-422/example",
+    };
+
+    it("reads the flat status fields, the state id from history, and the team", () => {
+      const state = readIssueState(realMcpIssue);
+      assert.equal(state.name, "Todo");
+      assert.equal(state.type, "unstarted");
+      assert.equal(state.id, "3a0392c2-60b3-4461-9ec5-c163e9813ff9");
+      assert.equal(readIssueTeam(realMcpIssue), "Eze");
+      assert.equal(readIssueTeam({ identifier: "E-1", title: "t", teamId: "team-1" }), "team-1");
+    });
+
+    it("normalizes the real MCP payload into a usable compact contract", () => {
+      const ticket = normalizeTicketContract(realMcpIssue);
+      assert.equal(ticket.identifier, "EZE-422");
+      assert.equal(ticket.status, "Todo");
+      assert.equal(ticket.statusType, "unstarted");
+      assert.equal(ticket.project, "AIES");
+      assert.equal(ticket.team, "Eze");
+      assert.ok(ticket.acceptanceCriteria.length >= 2, "explicit criteria must survive normalization");
+      assert.ok(formatCompactContract(ticket).length < 2500);
+    });
+
+    it("still reads the object-shaped state used by the deterministic fake", () => {
+      const state = readIssueState({
+        identifier: "EZE-1",
+        title: "t",
+        state: { id: "s1", name: "In Progress", type: "started" },
+      });
+      assert.deepEqual(state, { id: "s1", name: "In Progress", type: "started" });
+    });
+
+    it("detects an externally completed ticket from the flat payload", () => {
+      const conflict = detectRemoteConflict(normalizeTicketContract(realMcpIssue), {
+        ...realMcpIssue,
+        status: "Done",
+        statusType: "completed",
+      });
+      assert.equal(conflict.conflict, true);
+      assert.match(conflict.reason ?? "", /already completed externally/);
+    });
+
+    it("prefers the in-progress state over an earlier started state", () => {
+      // The real team returns In Review before In Progress among its started states.
+      const statuses = [
+        { id: "review", name: "In Review", type: "started" },
+        { id: "progress", name: "In Progress", type: "started" },
+        { id: "done", name: "Done", type: "completed" },
+        { id: "todo", name: "Todo", type: "unstarted" },
+      ];
+      assert.equal(resolveTargetStatus(statuses, "started")?.id, "progress");
+      assert.equal(resolveTargetStatus(statuses, "completed")?.id, "done");
+      assert.equal(resolveTargetStatus(statuses, "unstarted")?.id, "todo");
     });
   });
 });

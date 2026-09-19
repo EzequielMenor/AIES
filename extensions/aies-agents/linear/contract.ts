@@ -102,6 +102,74 @@ export function extractAcceptanceCriteria(description?: string): CriteriaExtract
 }
 
 /**
+ * Workflow state as AIES reads it from a Linear payload.
+ */
+export interface IssueStateView {
+  id?: string;
+  name: string;
+  type?: string;
+}
+
+function asStateRef(value: unknown): { id?: string; name?: string; type?: string } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const ref = value as { id?: unknown; name?: string; type?: unknown };
+  const id = typeof ref.id === "string" && ref.id.trim() ? ref.id.trim() : undefined;
+  const name = typeof ref.name === "string" && ref.name.trim() ? ref.name.trim() : undefined;
+  const type = typeof ref.type === "string" && ref.type.trim() ? ref.type.trim() : undefined;
+  return { id, name, type };
+}
+
+function currentHistoryState(raw: LinearIssueRaw): { id?: string; name?: string; type?: string } | undefined {
+  const history = Array.isArray(raw.stateHistory) ? raw.stateHistory : [];
+  if (history.length === 0) return undefined;
+  const open = [...history].reverse().find((entry) => entry && typeof entry === "object" && (entry.endedAt === null || entry.endedAt === undefined));
+  return asStateRef((open ?? history[history.length - 1])?.state);
+}
+
+/**
+ * Read the workflow state from any Linear issue payload shape: a state object, a
+ * plain status name with a flat type, or a state history entry. Never guesses a
+ * value that the payload does not carry.
+ */
+export function readIssueState(raw: LinearIssueRaw): IssueStateView {
+  const stateObject = asStateRef(raw.state);
+  const statusObject = asStateRef(raw.status);
+  const history = currentHistoryState(raw);
+
+  const id = stateObject?.id ?? statusObject?.id ?? history?.id;
+  const name =
+    stateObject?.name ??
+    statusObject?.name ??
+    (typeof raw.state === "string" && raw.state.trim() ? raw.state.trim() : undefined) ??
+    (typeof raw.status === "string" && raw.status.trim() ? raw.status.trim() : undefined) ??
+    history?.name ??
+    "Unknown";
+  const type =
+    stateObject?.type ??
+    statusObject?.type ??
+    (typeof raw.statusType === "string" && raw.statusType.trim() ? raw.statusType.trim() : undefined) ??
+    history?.type;
+
+  return { id, name, type };
+}
+
+/**
+ * Read the owning team. The workflow states of that team are required to resolve
+ * where a ticket has to move, and Linear's `list_issue_statuses` accepts a team
+ * name or id.
+ */
+export function readIssueTeam(raw: LinearIssueRaw): string | undefined {
+  if (typeof raw.team === "string" && raw.team.trim()) return raw.team.trim();
+  if (raw.team && typeof raw.team === "object") {
+    const member = raw.team as { id?: unknown; name?: unknown };
+    if (typeof member.name === "string" && member.name.trim()) return member.name.trim();
+    if (typeof member.id === "string" && member.id.trim()) return member.id.trim();
+  }
+  if (typeof raw.teamId === "string" && raw.teamId.trim()) return raw.teamId.trim();
+  return undefined;
+}
+
+/**
  * Normalizes a raw Linear issue payload into a lean ActiveTicket representation.
  */
 export function normalizeTicketContract(raw: LinearIssueRaw): ActiveTicket {
@@ -112,15 +180,12 @@ export function normalizeTicketContract(raw: LinearIssueRaw): ActiveTicket {
 
   const extracted = extractAcceptanceCriteria(description);
 
-  const statusName =
-    raw.state?.name ||
-    raw.status?.name ||
-    (typeof raw.state === "string" ? raw.state : "Unknown");
-  const statusId = raw.state?.id || raw.status?.id;
-  const statusType = raw.state?.type || raw.status?.type;
+  const state = readIssueState(raw);
 
   let project: string | undefined;
-  if (raw.project && typeof raw.project === "object" && raw.project.name) {
+  if (typeof raw.project === "string" && raw.project.trim()) {
+    project = raw.project.trim();
+  } else if (raw.project && typeof raw.project === "object" && raw.project.name) {
     project = raw.project.name;
   }
 
@@ -141,10 +206,11 @@ export function normalizeTicketContract(raw: LinearIssueRaw): ActiveTicket {
     title,
     description,
     acceptanceCriteria: extracted.criteria,
-    status: statusName,
-    statusId,
-    statusType,
+    status: state.name,
+    statusId: state.id,
+    statusType: state.type,
     project,
+    team: readIssueTeam(raw),
     labels: labels.length > 0 ? labels : undefined,
     url: raw.url,
     loadedAt: Date.now(),

@@ -11,6 +11,7 @@
  */
 
 import { isVerificationValid, requiresVerification, type VerificationState } from "../verification.ts";
+import { readIssueState } from "./contract.ts";
 import type { ActiveTicket, LinearIssueRaw, LinearStatus, TicketWorkState } from "./types.ts";
 
 export interface DoneGateResult {
@@ -140,6 +141,16 @@ export function resolveTargetStatus(
   statuses: LinearStatus[],
   targetType: "started" | "completed" | "unstarted",
 ): LinearStatus | undefined {
+  // Linear reports a team's started states in an order where review can precede
+  // progress, so a type-only match would move a ticket into review when work
+  // starts. Prefer the state that actually means in-progress.
+  if (targetType === "started") {
+    const inProgress = statuses.find(
+      (status) => status.type === "started" && /in\s*progress|started|doing|en\s*progreso/i.test(status.name),
+    );
+    if (inProgress) return inProgress;
+  }
+
   // First match by type
   const byType = statuses.find((s) => s.type === targetType);
   if (byType) return byType;
@@ -165,8 +176,9 @@ export function detectRemoteConflict(
   activeTicket: ActiveTicket,
   fresh: LinearIssueRaw,
 ): { conflict: boolean; reason?: string } {
-  const freshStatusType = fresh.state?.type || fresh.status?.type;
-  const freshStatusName = fresh.state?.name || fresh.status?.name || "Unknown";
+  const freshState = readIssueState(fresh);
+  const freshStatusType = freshState.type;
+  const freshStatusName = freshState.name;
 
   if (freshStatusType === "completed") {
     return {
