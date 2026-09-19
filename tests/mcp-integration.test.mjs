@@ -16,9 +16,9 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   applyMcpStatusEvent,
@@ -709,6 +709,70 @@ describe("AIES MCP integration", () => {
       }
       assert.match(contracts, /EZE-422/, "the child still needs the ticket identity");
       assert.match(contracts, /multiply\(3, 4\) returns 12/, "the child still needs the criteria");
+    });
+  });
+
+  describe("10. Exclusive MCP config isolation", () => {
+    const adapterPath = resolveInstalledAdapter();
+    const configModule = adapterPath ? join(dirname(adapterPath), "dist", "config.js") : undefined;
+
+    if (!configModule || !existsSync(configModule)) {
+      it("reads only the AIES profile's own mcp.json", { skip: "pi-mcp-adapter/config is not installed on this machine" }, () => {});
+      return;
+    }
+
+    it("reads only the AIES profile's own mcp.json, never a host-global one", async () => {
+      const home = mkdtempSync(join(tmpdir(), "aies-home-"));
+      const agentDir = mkdtempSync(join(tmpdir(), "aies-agent-"));
+      const previousHome = process.env.HOME;
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      const previousMode = process.env.PI_MCP_CONFIG_MODE;
+
+      try {
+        // A host-global server that must never reach an AIES session.
+        mkdirSync(join(home, ".config", "mcp"), { recursive: true });
+        writeFileSync(
+          join(home, ".config", "mcp", "mcp.json"),
+          JSON.stringify({ mcpServers: { dummy: { url: "https://dummy.example.com/mcp" } } }, null, 2),
+        );
+        // The profile's own declaration.
+        writeFileSync(join(agentDir, "mcp.json"), JSON.stringify(TEMPLATE_MCP, null, 2));
+
+        process.env.HOME = home;
+        process.env.PI_CODING_AGENT_DIR = agentDir;
+
+        // The adapter resolves its host-global paths from `os.homedir()` at module
+        // load time, so import it only after HOME points at the sandbox home.
+        const { loadMcpConfig } = await import(pathToFileURL(configModule).href);
+
+        // Control: without exclusive mode the shared host-global server IS merged,
+        // so the assertion below cannot pass vacuously.
+        delete process.env.PI_MCP_CONFIG_MODE;
+        const merged = loadMcpConfig(undefined, REPO);
+        assert.ok(merged.mcpServers.dummy, "the control must show the host-global server being read");
+
+        // The AIES configuration: exclusive mode, exactly one server.
+        process.env.PI_MCP_CONFIG_MODE = "exclusive";
+        const exclusive = loadMcpConfig(undefined, REPO);
+        assert.deepEqual(Object.keys(exclusive.mcpServers), ["linear"]);
+        assert.equal(exclusive.mcpServers.linear.url, "https://mcp.linear.app/mcp");
+        assert.equal(exclusive.mcpServers.linear.auth, "oauth");
+        assert.equal(exclusive.mcpServers.linear.lifecycle, "lazy");
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        if (previousMode === undefined) delete process.env.PI_MCP_CONFIG_MODE;
+        else process.env.PI_MCP_CONFIG_MODE = previousMode;
+        rmSync(home, { recursive: true, force: true });
+        rmSync(agentDir, { recursive: true, force: true });
+      }
+    });
+
+    it("makes bin/aies export the exclusive mode", () => {
+      const launcher = readFileSync(join(REPO, "bin", "aies"), "utf8");
+      assert.match(launcher, /export PI_MCP_CONFIG_MODE=exclusive/, "the launcher must pin exclusive MCP config mode");
     });
   });
 });
