@@ -48,11 +48,15 @@ The first AIES session has no model credentials on purpose (that is the
 isolation working). Log in once inside the isolated profile with `/login`; the
 credential is written to the AIES profile only.
 
+Linear is read through the official Linear MCP server instead; that needs a one-time
+`/mcp-auth linear` in an interactive session, described under "Linear over MCP".
+
 ## Profile layout
 
 ```
 ~/.local/share/aies/agent        <- PI_CODING_AGENT_DIR for every aies run
 ├── settings.json                <- seeded from profile/settings.json once, then owned by pi
+├── mcp.json                     <- MCP servers AIES loads; seeded from profile/mcp.json, then reconciled
 ├── auth.json                    <- written by /login inside AIES only
 ├── models.json, models-store.json
 ├── sessions/                    <- AIES sessions only
@@ -81,6 +85,9 @@ extensions, prompts, themes, tool binaries, and installed packages.
 | `~/.agents/skills/` (cross-harness skills) | would load every global skill | `aies` always passes `--no-skills`; add AIES skills explicitly with `--skill` |
 | `.pi/` in the current directory | project-local settings and resources | left to Pi's project trust prompt; `pi --no-approve` opts out per run |
 | `AGENTS.md` / `CLAUDE.md` | project context files | intentional: they describe the project you work in |
+| `~/.config/mcp/mcp.json`, `~/.agents/mcp.json` (host-global MCP servers) | would add servers to every AIES session | `aies` exports `PI_MCP_CONFIG_MODE=exclusive`, so only the profile's own `mcp.json` is read |
+| `.mcp.json` / `.pi/mcp.json` in the current directory | would add project-local MCP servers | same: exclusive mode ignores them |
+| MCP OAuth credentials (OS credential store) | live outside the profile, by design of the adapter | keyed by server name and bound to the MCP URL; never copied into the repository or into `mcp.json` |
 
 ## Commands
 
@@ -103,6 +110,41 @@ Only these arguments are interpreted by AIES:
 |---|---|
 | `--aies-info` | print the resolved profile paths and exit |
 | `--aies-*` | reserved for AIES; unknown ones exit with code 2 |
+
+## Linear over MCP
+
+AIES has no Linear client of its own. Linear is reached through the official Linear
+MCP server, which the adapter loads in the AIES profile:
+
+```text
+aies  ->  /mcp-auth linear  ->  OAuth  ->  mcp proxy tool  ->  https://mcp.linear.app/mcp
+```
+
+One-time setup, in an interactive session:
+
+```bash
+aies
+/mcp                  # "linear" must be listed and configured
+/mcp-auth linear      # completes the OAuth flow in your browser
+```
+
+Then, in the same or a later session:
+
+```text
+/aies-ticket EZE-422  # loads the ticket and shows its compact contract
+/aies-run EZE-422     # loads it, starts the work and enables bounded autonomy
+```
+
+`/mcp` and `/mcp-auth` come from `pi-mcp-adapter`; AIES does not wrap them. AIES
+does not read `LINEAR_API_KEY`, so no environment variable is needed. If you prefer
+a bearer token over OAuth, edit the server in `$AIES_HOME/agent/mcp.json`
+(`auth: "bearer"`, `bearerTokenEnv: "LINEAR_API_KEY"`); that is a deliberate opt-out
+of the OAuth path.
+
+The Linear server exposes 66 tools. AIES keeps them behind the adapter's single
+`mcp` proxy tool, so a session pays for one tool's schema instead of the catalog,
+and `lifecycle: "lazy"` means no connection is made at startup. Credentials are
+stored by the adapter in the OS credential store, never in this repository.
 
 ## Repository layout
 

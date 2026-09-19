@@ -447,6 +447,7 @@ and project metadata, while never serving as memory, repository context, backlog
 | Parent Session (Sole Owner of Linear Workflow)                          |
 |   - aies_ticket tool (load, start, complete, block, comment, show)      |
 |   - /aies-ticket [id] command for developer ergonomics                  |
+|   - pi-mcp-adapter: the single mcp proxy tool that reaches Linear       |
 |   - Normalizes raw issue into compact contract (< 2,500 chars)          |
 |   - Evaluates Done Gate against independent verification state          |
 +-------------------------------------------------------------------------+
@@ -476,7 +477,38 @@ Linear issues frequently contain tens of thousands of characters of issue descri
 
 `LinearTransport` decouples workflow policy from transport mechanics:
 - `FakeLinearTransport`: In-memory, deterministic fake implementing full issue state tracking, comment history, status queries, conflict simulation, and synthetic errors for testing without network or credentials.
-- `McpLinearTransport`: Bridges Linear operations via registered MCP tool callers, translating API responses and classifying failures into typed `LinearTransportError` codes (`not_found`, `auth_unavailable`, `mcp_unavailable`, `network_failure`, `remote_conflict`).
+- `HostMediatedLinearTransport`: The runtime transport. AIES owns no MCP client, so it never sends a request: it answers from the calls the Parent already performed and otherwise fails with `LinearTransportError("remote_required")` carrying a `LinearRemoteDirective` (server, tool, exact arguments, purpose, and a stable key). Typed codes: `not_found`, `auth_unavailable`, `mcp_unavailable`, `remote_required`, `permission_denied`, `network_failure`, `invalid_transition`, `remote_conflict`.
+
+`TicketManager` keeps the pending directive plus every answer collected for it and
+replays the interrupted operation over that cache, so `aies_ticket` resumes an
+operation with `remote` instead of restarting it. Replay is pure: every remote value
+is an answer the Parent already supplied, which is what makes a resumed multi-call
+operation safe.
+
+### MCP integration
+
+```text
+AIES profile
+├── settings.json   declares npm:pi-mcp-adapter   (Pi installs it into $AIES_HOME/agent/npm)
+└── mcp.json        declares one server: linear   (https://mcp.linear.app/mcp, oauth, lazy)
+
+PI_MCP_CONFIG_MODE=exclusive  ->  the adapter reads only that mcp.json
+```
+
+- **Ownership**: the repository declares `profile/mcp.json`; the runtime file is
+  `$AIES_HOME/agent/mcp.json`, seeded and reconciled by
+  `scripts/seed-profile-config.mjs`. User additions to either file survive, and only
+  the declared package, server and settings are restored.
+- **Surface**: no `directTools` and `scriptMode: false`, so the 66 tools of the
+  Linear server stay behind the single `mcp` proxy tool.
+- **Diagnostics**: `extensions/aies-agents/mcp/integration.ts` reads the adapter's
+  versioned status channel and turns a missing adapter, a missing server, a disabled
+  server, a failed server or missing authentication into an instruction that is real
+  for the current session mode. No AIES code path reads or advertises an API key, and
+  no headless path attempts an interactive OAuth flow.
+- **Children**: Explore, Worker and Verify are created with `noExtensions: true` and
+  explicit tool allowlists, so the adapter, `mcp` and every Linear schema stay in the
+  Parent session.
 
 ### Programmatic Done Gate
 

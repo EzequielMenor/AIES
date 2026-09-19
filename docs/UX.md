@@ -619,3 +619,29 @@ card for the active child, one durable line per finished child, two purpose-buil
 summaries for the two states the human must notice, and a human status view with
 the full telemetry one argument away. Fewer always-visible elements, the same
 available information.
+
+## 20. Linear authentication and the MCP handoff
+
+Linear is reached through the official Linear MCP server, loaded by
+`pi-mcp-adapter` in the AIES profile. AIES adds no MCP command of its own:
+
+| Surface | Owner | What the human sees |
+|---|---|---|
+| `/mcp` | the adapter | server status and tool counts |
+| `/mcp-auth linear` | the adapter | the OAuth flow in the browser |
+| authentication needed, interactive | AIES | `Linear needs authentication.` then `Run:` and `/mcp-auth linear` |
+| authentication needed, headless | AIES | names the session mode and says to authenticate from an interactive session |
+| adapter not loaded | AIES | names the missing package and `aies install npm:pi-mcp-adapter` |
+
+`LINEAR_API_KEY` never appears in a message: no AIES code path reads it. A missing
+transport is reported as an error and missing authentication as a warning, because
+only one of the two needs a human decision.
+
+Once authenticated, `/aies-ticket EZE-422` and `/aies-run EZE-422` need no further
+human step. Because AIES owns no MCP client, the Parent performs the call: an action
+that needs the remote answers with the exact `mcp` invocation, and the Parent repeats
+the same action with `remote: <result>`. The human sees one turn with a few tool
+calls, not a prompt. `/aies-run` still starts the work itself when it can, so an
+in-process transport stays synchronous.
+
+Headless modes (`print`, `json`, `rpc`) never try to start an OAuth flow.

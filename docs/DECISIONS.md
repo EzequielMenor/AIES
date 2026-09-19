@@ -287,7 +287,7 @@ Parent retains model API keys and coordinates from the host; child tool executio
 1. The Parent session is the sole owner of Linear workflow. Children (Explore, Worker, Verify) have no Linear tools, no Linear MCP schemas, and no direct issue mutations.
 2. Linear serves strictly as the source of truth for active ticket ID, status, acceptance criteria, and project metadata; it never serves as memory, repo context, backlog dump, or giant prompt.
 3. Raw Linear issue payloads are normalized into a compact contract strictly bounded under 2,500 characters (`formatCompactContract`), extracting explicit checklist criteria and flagging ambiguities.
-4. Transport mechanics are abstracted behind `LinearTransport` (`FakeLinearTransport` for deterministic, offline testing; `McpLinearTransport` with typed error classification for runtime).
+4. Transport mechanics are abstracted behind `LinearTransport` (`FakeLinearTransport` for deterministic, offline testing; `HostMediatedLinearTransport` at runtime, see D17).
 5. Done Gate is enforced programmatically by the verification authority: behavior-bearing changes require a fresh, valid Verify PASS (`verifiedRevision === revision && verification.status === "pass"`). Stale PASS, fail, blocked, or running strictly deny marking Done. Docs-only changes complete without Verify.
 6. `completeTicket()` refreshes remote issue state before updating; if remote state changed externally to completed or canceled, a remote conflict is raised and completion is blocked to prevent overwriting remote work.
 7. Autonomy and multi-ticket continuation are strictly deferred to AIES-009.
@@ -353,6 +353,33 @@ Parent retains model API keys and coordinates from the host; child tool executio
 - All AIES rendering becomes testable without a terminal, because the renderers take a snapshot and return strings.
 - Behavioural authorities (routing, verification, sandbox, Context Governor thresholds, Linear Done Gate, continuation decisions, repair limits, model routing) keep their semantics; only their presentation changes.
 - Related detailed reference: `docs/UX.md`.
+
+---
+
+## D17 - Linear over the official MCP server: a profile-owned adapter, a parent-mediated transport, and no AIES MCP client
+
+**Decision.**
+1. The isolated AIES profile declares `npm:pi-mcp-adapter` in `profile/settings.json` and exactly one MCP server, `linear`, in `profile/mcp.json`, pointing at `https://mcp.linear.app/mcp` with `auth: "oauth"` and `lifecycle: "lazy"`. Pi installs the declared package into `$AIES_HOME/agent/npm/`; AIES does not fork, vendor, patch or copy the adapter, and does not implement an MCP client.
+2. `scripts/seed-profile-config.mjs` seeds what is missing and restores only what the template declares, so user additions to the profile survive. It never touches the network and never writes a credential.
+3. `bin/aies` exports `PI_MCP_CONFIG_MODE=exclusive`, so the adapter reads only `$AIES_HOME/agent/mcp.json`. Host-global MCP configs (`~/.config/mcp/mcp.json`, `~/.agents/mcp.json`, `~/.agents/mcp/mcp.json`) and project-local `.mcp.json` / `.pi/mcp.json` are never merged into an AIES session.
+4. The profile sets no `directTools` and sets `settings.scriptMode: false`, so the Linear server's 66 tools stay behind the adapter's single `mcp` proxy tool: about 3 KB of resident schema instead of the roughly 80 KB catalog.
+5. AIES owns no MCP transport. Pi exposes no programmatic tool invocation to extensions, so `HostMediatedLinearTransport` never sends a request: it answers from the calls the Parent already performed and otherwise fails with `LinearTransportError("remote_required")` carrying a `LinearRemoteDirective`. `TicketManager` keeps the pending directive and the answers collected for it and replays the interrupted operation over that cache, and `aies_ticket` accepts `remote` to resume it. Replay is pure, because every remote value is an answer the Parent already supplied.
+6. OAuth is the primary authentication path. The interactive instruction is `/mcp-auth linear`, which the adapter owns; AIES registers no MCP command of its own. No AIES code path reads, forwards or advertises `LINEAR_API_KEY`.
+7. Headless sessions (`print`, `json`, `rpc`) never start an OAuth flow. They report that authentication has to happen in an interactive AIES session.
+8. Credentials live in the adapter's OS credential store, keyed by server name and bound to the MCP URL. Nothing is written to the repository and nothing is written to `$AIES_HOME/agent/mcp.json`. Because the key is the server name plus URL, `aies` and `pi` share one credential record for `linear`; AIES does not have its own credential namespace.
+9. Explore, Worker and Verify are created with `noExtensions: true` and explicit tool allowlists, so the adapter, `mcp`, `mcpScript` and every Linear schema are absent from a child session.
+
+**Why.**
+- The adapter is the only component that should own MCP transport, OAuth, credential storage and tool registration. Reusing it keeps AIES out of a protocol and a credential store it would otherwise have to get right on its own.
+- A hosted MCP server can expose dozens of tools. Registering them directly would spend context on every turn for tools a ticket workflow rarely calls, and the Linear catalog alone is 66 tools.
+- Reading host-global or project-local MCP configuration would silently import servers into an AIES session, which breaks the isolation guarantee the whole project rests on.
+- Making the Parent perform every remote call keeps one visible, auditable step between AIES policy and Linear, and keeps credentials out of child sessions entirely.
+- An extension cannot invoke a tool, so a transport that pretends to call MCP can only ever fail. Declaring the call honestly is the only design that survives contact with the real runtime.
+
+**Consequence.**
+- A Linear operation the Parent has not answered yet costs an extra tool round trip, and a multi-call operation like `complete` costs one per missing call. The alternative was a fabricated success.
+- `LINEAR_API_KEY` is no longer a supported path in AIES code. A bearer token remains an explicit opt-out configured in `$AIES_HOME/agent/mcp.json` (`auth: "bearer"`, `bearerTokenEnv: "LINEAR_API_KEY"`), which the user owns and AIES never reads.
+- The repository is the source of truth for the declared package and server; `$AIES_HOME/agent/mcp.json` is the runtime file Pi and the adapter own.
 
 ---
 
