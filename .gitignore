@@ -14,6 +14,11 @@ npm-debug.log*
 /models-store.json
 /trust.json
 /sessions/
+# pi-mcp-adapter runtime state: belongs in $AIES_HOME, never in the repository
+/mcp.json
+/mcp-cache.json
+/mcp-oauth/
+/mcp-oauth-encrypted/
 
 # macOS
 .DS_Store

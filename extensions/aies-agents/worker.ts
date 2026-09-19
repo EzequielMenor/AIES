@@ -20,6 +20,18 @@ import { executeChildSession, resolveRoleSystemPrompt } from "./session.ts";
 import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 import { createWorkerBashToolDefinition, type WorkerBashRunner } from "./worker-guard.ts";
 
+/** The complete tool surface a Worker child may use. */
+export const WORKER_TOOLS: readonly string[] = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "tgrep",
+  "edit",
+  "write",
+  "bash",
+];
+
 export interface RunWorkerOptions {
   task: string;
   context?: string;
@@ -74,7 +86,7 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
       systemPrompt,
       model,
       modelRuntime,
-      tools: ["read", "grep", "find", "ls", "tgrep", "edit", "write", "bash"],
+      tools: [...WORKER_TOOLS],
       customTools: [customTgrep, guardedBash, containedWrite, containedEdit],
       signal,
       sessionManager: options.sessionManager,

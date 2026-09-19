@@ -233,6 +233,42 @@ describe("AIES isolation", () => {
     );
   });
 
+  it("lets no MCP command come from the repository", () => {
+    const { records } = rpc(env, [{ id: "1", type: "get_commands" }], ["--no-session"]);
+    const commands = responseFor(records, "get_commands").commands;
+
+    const mcpCommands = commands.filter((command) => command.name === "mcp" || command.name === "mcp-auth");
+    for (const command of mcpCommands) {
+      assert.ok(
+        !command.sourceInfo?.path?.startsWith(REPO),
+        `${command.name} must come from pi-mcp-adapter, never from AIES`,
+      );
+    }
+  });
+
+  it("keeps the MCP config seeded in the profile and free of credentials", () => {
+    runAies(env, ["--aies-info"]);
+
+    const profileConfig = join(agentDir, "mcp.json");
+    assert.ok(existsSync(profileConfig), "the profile MCP config must be seeded");
+    assert.ok(
+      !lstatSync(profileConfig).isSymbolicLink(),
+      "the MCP config must be seeded, not linked, so Pi may write to it without dirtying the repository",
+    );
+
+    const servers = JSON.parse(readFileSync(profileConfig, "utf8")).mcpServers ?? {};
+    assert.deepEqual(Object.keys(servers), ["linear"]);
+    assert.equal(servers.linear.url, "https://mcp.linear.app/mcp");
+    assert.equal(servers.linear.auth, "oauth");
+
+    for (const path of [profileConfig, join(REPO, "profile", "mcp.json")]) {
+      const raw = readFileSync(path, "utf8");
+      for (const secret of ["accessToken", "refreshToken", "clientSecret", "bearerToken", "authorization_code"]) {
+        assert.ok(!raw.includes(secret), `${path} must never hold ${secret}`);
+      }
+    }
+  });
+
   it("leaves the ambient Pi profile untouched", () => {
     assert.deepEqual(fingerprintProfile(), baseline);
   });

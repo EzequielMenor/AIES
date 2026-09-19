@@ -14,7 +14,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -30,7 +30,16 @@ import {
   MCP_STATUS_CHANNEL,
   toMcpIntegrationSnapshot,
 } from "../extensions/aies-agents/mcp/integration.ts";
-import { describeRemoteDirective } from "../extensions/aies-agents/linear/contract.ts";
+import {
+  buildExploreContract,
+  buildVerifyContract,
+  buildWorkerContract,
+  describeRemoteDirective,
+  normalizeTicketContract,
+} from "../extensions/aies-agents/linear/contract.ts";
+import { EXPLORE_TOOLS } from "../extensions/aies-agents/explore.ts";
+import { WORKER_TOOLS } from "../extensions/aies-agents/worker.ts";
+import { VERIFY_TOOLS } from "../extensions/aies-agents/verify.ts";
 import { TicketManager } from "../extensions/aies-agents/linear/manager.ts";
 import { createTicketTool } from "../extensions/aies-agents/linear/tool.ts";
 import { createVerificationState } from "../extensions/aies-agents/verification.ts";
@@ -617,6 +626,89 @@ describe("AIES MCP integration", () => {
 
       assert.equal(controller.isEnabled(), false);
       assert.equal(pi.messages.length, 0);
+    });
+  });
+
+  describe("9. Children stay MCP-free", () => {
+    const CHILD_TOOL_LISTS = { explore: EXPLORE_TOOLS, worker: WORKER_TOOLS, verify: VERIFY_TOOLS };
+
+    it("allows no MCP tool and no Linear schema in any child tool list", () => {
+      for (const [role, tools] of Object.entries(CHILD_TOOL_LISTS)) {
+        for (const forbidden of ["mcp", "mcpScript", "aies_ticket", "aies-ticket", "aies-run"]) {
+          assert.ok(!tools.includes(forbidden), `${role} must not receive ${forbidden}`);
+        }
+        assert.ok(
+          !tools.some((name) => name.startsWith("linear_") || name.startsWith("mcp__")),
+          `${role} must not receive an MCP-generated tool`,
+        );
+      }
+    });
+
+    it("builds a child session with extension discovery off", () => {
+      // The child session builder must keep discovery off; that flag is what keeps
+      // the MCP adapter out of Explore, Worker and Verify.
+      const session = readFileSync(join(REPO, "extensions", "aies-agents", "session.ts"), "utf8");
+      assert.match(session, /noExtensions:\s*true/, "child sessions must disable extension discovery");
+      assert.match(session, /noSkills:\s*true/);
+      assert.match(session, /noPromptTemplates:\s*true/);
+      assert.match(session, /noThemes:\s*true/);
+    });
+
+    it("loads no extension for a child, even when the AIES extensions are on disk", async () => {
+      const { DefaultResourceLoader } = await import("@earendil-works/pi-coding-agent");
+      const agentDir = mkdtempSync(join(tmpdir(), "aies-child-"));
+      try {
+        symlinkSync(join(REPO, "extensions"), join(agentDir, "extensions"));
+        writeFileSync(join(agentDir, "mcp.json"), JSON.stringify(TEMPLATE_MCP, null, 2));
+
+        const loader = new DefaultResourceLoader({
+          cwd: REPO,
+          agentDir,
+          noExtensions: true,
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          systemPrompt: "child",
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().extensions, [], "a child session loads no extension at all");
+      } finally {
+        rmSync(agentDir, { recursive: true, force: true });
+      }
+    });
+
+    it("never forwards an MCP setting or a Linear credential into a child session", () => {
+      const session = readFileSync(join(REPO, "extensions", "aies-agents", "session.ts"), "utf8");
+      for (const forbidden of ["LINEAR_API_KEY", "PI_MCP_", "MCP_OAUTH", "bearerToken", "accessToken"]) {
+        assert.ok(!session.includes(forbidden), `child sessions must not receive ${forbidden}`);
+      }
+    });
+
+    it("sends the children a contract stripped of MCP and Linear metadata", () => {
+      const ticket = normalizeTicketContract({
+        id: "EZE-422",
+        identifier: "EZE-422",
+        title: "Fix multiply()",
+        description: "Acceptance criteria:\n\n* multiply(3, 4) returns 12",
+        status: "Todo",
+        statusType: "unstarted",
+        project: "AIES",
+        team: "Eze",
+        teamId: "433440dd-bd9a-40d0-a54b-89e10b6f482b",
+        uuid: "767a81fb-454e-4656-94b7-cf5319a509e6",
+      });
+
+      const contracts = JSON.stringify([
+        buildExploreContract(ticket, "where is multiply() implemented?"),
+        buildWorkerContract(ticket, "findings"),
+        buildVerifyContract(ticket, ["src/calculator.js"], ["npm test"]),
+      ]);
+
+      for (const forbidden of ["mcp", "oauth", "token", "LINEAR_API_KEY", "teamId", "uuid", "433440dd"]) {
+        assert.ok(!contracts.includes(forbidden), `a child contract must not carry ${forbidden}`);
+      }
+      assert.match(contracts, /EZE-422/, "the child still needs the ticket identity");
+      assert.match(contracts, /multiply\(3, 4\) returns 12/, "the child still needs the criteria");
     });
   });
 });

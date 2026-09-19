@@ -13,6 +13,9 @@ import { resolveExploreModel } from "./model.ts";
 import { executeChildSession, resolveRoleSystemPrompt } from "./session.ts";
 import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 
+/** The complete tool surface an Explore child may use. Read-only by design. */
+export const EXPLORE_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "tgrep"];
+
 export interface RunExploreOptions {
   task: string;
   context?: string;
@@ -57,7 +60,7 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
       systemPrompt,
       model,
       modelRuntime,
-      tools: ["read", "grep", "find", "ls", "tgrep"],
+      tools: [...EXPLORE_TOOLS],
       customTools: [customTgrep],
       signal,
       sessionManager: options.sessionManager,
