@@ -143,6 +143,7 @@ converted into a domain `blocked` verdict and retried three times.
 - Headless `/aies-status` exits successfully without attempting TUI output.
 - cmux real TUI renders the idle shell, `/aies-status` overview and `/aies-status detalle` in Spanish; 80-column tmux keeps the footer and overview legible.
 - Safe `/aies-run EZE-422` reached the autonomy handoff, then the CLI provider returned Anthropic 401 before the first `aies_ticket` call. No AIES tool or Linear mutation ran; EZE-422 remains `In Progress`. Linear Done and comparable after metrics are blocked on a valid model credential in the isolated profile.
+- Final committed-range native review lineage `review-fd81930d5d202d1b` could not capture its reviewer because the Pi host relay returned `MissingSessionID`; no review verdict or authority acknowledgement was produced.
 - Real baseline session located at:
   `~/.local/share/aies/agent/sessions/--Users-ezequielmenor-Proyectos-Developer-aies-smoke--/2026-09-19T14-37-13-751Z_01a0ba19-9497-7401-8142-d9e10e631d26.jsonl`.
 
