@@ -49,8 +49,8 @@ interactive `/agents` view over session-local child facts.
 | Task | Status | Outcome | Commit |
 |---|---|---|---|
 | T1 Baseline, Pi/Gentle audit and design freeze | complete | Mapped AIES-010B seams, Pi 0.85.1 usage/UI APIs, selective Gentle patterns, the EZE-423 invalid-load defect, responsive layout and six bounded work units. | `a13e97f` |
-| T2 Linear invalid-load boundary | complete | Rejects remote issues without non-empty `identifier`/`id` before state mutation, keeps the previous ticket on invalid refresh, renders a Spanish failure, and proves `no_pending_remote` is the expected stale-replay guard. | pending commit |
-| T3 Ephemeral Agent Observatory and exact usage | pending | Add lifecycle registry, mechanical activity events, model/provider, tools, paths, ring buffer and real Parent/Agents/Total token/cost aggregation without double counting. | — |
+| T2 Linear invalid-load boundary | complete | Rejects remote issues without non-empty `identifier`/`id` before state mutation, keeps the previous ticket on invalid refresh, renders a Spanish failure, and proves `no_pending_remote` is the expected stale-replay guard. | `70ad842` |
+| T3 Ephemeral Agent Observatory and exact usage | complete | Added the pure session-local registry, mechanical Spanish activity derivation, real child `SessionStats` usage sampling that survives disposal, event-driven child wiring, and run-scoped Main/Agents/Total aggregation with incremental Parent sampling. | pending commit |
 | T4 Observatory presentation and `/agents` | pending | Add active card, compact agents/status widget, interactive keyboard navigation, richer `/aies-status`, responsive footer fallback and compact DONE projection. | — |
 | T5 Quiet generic tool rendering | pending | Use Pi-supported renderer overrides for compact successful `bash/read/grep/find/edit/write`, native expansion for raw detail and automatically visible failures, without changing tool execution/model content. | — |
 | T6 Documentation, full verification and real smokes | pending | Update architecture/UX/decision docs, run full/isolation/shell checks, compare startup/render cadence, validate cmux + 80 columns + headless, and complete safe live `/aies-run` plus `/agents` smoke. | — |
@@ -130,3 +130,18 @@ capture, routing/autonomy/permission/context-policy redesign, push or PR.
   re-derives the directive. No transport behavior changed.
 - T2 independent focused verification: 75/75 tests pass across Linear,
   tool-rendering and smoke-linear; `git diff --check` passes.
+- T3 RED: the registry suite failed on a missing `usage.ts` export, and the wiring
+  suite failed 10/11 before `attachChildObservatory` existed. GREEN: registry 37/37,
+  wiring 11/11, focused child suites 143/143.
+- T3 child usage reads the real public `SessionStats` fields `tokens.total` and
+  `cost`; `cost` becomes `null` when the value is not finite and is never estimated.
+  Finalized usage lives in the registry, so it survives `session.dispose()`.
+- T3 run telemetry RED failed on the missing `applyAgents` export; GREEN 22/22,
+  then 24/24 after the incremental-sampling correction. Parent usage is reduced
+  once per appended session entry from a closure cache, reset on `session_start`.
+- Child records are ephemeral by construction: `toSnapshot` never writes `agents`
+  and `fromSnapshot` never reads it, so a resume cannot resurrect a finished child.
+- T3 full suite 518/518, isolation 518/518, `bash -n` clean, `git diff --check`
+  clean. Independent verification confirmed all seven invariants with no blocker:
+  one timer still owned by `aies-runtime`, no `sendMessage`, and unchanged
+  `aies_delegate` handoff shapes and child tool surfaces.

@@ -23,6 +23,7 @@ import {
   type VerifyHandoff,
   type WorkerHandoff,
 } from "./handoff.ts";
+import { observatory } from "./observatory.ts";
 import type { DelegationRole } from "./routing.ts";
 import {
   applyVerifyResult,
@@ -88,6 +89,25 @@ export interface VerificationStore {
 
 export interface CreateDelegateToolOptions {
   verification?: VerificationStore;
+}
+
+/**
+ * Resolve the child provider display label once. It is presentation only: a
+ * missing registry, a missing provider or a throwing registry degrades to no
+ * label and never fails the delegation.
+ */
+export function resolveProviderDisplayLabel(
+  modelRegistry: { getProviderDisplayName?: (provider: string) => string } | null | undefined,
+  model: { provider?: unknown } | null | undefined,
+): string | undefined {
+  const provider = typeof model?.provider === "string" && model.provider ? model.provider : undefined;
+  if (!provider) return undefined;
+  try {
+    const label = modelRegistry?.getProviderDisplayName?.(provider);
+    return typeof label === "string" && label.trim() ? label.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The delegated role, defaulting to 'explore' for an unrecognised input. */
@@ -251,6 +271,7 @@ export function createDelegateTool(
     async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
       const { role, task, context } = params;
       const agentDir = getAgentDir();
+      const providerLabel = resolveProviderDisplayLabel(ctx.modelRegistry, ctx.model);
 
       const current = store ? store.get() : createVerificationState();
       const commit = (next: VerificationState) => {
@@ -266,6 +287,8 @@ export function createDelegateTool(
           agentDir,
           parentModel: ctx.model,
           signal,
+          observatory,
+          providerLabel,
         });
 
         return {
@@ -285,6 +308,8 @@ export function createDelegateTool(
           agentDir,
           parentModel: ctx.model,
           signal,
+          observatory,
+          providerLabel,
         });
 
         const next = applyWorkerResult(
@@ -326,6 +351,8 @@ export function createDelegateTool(
           agentDir,
           parentModel: ctx.model,
           signal,
+          observatory,
+          providerLabel,
         });
 
         const next = applyVerifyResult(applyVerifyStart(current, startedAt), handoff, Date.now());

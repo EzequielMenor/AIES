@@ -7,6 +7,9 @@
  * call, change routing or trigger compaction.
  */
 
+import { aggregateUsage, normalizeUsage, type UsageBucket } from "./usage.ts";
+import type { AgentRecord } from "../aies-agents/observatory.ts";
+
 /** Version of the persisted shape. Bump it only with a compatible reader. */
 export const STATE_VERSION = 1;
 
@@ -186,6 +189,31 @@ export interface AutonomyObservationState {
   lastStep?: string;
 }
 
+/**
+ * Run-scoped usage telemetry (AIES-010C): the Parent, child and total token and
+ * cost numbers of the current AIES run, plus the baseline they are measured
+ * against.
+ *
+ * `baseline` is the Parent cumulative usage captured by the current run's first
+ * sample; `main` is the Parent usage since that baseline and never includes a
+ * child. `agents` is the observatory's child aggregate and `total` is
+ * `main + agents`, counted once. An unknown cost stays `null` end to end.
+ */
+export interface RunUsageState {
+  /** Parent cumulative usage at the current run's first sample; null until sampled. */
+  baseline: UsageBucket | null;
+  /** Parent usage since the run baseline. */
+  main: UsageBucket;
+  /** Aggregate of the observatory's child records. */
+  agents: UsageBucket;
+  /** `main + agents`, counted once. */
+  total: UsageBucket;
+  /** Whether a ticket run is currently active. */
+  active: boolean;
+  /** Wall-clock start of the current run, when one was recorded. */
+  startedAt: number | undefined;
+}
+
 /** Everything AIES measures about one parent session. */
 export interface AiesState {
   version: number;
@@ -199,6 +227,14 @@ export interface AiesState {
   contextGovernor: ContextGovernorState;
   ticket: TicketObservationState;
   autonomy?: AutonomyObservationState;
+  /** Current-run usage numbers plus the baseline they are measured against. */
+  runUsage: RunUsageState;
+  /**
+   * The live observatory projection for the UI: a bounded, transcript-free copy.
+   * It is ephemeral presentation state, held for the current session only and
+   * never written to or read from the persisted snapshot.
+   */
+  agents: readonly AgentRecord[];
   /** Active or most recent child activity, absent when none was observed. */
   activity?: ActivityState;
   compactionCount: number;
@@ -296,10 +332,24 @@ export function createState(now: number): AiesState {
     },
     ticket: { active: false },
     autonomy: undefined,
+    runUsage: emptyRunUsage(),
+    agents: [],
     activity: undefined,
     compactionCount: 0,
     activeToolCount: 0,
     model: undefined,
+  };
+}
+
+/** A run-local usage state with nothing measured yet. */
+function emptyRunUsage(): RunUsageState {
+  return {
+    baseline: null,
+    main: { totalTokens: 0, cost: null },
+    agents: { totalTokens: 0, cost: 0 },
+    total: { totalTokens: 0, cost: null },
+    active: false,
+    startedAt: undefined,
   };
 }
 
@@ -320,6 +370,15 @@ function cloneState(state: AiesState): AiesState {
     permissions: { ...state.permissions },
     contextGovernor: { ...state.contextGovernor },
     ticket: { ...state.ticket },
+    runUsage: {
+      baseline: state.runUsage.baseline ? { ...state.runUsage.baseline } : null,
+      main: { ...state.runUsage.main },
+      agents: { ...state.runUsage.agents },
+      total: { ...state.runUsage.total },
+      active: state.runUsage.active,
+      startedAt: state.runUsage.startedAt,
+    },
+    agents: [...state.agents],
     activity: state.activity ? { ...state.activity } : undefined,
   };
 }
@@ -661,6 +720,96 @@ export function applyResumedAt(state: AiesState, now: number): AiesState {
   return next;
 }
 
+/**
+ * Start (or restart) the current run. It clears the numbers and drops the Parent
+ * usage baseline, so the next `applyRunUsage` captures the run's own zero and the
+ * panel reports current-run telemetry instead of whole-session lifetime.
+ */
+export function applyRunStart(state: AiesState, now: number): AiesState {
+  const next = cloneState(state);
+  next.runUsage = {
+    baseline: null,
+    main: { totalTokens: 0, cost: null },
+    agents: { totalTokens: 0, cost: 0 },
+    total: { totalTokens: 0, cost: null },
+    active: true,
+    startedAt: now,
+  };
+  next.session.lastEventAt = now;
+  return next;
+}
+
+/**
+ * Fold one Parent usage sample and the observatory snapshot into the run
+ * telemetry through the existing pure `aggregateUsage`.
+ *
+ * `parentUsage` is the Parent session's cumulative usage, read from the only real
+ * Pi surface that exposes it (assistant `usage` records). No child token can hide
+ * in it: a delegated child runs in an isolated in-memory session and
+ * `aies_delegate` returns no nested usage, so Main is Parent-only and Agents is
+ * the registry, never a mix. The first sample after a run start becomes the
+ * baseline; every later sample reports the delta since then. A missing Parent
+ * sample (null/undefined) keeps the last known Main instead of flashing a zero.
+ */
+export function applyRunUsage(
+  state: AiesState,
+  parentUsage: UsageBucket | null | undefined,
+  agentsSnapshot: readonly AgentRecord[] | null | undefined,
+  now: number,
+): AiesState {
+  const next = cloneState(state);
+  const current = next.runUsage;
+
+  let baseline = current.baseline;
+  let main: UsageBucket;
+  if (parentUsage === null || parentUsage === undefined) {
+    // No fresh Parent sample (Pi could not answer): keep the last known Main
+    // rather than flashing a zero. A run start still waits for its baseline.
+    main = { ...current.main };
+  } else {
+    const parent = normalizeUsage(parentUsage);
+    baseline = current.active && current.baseline === null ? parent : current.baseline;
+    main = baseline
+      ? {
+          totalTokens: Math.max(0, parent.totalTokens - baseline.totalTokens),
+          cost:
+            parent.cost !== null && baseline.cost !== null
+              ? Math.max(0, parent.cost - baseline.cost)
+              : null,
+        }
+      : parent;
+  }
+
+  const childBuckets = (agentsSnapshot ?? []).map((record) => ({
+    totalTokens: record.totalTokens,
+    cost: record.cost,
+  }));
+  const aggregate = aggregateUsage(main, childBuckets);
+
+  next.runUsage = {
+    baseline,
+    main: aggregate.main,
+    agents: aggregate.agents,
+    total: aggregate.total,
+    active: current.active,
+    startedAt: current.startedAt,
+  };
+  next.session.lastEventAt = now;
+  return next;
+}
+
+/**
+ * Store the immutable observatory projection for the UI. It is a bounded,
+ * transcript-free copy held in memory for the current session only: the persisted
+ * snapshot never carries it and a resumed session starts with an empty registry,
+ * so a finished child is never resurrected as if it were still running.
+ */
+export function applyAgents(state: AiesState, snapshot: readonly AgentRecord[] | null | undefined): AiesState {
+  const next = cloneState(state);
+  next.agents = Array.isArray(snapshot) ? [...snapshot] : [];
+  return next;
+}
+
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
@@ -683,6 +832,20 @@ function countMap(value: unknown): Record<string, number> {
     if (count !== null && count > 0) out[key] = count;
   }
   return out;
+}
+
+/** An exact cost value, never truncated: fractional costs must survive a round trip. */
+function finiteCost(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Read a persisted usage bucket, or `null` when the value is not one. */
+function usageBucketOf(value: unknown): UsageBucket | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const totalTokens = positive(source.totalTokens);
+  if (totalTokens === null && !("cost" in source)) return null;
+  return { totalTokens: totalTokens ?? 0, cost: finiteCost(source.cost) };
 }
 
 /** The persisted projection of the state; everything the UI shows derives from it. */
@@ -744,6 +907,7 @@ export interface AiesSnapshot {
   contextGovernor?: ContextGovernorState;
   ticket?: TicketObservationState;
   autonomy?: AutonomyObservationState;
+  runUsage: RunUsageState;
   activity?: ActivityState;
 }
 
@@ -790,6 +954,14 @@ export function toSnapshot(state: AiesState): AiesSnapshot {
     contextGovernor: { ...state.contextGovernor },
     ticket: state.ticket.active ? { ...state.ticket } : undefined,
     autonomy: state.autonomy ? { ...state.autonomy } : undefined,
+    runUsage: {
+      baseline: state.runUsage.baseline ? { ...state.runUsage.baseline } : null,
+      main: { ...state.runUsage.main },
+      agents: { ...state.runUsage.agents },
+      total: { ...state.runUsage.total },
+      active: state.runUsage.active,
+      startedAt: state.runUsage.startedAt,
+    },
     activity: state.activity ? { ...state.activity } : undefined,
   };
 }
@@ -926,6 +1098,29 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
       continuationCount: positive(rawAutonomy.continuationCount) ?? 0,
       stopReason: text(rawAutonomy.stopReason),
       lastStep: text(rawAutonomy.lastStep),
+    };
+  }
+
+  // Run usage is cumulative session telemetry, so it survives a resume. Child
+  // records do NOT: the `agents` projection is intentionally never read back here,
+  // so a resumed session cannot resurrect a finished child as if it were live.
+  const rawRunUsage = (source.runUsage && typeof source.runUsage === "object" && !Array.isArray(source.runUsage)
+    ? source.runUsage
+    : undefined) as Record<string, unknown> | undefined;
+  if (rawRunUsage) {
+    const main = usageBucketOf(rawRunUsage.main) ?? { totalTokens: 0, cost: null };
+    const agents = usageBucketOf(rawRunUsage.agents) ?? { totalTokens: 0, cost: 0 };
+    const total = usageBucketOf(rawRunUsage.total) ?? {
+      totalTokens: main.totalTokens + agents.totalTokens,
+      cost: main.cost !== null && agents.cost !== null ? main.cost + agents.cost : null,
+    };
+    state.runUsage = {
+      baseline: usageBucketOf(rawRunUsage.baseline),
+      main,
+      agents,
+      total,
+      active: rawRunUsage.active === true,
+      startedAt: positive(rawRunUsage.startedAt) ?? undefined,
     };
   }
 

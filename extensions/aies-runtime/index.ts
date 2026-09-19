@@ -18,6 +18,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import {
   applyActiveToolCount,
   applyActivityFacts,
+  applyAgents,
   applyCompaction,
   applyContextUsage,
   applyDelegationEnd,
@@ -27,6 +28,8 @@ import {
   applyContextGovernorSync,
   applyPermissionsSync,
   applyResumedAt,
+  applyRunStart,
+  applyRunUsage,
   applySessionMeta,
   applyStopReason,
   applyTicketObservationSync,
@@ -60,6 +63,7 @@ import { themePaint } from "../aies-ui/paint.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
+import { observatory } from "../aies-agents/observatory.ts";
 import { getActiveContinuationController } from "../aies-agents/autonomy/controller.ts";
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
@@ -273,6 +277,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let footerTui: WidgetTui | undefined;
   let headerTui: WidgetTui | undefined;
   let widgetRegistered = false;
+  let observatoryUnsubscribe: (() => void) | undefined;
 
   // Autonomy transitions are edges, not levels: a new signal is one transition.
   let autonomySignal = "";
@@ -313,6 +318,66 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Incremental Parent usage cache. The observer samples on its 1s cadence while
+   * a child runs, and AIES-010C forbids re-parsing the whole session for
+   * presentation on every pass. We hold the number of entries already reduced
+   * plus the running cumulative totals, so each sample reduces only the entries
+   * appended since the last index and never rescans the session.
+   */
+  let usageCache: { count: number; totalTokens: number; cost: number; costKnown: boolean } | undefined;
+
+  function resetParentUsageCache(): void {
+    usageCache = undefined;
+  }
+
+  /**
+   * Cumulative Parent usage from the only real surface Pi exposes for it: the
+   * assistant `usage` records of this session's entries. No child token can be in
+   * here — a delegated child runs in an isolated in-memory session and
+   * `aies_delegate` returns no nested usage — so Main can never include a child.
+   * Returns `undefined` when Pi cannot answer, and the caller keeps the last
+   * known run telemetry; unknown cost stays `null`.
+   */
+  function parentUsageOf(ctx: ExtensionContext): { totalTokens: number; cost: number | null } | undefined {
+    let entries;
+    try {
+      entries = ctx.sessionManager.getEntries();
+    } catch {
+      return undefined;
+    }
+
+    // A cache from a different (or compacted) session cannot be trusted: rebuild
+    // it from the current entries instead of carrying another session's totals.
+    if (!usageCache || usageCache.count > entries.length) {
+      usageCache = { count: 0, totalTokens: 0, cost: 0, costKnown: true };
+    }
+
+    for (let index = usageCache.count; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry.type !== "message") continue;
+      const message = entry.message as { role?: unknown; usage?: unknown };
+      if (message.role !== "assistant") continue;
+      const usage = message.usage as { totalTokens?: unknown; cost?: { total?: unknown } } | undefined;
+      if (!usage || typeof usage !== "object") continue;
+
+      if (typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens)) {
+        usageCache.totalTokens += usage.totalTokens;
+      }
+      const total = usage.cost && typeof usage.cost === "object" ? (usage.cost as { total?: unknown }).total : undefined;
+      if (typeof total === "number" && Number.isFinite(total)) usageCache.cost += total;
+      else usageCache.costKnown = false;
+    }
+    // Every entry up to the current length is now reduced exactly once, including
+    // the ones skipped by the guards above.
+    usageCache.count = entries.length;
+
+    return {
+      totalTokens: usageCache.totalTokens,
+      cost: usageCache.costKnown ? usageCache.cost : null,
+    };
   }
 
   function notify(ctx: ExtensionContext, message: string, type: "info" | "warning" | "error"): void {
@@ -361,6 +426,18 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
   }
 
+  /**
+   * Fold the current registry and the cumulative Parent usage into the run
+   * telemetry. It reuses the observer's single render pass and adds no timer, loop
+   * or poller; a session that cannot answer leaves the last known numbers intact
+   * through `parentUsageOf` returning undefined.
+   */
+  function sampleRunUsage(ctx: ExtensionContext): void {
+    const snapshot = observatory.snapshot();
+    state = applyAgents(state, snapshot);
+    state = applyRunUsage(state, parentUsageOf(ctx), snapshot, Date.now());
+  }
+
   /** Fire at most once per autonomy edge (enable, or a new stop reason). */
   function observeAutonomy(ctx: ExtensionContext): void {
     const autonomy = state.autonomy;
@@ -380,7 +457,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     autonomyEnabled = enabled;
     autonomyStopReason = stopReason;
 
-    if (enabling) notify(ctx, `◆ AUTO · ${ticket ?? "sesión"}`, "info");
+    if (enabling) {
+      // Autonomy just started a ticket run: the panel reports from here, not from
+      // the whole session's lifetime usage.
+      state = applyRunStart(state, Date.now());
+      notify(ctx, `◆ AUTO · ${ticket ?? "sesión"}`, "info");
+    }
     if (newStop && stopReason) handleStopReason(ctx, stopReason);
   }
 
@@ -661,6 +743,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   function render(ctx: ExtensionContext): void {
     syncObservation(ctx);
     observeAutonomy(ctx);
+    sampleRunUsage(ctx);
 
     if (ctx.mode !== "tui") return;
 
@@ -778,6 +861,22 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       autonomyEnabled = false;
       autonomyStopReason = null;
       lastVerify = undefined;
+
+      // A session switch must not carry another session's cumulative Parent
+      // usage: reset the incremental cache before the first sample.
+      resetParentUsageCache();
+
+      // The observatory registry is one session's run. Start from empty, then
+      // repaint once per child event; a stale subscription is dropped first so
+      // records never leak across sessions.
+      observatoryUnsubscribe?.();
+      observatory.reset();
+      observatoryUnsubscribe = observatory.subscribe((snapshot) => {
+        guard(() => {
+          state = applyAgents(state, snapshot);
+          requestRender();
+        });
+      });
 
       state = createState(now);
       state = applySessionMeta(state, {
@@ -897,6 +996,8 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     guard(() => clearActivity(ctx));
     guard(() => clearShell(ctx));
     stopClock();
+    observatoryUnsubscribe?.();
+    observatoryUnsubscribe = undefined;
   });
 
   pi.registerCommand("aies-status", {
@@ -905,6 +1006,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       guard(() => {
         state = applyModel(state, ctx.model);
         syncObservation(ctx);
+        sampleRunUsage(ctx);
 
         const snapshot = toSnapshot(state);
         const now = Date.now();

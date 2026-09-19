@@ -18,13 +18,21 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import {
   createVerifyProtocolError,
+  isProtocolError,
   validateVerifyCompletion,
   type VerifyRunResult,
   type VerifyVerdict,
 } from "./handoff.ts";
 import { resolveVerifyModel } from "./model.ts";
+import type { AgentObservatory, AgentStatus } from "./observatory.ts";
 import type { SandboxConfigOptions } from "./sandbox.ts";
-import { executeChildSession, resolveRoleSystemPrompt } from "./session.ts";
+import {
+  beginChildObservation,
+  executeChildSession,
+  finishChildObservation,
+  projectModelIdentity,
+  resolveRoleSystemPrompt,
+} from "./session.ts";
 import { createTgrepToolDefinition, type TgrepRunner } from "./tgrep.ts";
 import { buildVerifyTaskInput } from "./verification.ts";
 import { createVerifyBashToolDefinition, type VerifyBashRunner } from "./verify-guard.ts";
@@ -208,16 +216,37 @@ export interface RunVerifyOptions {
   tgrepRunner?: TgrepRunner;
   bashRunner?: VerifyBashRunner;
   sandboxOptions?: SandboxConfigOptions;
+  /** Session-local presentation registry; the runner only opens and closes a record. */
+  observatory?: AgentObservatory;
+  /** Provider display label pre-resolved by the caller; the registry falls back to the id. */
+  providerLabel?: string;
+}
+
+/** A protocol error is never a domain verdict: it is a failed observation. */
+function verifyAgentStatus(result: VerifyRunResult): AgentStatus {
+  if (isProtocolError(result)) return "failed";
+  if (result.status === "pass") return "completed";
+  if (result.status === "fail") return "failed";
+  return "blocked";
+}
+
+/** A compact, structured fact line: never a transcript and never the summary. */
+function summarizeVerifyResult(result: VerifyRunResult): string {
+  if (isProtocolError(result)) return "error de protocolo";
+  const total = result.criteria.length;
+  const passed = result.criteria.filter((entry) => entry.status === "pass").length;
+  return `${passed}/${total} criterios`;
 }
 
 /**
  * Execute an independent verification run in a dedicated child AgentSession.
  */
 export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyRunResult> {
-  const { task, criteria, cwd, agentDir, modelRuntime, parentModel, signal } = options;
+  const { task, criteria, cwd, agentDir, modelRuntime, parentModel, signal, observatory } = options;
 
   const systemPrompt = resolveRoleSystemPrompt("verify", agentDir, options.systemPrompt);
   const model = options.model ?? (await resolveVerifyModel(modelRuntime, parentModel, agentDir));
+  const identity = projectModelIdentity(model);
 
   // The child prompt is the structured verification input, nothing else.
   const verifyInput = buildVerifyTaskInput({
@@ -237,7 +266,22 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
   const collector = createVerifyCompletionCollector();
   const completeTool = createVerifyCompleteTool({ criteria, collector });
 
+  let agentId: string | undefined;
+  let result: VerifyRunResult = createVerifyProtocolError(
+    "session_failure",
+    "verification did not run",
+  );
+
   try {
+    agentId = beginChildObservation(observatory, {
+      role: "verify",
+      modelId: identity.modelId,
+      modelLabel: identity.modelLabel,
+      providerId: identity.providerId,
+      providerLabel: options.providerLabel ?? null,
+      at: Date.now(),
+    });
+
     await executeChildSession({
       task: verifyInput,
       cwd,
@@ -249,22 +293,34 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
       customTools: [customTgrep, guardedBash, completeTool],
       signal,
       sessionManager: options.sessionManager,
+      observatory,
+      agentId,
     });
 
-    return resolveVerifyResult(collector);
+    result = resolveVerifyResult(collector);
   } catch (error: any) {
     // A captured verdict survives a failing continuation: the completion, not the
     // prose or the stream, is the authority.
     if (collector.duplicate) {
-      return createVerifyProtocolError(
+      result = createVerifyProtocolError(
         "duplicate_completion",
         "the verify child reported more than one valid verdict",
       );
+    } else if (collector.verdict) {
+      result = collector.verdict;
+    } else {
+      result = createVerifyProtocolError(
+        "session_failure",
+        `Verify session failed: ${error?.message ?? String(error)}`,
+      );
     }
-    if (collector.verdict) return collector.verdict;
-    return createVerifyProtocolError(
-      "session_failure",
-      `Verify session failed: ${error?.message ?? String(error)}`,
-    );
+  } finally {
+    finishChildObservation(observatory, agentId, {
+      status: verifyAgentStatus(result),
+      result: summarizeVerifyResult(result),
+      at: Date.now(),
+    });
   }
+
+  return result;
 }
