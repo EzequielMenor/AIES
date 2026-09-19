@@ -15,7 +15,7 @@ import { renderFooter } from "../aies-ui/footer.ts";
 export { formatDuration, formatTokens, renderFooter };
 
 /** Width of the label column in the status report. */
-const LABEL_WIDTH = 18;
+const LABEL_WIDTH = 22;
 
 /** How many tools to list under "most used". */
 const TOP_TOOLS = 5;
@@ -41,6 +41,15 @@ function peakLabel(snapshot: AiesSnapshot): string {
   return ownedWindow ? `${peak} (ventana ${formatTokens(snapshot.peakContextWindow)})` : peak;
 }
 
+/** The ticket's verification verdict: PASS stays a token, the qualifier and absent state are Spanish. */
+function ticketVerifyLabel(snapshot: AiesSnapshot): string {
+  // PASS stays a technical token; only the human qualifier and the absent state are Spanish.
+  if (snapshot.ticket?.validVerify) return "PASS (válido)";
+  const status = snapshot.verification?.status?.toUpperCase();
+  if (!status || status === "NONE") return "sin verificar";
+  return status;
+}
+
 /** The `/aies-status` report: the same numbers, unfolded for a human. */
 export function renderStatusReport(snapshot: AiesSnapshot, now: number): string {
   const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
@@ -55,24 +64,24 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
     "",
     ...section("Contexto", [
       row("actual", `${formatTokens(snapshot.contextTokens)}${window}${percent}`),
-      row("peak", peakLabel(snapshot)),
-      row("compactions", String(snapshot.compactionCount)),
+      row("pico", peakLabel(snapshot)),
+      row("compactaciones", String(snapshot.compactionCount)),
     ]),
     ...(snapshot.contextGovernor
-      ? section("Context governor", [
-          row("zone", snapshot.contextGovernor.zone),
-          row("current", formatTokens(snapshot.contextGovernor.currentTokens)),
-          row("compact at", formatTokens(snapshot.contextGovernor.compactAtTokens)),
-          row("ceiling", formatTokens(snapshot.contextGovernor.ceilingTokens)),
-          row("pending", snapshot.contextGovernor.compactPending ? "yes" : "no"),
-          row("compacting", snapshot.contextGovernor.compacting ? "yes" : "no"),
-          row("compactions", String(snapshot.contextGovernor.compactionCount)),
-          row("oversized", String(snapshot.contextGovernor.oversizedResults)),
+      ? section("Gobernador de contexto", [
+          row("zona", snapshot.contextGovernor.zone),
+          row("actual", formatTokens(snapshot.contextGovernor.currentTokens)),
+          row("compactar en", formatTokens(snapshot.contextGovernor.compactAtTokens)),
+          row("techo", formatTokens(snapshot.contextGovernor.ceilingTokens)),
+          row("pendiente", snapshot.contextGovernor.compactPending ? "sí" : "no"),
+          row("compactando", snapshot.contextGovernor.compacting ? "sí" : "no"),
+          row("compactaciones", String(snapshot.contextGovernor.compactionCount)),
+          row("sobredimensionados", String(snapshot.contextGovernor.oversizedResults)),
         ])
       : []),
-    ...section("Padre", [
-      row("tool calls", String(snapshot.toolCalls)),
-      row("reads", String(snapshot.sourceReads)),
+    ...section("Proceso principal", [
+      row("llamadas", String(snapshot.toolCalls)),
+      row("lecturas", String(snapshot.sourceReads)),
       row("búsquedas", String(snapshot.searchCalls)),
       row("shell inspección", String(snapshot.shellInspections)),
       row("archivos", String(snapshot.filesInspected.length)),
@@ -94,7 +103,7 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
           row("estado", snapshot.verification.status.toUpperCase()),
           row("válido", snapshot.verification.valid ? "sí" : "no"),
           row("intentos", String(snapshot.verification.attempts)),
-          row("repairs", `${snapshot.verification.repairs} / ${snapshot.verification.maxRepairs}`),
+          row("reparaciones", `${snapshot.verification.repairs} / ${snapshot.verification.maxRepairs}`),
           row("pendiente", snapshot.verification.awaiting ? "sí" : "no"),
           row(
             "última duración",
@@ -107,11 +116,11 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
       : []),
     ...(snapshot.ticket && snapshot.ticket.active && snapshot.ticket.identifier
       ? section("Ticket", [
-          row("identifier", snapshot.ticket.identifier),
-          row("title", snapshot.ticket.title ? (snapshot.ticket.title.length > 35 ? `${snapshot.ticket.title.slice(0, 32)}...` : snapshot.ticket.title) : "-"),
-          row("status", snapshot.ticket.status ?? "-"),
-          row("work", snapshot.ticket.workState ?? "-"),
-          row("verify", snapshot.ticket.validVerify ? "PASS (valid)" : (snapshot.verification?.status?.toUpperCase() ?? "NONE")),
+          row("id", snapshot.ticket.identifier),
+          row("título", snapshot.ticket.title ? (snapshot.ticket.title.length > 35 ? `${snapshot.ticket.title.slice(0, 32)}...` : snapshot.ticket.title) : "-"),
+          row("situación", snapshot.ticket.status ?? "-"),
+          row("trabajo", snapshot.ticket.workState ?? "-"),
+          row("verify", ticketVerifyLabel(snapshot)),
         ])
       : []),
     ...(snapshot.autonomy
@@ -120,7 +129,7 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
           row("ticket", snapshot.autonomy.ticketId ?? "-"),
           row("continuaciones", String(snapshot.autonomy.continuationCount)),
           row("último paso", snapshot.autonomy.lastStep ?? "-"),
-          row("stop reason", snapshot.autonomy.stopReason ?? "-"),
+          row("motivo de parada", snapshot.autonomy.stopReason ?? "-"),
         ])
       : []),
     ...(snapshot.permissions
@@ -134,20 +143,20 @@ export function renderStatusReport(snapshot: AiesSnapshot, now: number): string 
           row("fallos sandbox", String(snapshot.permissions.sandboxFailures)),
         ])
       : []),
-    ...section("Resultados de tools", [
+    ...section("Resultados de herramientas", [
       row("devueltos", String(snapshot.toolResults)),
       row("con error", String(snapshot.toolErrors)),
       row("caracteres", group(snapshot.outputChars)),
-      row("mayor", `${group(snapshot.largestOutputChars)} chars`),
+      row("mayor", `${group(snapshot.largestOutputChars)} caracteres`),
     ]),
-    ...section("Runtime", [
+    ...section("Entorno de ejecución", [
       row("modelo", model),
       row("activa", formatDuration(now - snapshot.startedAt)),
       ...(typeof snapshot.resumedAt === "number"
         ? [row("esta ejecución", formatDuration(now - snapshot.resumedAt))]
         : []),
-      row("tools activas", String(snapshot.activeToolCount)),
-      row("stop reason", snapshot.stopReason ?? "-"),
+      row("herramientas activas", String(snapshot.activeToolCount)),
+      row("motivo de parada", snapshot.stopReason ?? "-"),
       row("sesión", snapshot.sessionId ?? "-"),
     ]),
     "Mide, no gobierna: ninguna métrica cambia el comportamiento.",

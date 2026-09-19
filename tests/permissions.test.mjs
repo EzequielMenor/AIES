@@ -508,6 +508,58 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(tel.denials, 0);
     });
 
+    it("prefers ui.select and offers exactly the two Spanish choices", async () => {
+      let captured = { title: "", options: [] };
+      const ctx = {
+        hasUI: true,
+        ui: {
+          select: async (title, options) => {
+            captured = { title, options };
+            return "Permitir una vez";
+          },
+          confirm: async () => {
+            throw new Error("select must be preferred over confirm");
+          },
+        },
+      };
+
+      const evalAsk = { action: "ask", prompt: "Install package express?", reason: "Package manager mutation" };
+      const result = await handlePermissionGate(evalAsk, ctx);
+
+      assert.equal(result.allowed, true);
+      assert.deepEqual(captured.options, ["Permitir una vez", "Denegar"]);
+      assert.match(captured.title, /Install package express/u);
+    });
+
+    it("denies when the select answer is not the allow option, or when it is dismissed", async () => {
+      const denyCtx = { hasUI: true, ui: { select: async () => "Denegar" } };
+      const denied = await handlePermissionGate({ action: "ask", prompt: "Install X" }, denyCtx);
+      assert.equal(denied.allowed, false);
+      assert.match(denied.reason ?? "", /Operación rechazada por el usuario/iu);
+
+      const dismissedCtx = { hasUI: true, ui: { select: async () => undefined } };
+      const dismissed = await handlePermissionGate({ action: "ask", prompt: "Install X" }, dismissedCtx);
+      assert.equal(dismissed.allowed, false);
+      assert.match(dismissed.reason ?? "", /Operación rechazada por el usuario/iu);
+    });
+
+    it("falls back to confirm when the host has no select", async () => {
+      let confirmed = false;
+      const ctx = {
+        hasUI: true,
+        ui: {
+          confirm: async () => {
+            confirmed = true;
+            return true;
+          },
+        },
+      };
+
+      const result = await handlePermissionGate({ action: "ask", prompt: "Install X" }, ctx);
+      assert.equal(confirmed, true);
+      assert.equal(result.allowed, true);
+    });
+
     it("denies action when UI confirm returns false", async () => {
       const ctx = {
         hasUI: true,
@@ -524,7 +576,7 @@ describe("AIES-006 Permission Boundaries", () => {
 
       const result = await handlePermissionGate(evalAsk, ctx);
       assert.equal(result.allowed, false);
-      assert.match(result.reason ?? "", /Operation rejected by user/i);
+      assert.match(result.reason ?? "", /Operación rechazada por el usuario/iu);
 
       const tel = getPermissionTelemetry();
       assert.equal(tel.approvals, 1);

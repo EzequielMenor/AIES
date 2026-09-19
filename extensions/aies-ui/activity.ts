@@ -101,11 +101,11 @@ function checksFact(activity: ActivityRecord): string | undefined {
   const passed = activity.checksPassed;
   if (typeof total === "number" && Number.isFinite(total) && total > 0) {
     if (typeof passed === "number" && Number.isFinite(passed)) {
-      return passed >= total ? "checks passed" : `${passed}/${total} checks`;
+      return passed >= total ? "checks aprobados" : `${passed}/${total} checks`;
     }
     return `${total} checks`;
   }
-  return isPositive(passed) ? "checks passed" : undefined;
+  return isPositive(passed) ? "checks aprobados" : undefined;
 }
 
 /** `1 archivo`, `3 archivos`: a count of one is not a plural in Spanish. */
@@ -137,21 +137,23 @@ function facts(activity: ActivityRecord): string[] {
     if (!out.length && activity.outcome === "blocked") out.push("la verificación no pudo concluir");
   }
 
-  if (!out.length && activity.summary) {
-    const summary = singleLine(activity.summary);
-    if (summary) out.push(summary);
-  }
+  // No structured facts means no fact line: the raw child summary stays in the
+  // internal handoff and is never re-rendered as a default card or entry fact.
   return out;
 }
 
 /** The "what it is doing" subtitle for a live child. */
-function liveSubtitle(activity: ActivityRecord, stage: Stage): string {
+function liveSubtitle(activity: ActivityRecord, stage: Stage, ticketTitle: string | undefined): string {
+  // Verify reports the criterion count, which is its own authority, not the task.
   if (activity.role === "verify" && typeof activity.criteriaTotal === "number" && activity.criteriaTotal >= 1) {
     const noun = activity.criteriaTotal === 1 ? "criterio" : "criterios";
     return `Comprobando ${activity.criteriaTotal} ${noun}…`;
   }
 
-  const task = singleLine(activity.task);
+  // Prefer the active ticket title so a Parent-authored English task prompt never
+  // leaks into the default UI; fall back to the delegation's own task text.
+  const title = singleLine(ticketTitle ?? "");
+  const task = title || singleLine(activity.task);
   if (activity.role === "worker" && stage === "REPAIR") {
     return task ? `reparando · ${task}` : "reparando";
   }
@@ -184,7 +186,7 @@ export function renderActivityCard(
   activity: ActivityRecord,
   stage: Stage,
   now: number,
-  options: { width?: number; paint?: Paint; showModel?: boolean } = {},
+  options: { width?: number; paint?: Paint; showModel?: boolean; ticketTitle?: string } = {},
 ): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
   const width = positiveWidth(options.width);
@@ -194,7 +196,7 @@ export function renderActivityCard(
   if (live) {
     const head = paint.fg("accent", `◆ ${roleLabel(activity.role)}`);
 
-    const rawSubtitle = liveSubtitle(activity, stage);
+    const rawSubtitle = liveSubtitle(activity, stage, options.ticketTitle);
     const shownSubtitle = width !== undefined ? clip(rawSubtitle, width - 2) : singleLine(rawSubtitle);
     const subtitle = shownSubtitle ? paint.fg("muted", `  ${shownSubtitle}`) : "";
 

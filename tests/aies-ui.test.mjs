@@ -20,6 +20,7 @@ import {
   applyContextUsage,
   applyDelegationEnd,
   applyDelegationStart,
+  applyModel,
   applyParentMutation,
   applyTicketObservationSync,
   applyVerificationReport,
@@ -28,11 +29,11 @@ import {
   fromSnapshot,
   toSnapshot,
 } from "../extensions/aies-runtime/state.ts";
-import { renderFooter } from "../extensions/aies-ui/footer.ts";
+import { renderFooter, renderHeader } from "../extensions/aies-ui/footer.ts";
 import { clip, formatDuration, formatTokens, singleLine } from "../extensions/aies-ui/format.ts";
 import { deriveStage, isCompacting, isContextPressure, verificationIndicator } from "../extensions/aies-ui/vocabulary.ts";
 import { ACTIVITY_TTL_MS, isActivityVisible, renderActivityCard, renderActivityEntry } from "../extensions/aies-ui/activity.ts";
-import { renderApprovalPrompt } from "../extensions/aies-ui/approval.ts";
+import { approvalOptions, renderApprovalPrompt } from "../extensions/aies-ui/approval.ts";
 import { PLAIN_PAINT, themePaint } from "../extensions/aies-ui/paint.ts";
 import { renderBlockedSummary, renderDoneSummary, renderStatusOverview } from "../extensions/aies-ui/summary.ts";
 
@@ -156,30 +157,30 @@ describe("vocabulary", () => {
 
 describe("footer", () => {
   it("shows idle, ticket + WORK and ticket + VERIFY", () => {
-    assert.equal(render(snap(withContext(createState(T0), 31_000))), "AIES · ready · ctx 31k");
+    assert.equal(render(snap(withContext(createState(T0), 31_000))), "❈ AIES · listo · ctx 31k");
 
     const working = applyDelegationStart(withContext(withTicket(createState(T0)), 42_000), "worker", T0);
-    assert.equal(render(snap(working)), "AIES · EZE-417 · WORK · ctx 42k");
+    assert.equal(render(snap(working)), "❈ AIES · EZE-417 · WORK · ctx 42k");
 
     const verifying = applyDelegationStart(withContext(withTicket(createState(T0)), 45_000), "verify", T0);
-    assert.equal(render(snap(verifying)), "AIES · EZE-417 · VERIFY · ctx 45k");
+    assert.equal(render(snap(verifying)), "❈ AIES · EZE-417 · VERIFY · ctx 45k");
   });
 
   it("shows a placeholder only at IDLE and omits it while work is in flight", () => {
-    assert.equal(render(snap(withContext(createState(T0), 31_000))), "AIES · ready · ctx 31k");
+    assert.equal(render(snap(withContext(createState(T0), 31_000))), "❈ AIES · listo · ctx 31k");
 
     const idleTicket = withContext(withTicket(createState(T0)), 46_000);
-    assert.equal(render(snap(idleTicket)), "AIES · EZE-417 · ctx 46k");
+    assert.equal(render(snap(idleTicket)), "❈ AIES · EZE-417 · ctx 46k");
 
     const exploringNoTicket = applyDelegationStart(withContext(createState(T0), 42_000), "explore", T0);
-    assert.equal(render(snap(exploringNoTicket)), "AIES · EXPLORE · ctx 42k");
+    assert.equal(render(snap(exploringNoTicket)), "❈ AIES · EXPLORE · ctx 42k");
 
     const auto = applyAutonomySync(withContext(withTicket(createState(T0)), 42_000), { enabled: true, ticketId: "EZE-417" });
     const exploringTicket = applyDelegationStart(auto, "explore", T0);
-    assert.equal(render(snap(exploringTicket)), "AIES · EZE-417 · EXPLORE · ctx 42k · AUTO");
+    assert.equal(render(snap(exploringTicket)), "❈ AIES · EZE-417 · EXPLORE · ctx 42k · AUTO");
 
     const doneTicket = applyAutonomySync(withContext(withTicket(createState(T0)), 46_000), { enabled: false, stopReason: "completed" });
-    assert.equal(render(snap(doneTicket)), "AIES · EZE-417 · DONE · ctx 46k");
+    assert.equal(render(snap(doneTicket)), "❈ AIES · EZE-417 · DONE · ctx 46k");
     assert.equal(render(snap(doneTicket)).includes("V:PASS"), false);
   });
 
@@ -188,9 +189,19 @@ describe("footer", () => {
     const on = applyAutonomySync(base, { enabled: true, ticketId: "EZE-417" });
     const off = applyAutonomySync(base, { enabled: false });
 
-    assert.equal(render(snap(on)), "AIES · EZE-417 · ctx 40k · AUTO");
+    assert.equal(render(snap(on)), "❈ AIES · EZE-417 · ctx 40k · AUTO");
     assert.equal(render(snap(off)).includes("AUTO"), false);
     assert.equal(render(snap(createState(T0))).includes("AUTO"), false);
+  });
+
+  it("appends the compact cwd and model only when the width permits", () => {
+    const ticket = withContext(withTicket(createState(T0)), 42_000);
+    const modeled = applyModel(ticket, { id: "model-z", provider: "anthropic" });
+
+    assert.match(render(snap(modeled), T0, { width: 120 }), / · model-z$/u);
+    assert.equal(render(snap(modeled), T0, { width: 30 }).includes("model-z"), false);
+    assert.match(render(snap(ticket), T0, { width: 120, cwd: "/home/dev/aies-smoke" }), / · aies-smoke$/u);
+    assert.equal(render(snap(ticket), T0, { width: 30, cwd: "/home/dev/aies-smoke" }).includes("aies-smoke"), false);
   });
 
   it("marks context pressure and compaction without a peak or a ceiling", () => {
@@ -244,15 +255,66 @@ describe("footer", () => {
       return applyDelegationStart(state, "worker", T0);
     })();
 
-    for (const width of [80, 48, 32, 24]) {
+    for (const width of [80, 48, 32, 24, 16]) {
       const footer = render(snap(rich), T0, { width });
       assert.ok(footer.length <= width, `width ${width}: "${footer}"`);
-      assert.ok(footer.startsWith("AIES · EZE-417"), `width ${width}: "${footer}"`);
+      assert.ok(footer.startsWith("❈ AIES · EZE-417"), `width ${width}: "${footer}"`);
       assert.equal(footer.split("\n").length, 1);
     }
 
-    assert.match(render(snap(rich), T0, { width: 32 }), /^AIES · EZE-417 · WORK · ctx 42k$/u);
-    assert.match(render(snap(rich), T0, { width: 24 }), /^AIES · EZE-417 · ctx 42k$/u);
+    assert.equal(render(snap(rich), T0, { width: 70 }), "❈ AIES · EZE-417 · WORK · ctx 42k · AUTO · V:PASS");
+    assert.equal(render(snap(rich), T0, { width: 48 }), "❈ AIES · EZE-417 · WORK · ctx 42k · AUTO");
+    assert.equal(render(snap(rich), T0, { width: 39 }), "❈ AIES · EZE-417 · WORK · ctx 42k");
+    assert.equal(render(snap(rich), T0, { width: 32 }), "❈ AIES · EZE-417 · WORK");
+    assert.equal(render(snap(rich), T0, { width: 22 }), "❈ AIES · EZE-417");
+  });
+
+  it("never drops a context pressure alarm, even when clipped", () => {
+    let state = withContext(withTicket(createState(T0)), 104_000);
+    state = applyContextGovernorSync(state, { zone: "pressure", currentTokens: 104_000 });
+    state = applyDelegationStart(state, "worker", T0);
+
+    const at32 = render(snap(state), T0, { width: 32 });
+    assert.ok(at32.length <= 32, at32);
+    assert.equal(at32, "❈ AIES · EZE-417 · ctx 104k !");
+
+    const at24 = render(snap(state), T0, { width: 24 });
+    assert.ok(at24.length <= 24, at24);
+    assert.ok(at24.startsWith("❈ AIES · EZE-417 · ctx"), at24);
+  });
+});
+
+describe("header", () => {
+  function ticketState(identifier, status, title) {
+    return applyTicketObservationSync(createState(T0), { active: true, identifier, status, title });
+  }
+
+  it("renders a boxed identity with ID, title, status and AUTO", () => {
+    const state = applyAutonomySync(ticketState("EZE-417", "In Progress", "Implement first-run guidance"), { enabled: true, ticketId: "EZE-417" });
+    const lines = renderHeader(snap(state), 80);
+
+    assert.equal(lines.length, 4);
+    assert.match(lines[0], /❈ EZE-417/u);
+    const text = lines.join("\n");
+    assert.match(text, /Implement first-run guidance/u);
+    assert.match(text, /In Progress/u);
+    assert.match(text, /AUTO/u);
+    assert.equal(text.includes("http"), false);
+    assert.equal(text.toLowerCase().includes("criteri"), false);
+  });
+
+  it("degrades to one compact line at narrow widths", () => {
+    const state = ticketState("EZE-422", "In Progress", "A very long title that must not appear");
+    assert.deepEqual(renderHeader(snap(state), 40), ["EZE-422 · In Progress"]);
+
+    const auto = applyAutonomySync(state, { enabled: true, ticketId: "EZE-422" });
+    assert.deepEqual(renderHeader(snap(auto), 40), ["EZE-422 · In Progress · AUTO"]);
+    assert.equal(renderHeader(snap(state), 40).join(" ").includes("long title"), false);
+  });
+
+  it("renders no header without an active ticket", () => {
+    assert.deepEqual(renderHeader(snap(createState(T0)), 80), []);
+    assert.deepEqual(renderHeader(snap(createState(T0)), 40), []);
   });
 });
 
@@ -308,7 +370,7 @@ describe("activity", () => {
 
     assert.deepEqual(renderActivityCard({ role: "worker", task: "", startedAt: T0, finishedAt: T0 + 51_000, outcome: "done", changedFiles: 3, checksPassed: 3, checksTotal: 3 }, "IDLE", T0 + 51_000), [
       "✓ Worker · 00:51",
-      "  3 archivos modificados · checks passed",
+      "  3 archivos modificados · checks aprobados",
     ]);
 
     assert.deepEqual(renderActivityCard({ role: "verify", task: "", startedAt: T0, finishedAt: T0 + 27_000, outcome: "done", criteriaPassed: 4, criteriaTotal: 4 }, "IDLE", T0 + 27_000), [
@@ -330,6 +392,27 @@ describe("activity", () => {
     assert.deepEqual(noFacts, ["✓ Explore · 00:16"]);
     assert.equal(noFacts.join("\n").includes("0 "), false);
     assert.equal(noFacts.join("\n").includes("—"), false);
+  });
+
+  it("prefers the active ticket title over the parent-authored task in the live card", () => {
+    const worker = renderActivityCard(
+      { role: "worker", task: "Implement the parent English prompt", startedAt: T0 },
+      "WORK",
+      T0 + 5_000,
+      { ticketTitle: "Implement first-run guidance" },
+    );
+    assert.equal(worker[1], "  Implement first-run guidance");
+
+    const withoutTicket = renderActivityCard({ role: "worker", task: "Implement the parent English prompt", startedAt: T0 }, "WORK", T0 + 5_000);
+    assert.equal(withoutTicket[1], "  Implement the parent English prompt");
+
+    const verify = renderActivityCard(
+      { role: "verify", task: "Verify the parent prompt", startedAt: T0, criteriaTotal: 4 },
+      "VERIFY",
+      T0 + 5_000,
+      { ticketTitle: "Implement first-run guidance" },
+    );
+    assert.equal(verify[1], "  Comprobando 4 criterios…");
   });
 
   it("renders the durable transcript entry", () => {
@@ -367,6 +450,10 @@ describe("approval", () => {
     const blankAction = renderApprovalPrompt({ action: "   ", reason: "  " });
     assert.equal(blankAction.message, "");
     assert.equal(blankAction.title, "AIES necesita permiso");
+  });
+
+  it("exposes the two exact approval choices for a select dialog", () => {
+    assert.deepEqual(approvalOptions(), ["Permitir una vez", "Denegar"]);
   });
 });
 
@@ -438,17 +525,19 @@ describe("summaries", () => {
     const full = renderStatusOverview(snap(state), T0 + 402_000);
     assert.equal(full.split("\n")[0], "AIES");
     assert.equal(field(full, "actual"), "43k / 150k · verde");
-    assert.equal(field(full, "peak"), "43k");
-    assert.equal(field(full, "compactions"), "0");
+    assert.equal(field(full, "pico"), "43k");
+    assert.equal(field(full, "compactaciones"), "0");
     assert.equal(field(full, "estado"), "PASS");
     assert.equal(field(full, "intentos"), "1");
+    assert.equal(field(full, "reparaciones"), "0 / 2");
+    assert.ok(full.includes("Ejecución"), full);
     assert.ok(full.split("\n").length <= 30, `too many lines:\n${full}`);
 
     const empty = renderStatusOverview(snap(createState(T0)), T0);
     assert.equal(empty.split("\n")[0], "AIES");
     assert.equal(field(empty, "actual"), "?");
-    assert.equal(field(empty, "peak"), "0");
-    assert.equal(field(empty, "compactions"), "0");
+    assert.equal(field(empty, "pico"), "0");
+    assert.equal(field(empty, "compactaciones"), "0");
     assert.equal(empty.includes("Ticket"), false);
     assert.equal(empty.includes("Verificación"), false);
   });

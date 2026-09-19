@@ -1,10 +1,13 @@
 /**
  * AIES identity extension.
  *
- * Its only job is to make the active profile visible. AIES serves this
- * extension from the isolated Pi profile, so when it is loaded, AIES is loaded
- * and the ambient Pi profile is not. It registers no tools and changes no
- * behavior.
+ * Its job is to make the active profile visible and to give the Parent session
+ * its one resident, short Spanish/quietness rule. AIES serves this extension from
+ * the isolated Pi profile, so when it is loaded, AIES is loaded and the ambient
+ * Pi profile is not. It registers no tools and changes no runtime behaviour.
+ *
+ * Child sessions are created with `noExtensions: true`, so they never load this
+ * extension and never receive the Parent rule: their prompts stay technical.
  */
 
 import { CONFIG_DIR_NAME, VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -13,16 +16,30 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_PATH = fileURLToPath(import.meta.url);
 
+/**
+ * The single resident Parent instruction: answer in Spanish, keep technical
+ * identifiers in their original language, and do not narrate steps the UI already
+ * shows. Appended once per agent start, never duplicated.
+ */
+export const RESIDENT_SYSTEM_RULE = [
+  "Responde siempre al usuario en castellano.",
+  "Mantén comandos, código, nombres técnicos e identificadores en su idioma original.",
+  "No narres pasos internos si la UI ya los representa.",
+].join("\n");
+
+/** First line of the rule, used to detect an already-amended prompt. */
+const RULE_MARKER = "Responde siempre al usuario en castellano.";
+
 function report(cwd: string, mode: string): string {
-  const row = (label: string, value: string) => `  ${label.padEnd(16)}${value}`;
+  const row = (label: string, value: string) => `  ${label.padEnd(22)}${value}`;
 
   return [
-    `AIES profile (pi ${VERSION})`,
-    row("extension", EXTENSION_PATH),
-    row("agent dir", getAgentDir()),
-    row("config dir name", CONFIG_DIR_NAME),
+    `AIES · perfil (pi ${VERSION})`,
+    row("extensión", EXTENSION_PATH),
+    row("directorio del agente", getAgentDir()),
+    row("directorio de config", CONFIG_DIR_NAME),
     row("cwd", cwd),
-    row("mode", mode),
+    row("modo", mode),
   ].join("\n");
 }
 
@@ -30,10 +47,15 @@ export default function aiesIdentity(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
 
-    // The footer line belongs to the runtime observer (`aies-runtime`), which
-    // starts with the same `AIES` prefix and has real numbers to show. This
-    // extension reports the profile once, at start, and nothing else.
-    ctx.ui.notify(`AIES profile: ${getAgentDir()}`, "info");
+    // The shell belongs to the runtime observer (`aies-runtime`), which renders
+    // the full AIES footer. This extension reports the profile once, at start.
+    ctx.ui.notify(`Perfil AIES: ${getAgentDir()}`, "info");
+  });
+
+  pi.on("before_agent_start", async (event) => {
+    const systemPrompt = typeof event?.systemPrompt === "string" ? event.systemPrompt : "";
+    if (systemPrompt.includes(RULE_MARKER)) return { systemPrompt };
+    return { systemPrompt: `${systemPrompt}\n\n${RESIDENT_SYSTEM_RULE}` };
   });
 
   pi.registerCommand("aies-info", {

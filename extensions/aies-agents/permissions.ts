@@ -19,7 +19,7 @@
  *   authorized roots).
  */
 
-import { renderApprovalPrompt, type ApprovalRequest } from "../aies-ui/approval.ts";
+import { APPROVAL_ALLOW_LABEL, approvalOptions, renderApprovalPrompt, renderApprovalSelectTitle, type ApprovalRequest } from "../aies-ui/approval.ts";
 
 export type PermissionAction = "allow" | "ask" | "deny";
 
@@ -68,7 +68,10 @@ export function resetPermissionTelemetry(): void {
 export interface PermissionGateContext {
   hasUI?: boolean;
   ui?: {
-    confirm: (title: string, message: string) => Promise<boolean>;
+    /** Preferred: a closed two-choice dialog. */
+    select?: (title: string, options: string[]) => Promise<string | undefined>;
+    /** Compatibility fallback for hosts that only expose `confirm`. */
+    confirm?: (title: string, message: string) => Promise<boolean>;
     notify?: (message: string, type: string) => void;
   };
 }
@@ -93,7 +96,11 @@ export async function handlePermissionGate(
   // Action is "ask"
   recordApprovalRequest();
 
-  if (!ctx?.hasUI || !ctx?.ui?.confirm) {
+  const ui = ctx?.ui;
+  const canSelect = typeof ui?.select === "function";
+  const canConfirm = typeof ui?.confirm === "function";
+
+  if (!ctx?.hasUI || (!canSelect && !canConfirm)) {
     recordPermissionDenial();
     return {
       allowed: false,
@@ -105,14 +112,26 @@ export async function handlePermissionGate(
     const prompt = renderApprovalPrompt(
       evaluation.approval ?? { action: "Confirmar la operación", reason: evaluation.prompt ?? evaluation.reason },
     );
-    const approved = await ctx.ui.confirm(prompt.title, prompt.message);
+
+    // Prefer the closed two-choice dialog; `confirm` stays as a compatibility
+    // fallback so the policy is unchanged on hosts that only expose it.
+    if (canSelect) {
+      const answer = await ui.select(renderApprovalSelectTitle(prompt), approvalOptions());
+      if (answer === APPROVAL_ALLOW_LABEL) {
+        return { allowed: true };
+      }
+      recordPermissionDenial();
+      return { allowed: false, reason: "Operación rechazada por el usuario." };
+    }
+
+    const approved = await ui.confirm(prompt.title, prompt.message);
 
     if (approved) {
       return { allowed: true };
     }
 
     recordPermissionDenial();
-    return { allowed: false, reason: "Operation rejected by user." };
+    return { allowed: false, reason: "Operación rechazada por el usuario." };
   } catch (err: any) {
     recordPermissionDenial();
     return { allowed: false, reason: `Approval dialog failed: ${err?.message ?? String(err)}` };

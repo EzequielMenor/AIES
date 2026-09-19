@@ -132,9 +132,9 @@ describe("AIES observability runtime", () => {
     assert.ok(overview, "no overview notification: " + JSON.stringify(notifications));
     assert.match(overview.message, /^AIES$/mu);
     assert.match(overview.message, /^Contexto$/mu);
-    assert.equal(overview.message.includes("Context governor:"), false);
-    assert.equal(overview.message.includes("Padre:"), false);
-    assert.equal(overview.message.includes("Resultados de tools:"), false);
+    assert.equal(overview.message.includes("Gobernador de contexto:"), false);
+    assert.equal(overview.message.includes("Proceso principal:"), false);
+    assert.equal(overview.message.includes("Resultados de herramientas:"), false);
     assert.equal(overview.message.includes("Mide, no gobierna"), false);
     assert.notEqual(overview.message.split("\n").length, 48);
 
@@ -143,11 +143,11 @@ describe("AIES observability runtime", () => {
     assert.ok(report, "no full report notification for /aies-status detalle");
     assert.match(report.message, /^AIES — estado de la sesión$/mu);
     assert.match(report.message, /^Contexto:$/mu);
-    assert.match(report.message, /^Context governor:$/mu);
-    assert.match(report.message, /^Padre:$/mu);
+    assert.match(report.message, /^Gobernador de contexto:$/mu);
+    assert.match(report.message, /^Proceso principal:$/mu);
     assert.match(report.message, /^Permisos:$/mu);
-    assert.match(report.message, /^Resultados de tools:$/mu);
-    assert.match(report.message, /^Runtime:$/mu);
+    assert.match(report.message, /^Resultados de herramientas:$/mu);
+    assert.match(report.message, /^Entorno de ejecución:$/mu);
     assert.match(report.message, /Mide, no gobierna/u);
     assert.equal(report.message.split("\n").length, 48, `unexpected report shape:\n${report.message}`);
 

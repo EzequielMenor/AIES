@@ -40,7 +40,8 @@ import {
   toSnapshot,
   type AiesState,
 } from "./state.ts";
-import { renderFooter, renderStatusReport } from "./status.ts";
+import { renderFooter, renderHeader } from "../aies-ui/footer.ts";
+import { renderStatusReport } from "./status.ts";
 import {
   isActivityVisible,
   renderActivityCard,
@@ -55,8 +56,7 @@ import {
   type DoneSummaryInput,
 } from "../aies-ui/summary.ts";
 import { deriveStage } from "../aies-ui/vocabulary.ts";
-import { PLAIN_PAINT, themePaint, type Paint } from "../aies-ui/paint.ts";
-import { singleLine } from "../aies-ui/format.ts";
+import { themePaint } from "../aies-ui/paint.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
@@ -64,9 +64,6 @@ import { getActiveContinuationController } from "../aies-agents/autonomy/control
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
 const ENTRY_TYPE = "aies-metrics";
-
-/** Footer status key. `aies-identity.ts` defers to this extension for it. */
-const STATUS_KEY = "aies";
 
 /** One widget per active child, above the editor. */
 const ACTIVITY_KEY = "aies-activity";
@@ -81,6 +78,13 @@ const PARENT_MUTATION_TOOLS = ["edit", "write"];
 /** One timer, re-armed only when the wanted period changes. */
 const ACTIVE_REFRESH_MS = 1000;
 const IDLE_REFRESH_MS = 5000;
+
+/**
+ * The footer and header memo is computed at a comfortably wide cell count, so a
+ * content change repaints while a terminal-resize change is left to Pi's own TUI
+ * diffing.
+ */
+const SHELL_MEMO_WIDTH = 1000;
 
 /** The completed-work label for each child role. */
 const ROLE_DONE_LABEL: Record<string, string> = {
@@ -141,7 +145,8 @@ interface ThemeLike {
 
 /** The UI surface, read defensively so a partial host degrades to silence. */
 interface UiSurface {
-  setStatus?(key: string, text: string | undefined): void;
+  setFooter?(factory: unknown): void;
+  setHeader?(factory: unknown): void;
   setWidget?(key: string, content: unknown, options?: unknown): void;
   notify?(message: string, type?: "info" | "warning" | "error"): void;
   theme?: unknown;
@@ -254,8 +259,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let clock: ReturnType<typeof setInterval> | undefined;
   let clockPeriod: number | undefined;
   let footer = "";
+  let header = "";
   let persisted = "";
   let widgetTui: WidgetTui | undefined;
+  let footerTui: WidgetTui | undefined;
+  let headerTui: WidgetTui | undefined;
   let widgetRegistered = false;
 
   // Autonomy transitions are edges, not levels: a new signal is one transition.
@@ -284,14 +292,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
   }
 
-  function paintFor(ctx: ExtensionContext): Paint {
-    try {
-      return themePaint(uiOf(ctx)?.theme as ThemeLike | undefined);
-    } catch {
-      return PLAIN_PAINT;
-    }
-  }
-
   function usageOf(ctx: ExtensionContext) {
     try {
       return ctx.getContextUsage();
@@ -303,16 +303,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   function activeToolCount(): number | undefined {
     try {
       return pi.getActiveTools().length;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Terminal width, read only where a terminal exists and never as a throw. */
-  function terminalWidth(): number | undefined {
-    try {
-      const columns = process.stdout?.columns;
-      return typeof columns === "number" && Number.isFinite(columns) && columns > 0 ? columns : undefined;
     } catch {
       return undefined;
     }
@@ -521,9 +511,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
             render: (width: number): string[] => {
               const current = state.activity;
               if (!current) return [];
-              return renderActivityCard(current, deriveStage(toSnapshot(state)), Date.now(), {
+              const snapshot = toSnapshot(state);
+              return renderActivityCard(current, deriveStage(snapshot), Date.now(), {
                 width,
                 paint: themePaint(theme as ThemeLike | undefined),
+                ticketTitle: snapshot.ticket?.active ? snapshot.ticket.title : undefined,
               });
             },
             invalidate() {},
@@ -557,6 +549,75 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     widgetTui = undefined;
   }
 
+  /** Ask Pi to repaint the shell and the widget. Every surface is optional. */
+  function requestRender(): void {
+    if (typeof footerTui?.requestRender === "function") footerTui.requestRender();
+    if (typeof headerTui?.requestRender === "function") headerTui.requestRender();
+    if (widgetRegistered && typeof widgetTui?.requestRender === "function") widgetTui.requestRender();
+  }
+
+  /**
+   * Install the full custom footer. The factory reads the live runtime state and
+   * the Pi theme on every render, so colors always follow the host and no ANSI is
+   * ever hand-built. Replaces the AIES `setStatus` segment entirely.
+   */
+  function installFooter(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    if (!ui || typeof ui.setFooter !== "function") return;
+    try {
+      ui.setFooter((tui: unknown, theme: unknown) => {
+        footerTui = tui as WidgetTui;
+        return {
+          render: (width: number): string[] => [
+            renderFooter(toSnapshot(state), Date.now(), {
+              width,
+              cwd: ctx.cwd,
+              paint: themePaint(theme as ThemeLike | undefined),
+            }),
+          ],
+          invalidate() {},
+        };
+      });
+    } catch {
+      footerTui = undefined;
+    }
+  }
+
+  /** Install the responsive active-ticket header. No ticket means no header lines. */
+  function installHeader(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    if (!ui || typeof ui.setHeader !== "function") return;
+    try {
+      ui.setHeader((tui: unknown, theme: unknown) => {
+        headerTui = tui as WidgetTui;
+        return {
+          render: (width: number): string[] =>
+            renderHeader(toSnapshot(state), width, { paint: themePaint(theme as ThemeLike | undefined) }),
+          invalidate() {},
+        };
+      });
+    } catch {
+      headerTui = undefined;
+    }
+  }
+
+  /** Restore Pi's built-in footer and header. Called on session shutdown. */
+  function clearShell(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    try {
+      ui?.setFooter?.(undefined);
+    } catch {
+      // Restoring a footer that cannot be restored is not an error.
+    }
+    try {
+      ui?.setHeader?.(undefined);
+    } catch {
+      // Restoring a header that cannot be restored is not an error.
+    }
+    footerTui = undefined;
+    headerTui = undefined;
+  }
+
   /**
    * Keep exactly one interval, at 1s while a child runs and 5s otherwise, and
    * re-arm it only when the wanted period differs from the current one.
@@ -587,9 +648,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   /**
-   * Sample the state and, in the interactive TUI only, refresh the footer, the
-   * activity widget and the single timer. The footer line is pushed when its text
-   * actually changed, so it never repaints itself.
+   * Sample the state and, in the interactive TUI only, repaint the shell and the
+   * activity widget and keep the single timer armed. The footer and header are
+   * repainted only when their text actually changed, so the shell never repaints
+   * itself between events.
    */
   function render(ctx: ExtensionContext): void {
     syncObservation(ctx);
@@ -597,17 +659,14 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
     if (ctx.mode !== "tui") return;
 
-    const next = renderFooter(toSnapshot(state), Date.now(), { width: terminalWidth(), paint: paintFor(ctx) });
-    if (next !== footer) {
-      footer = next;
-      const ui = uiOf(ctx);
-      if (ui && typeof ui.setStatus === "function") {
-        try {
-          ui.setStatus(STATUS_KEY, next);
-        } catch {
-          // A footer that cannot be written is not a reason to stop measuring.
-        }
-      }
+    const snapshot = toSnapshot(state);
+    const now = Date.now();
+    const nextFooter = renderFooter(snapshot, now, { width: SHELL_MEMO_WIDTH, cwd: ctx.cwd });
+    const nextHeader = renderHeader(snapshot, SHELL_MEMO_WIDTH).join("\n");
+    if (nextFooter !== footer || nextHeader !== header) {
+      footer = nextFooter;
+      header = nextHeader;
+      requestRender();
     }
 
     syncActivity(ctx);
@@ -676,15 +735,14 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (typeof (pi as { registerEntryRenderer?: unknown }).registerEntryRenderer !== "function") return;
 
     try {
-      pi.registerEntryRenderer(AGENT_ENTRY_TYPE, (entry, options, theme) => {
+      pi.registerEntryRenderer(AGENT_ENTRY_TYPE, (entry, _options, theme) => {
         const activity = activityOf(entry?.data);
         if (!activity) return undefined;
 
+        // The durable line never leaks the raw child summary; the technical
+        // handoff stays reachable through Pi's own expanded tool detail.
         const paint = themePaint(theme as unknown as ThemeLike | undefined);
         const lines = [renderActivityEntry(activity, { paint })];
-        if (options?.expanded && typeof activity.summary === "string" && activity.summary) {
-          lines.push(paint.fg("muted", `  ${singleLine(activity.summary)}`));
-        }
         return { render: () => lines, invalidate() {} };
       });
 
@@ -707,6 +765,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     guard(() => {
       const now = Date.now();
       footer = "";
+      header = "";
+      footerTui = undefined;
+      headerTui = undefined;
       persisted = "";
       autonomySignal = "";
       autonomyEnabled = false;
@@ -722,6 +783,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       state = applyModel(state, ctx.model);
       if (event.reason !== "new") restore(ctx, now);
 
+      if (ctx.mode === "tui") {
+        installFooter(ctx);
+        installHeader(ctx);
+      }
       render(ctx);
     });
   });
@@ -826,11 +891,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     guard(persist);
     guard(() => clearActivity(ctx));
+    guard(() => clearShell(ctx));
     stopClock();
   });
 
   pi.registerCommand("aies-status", {
-    description: "Show the AIES session status (measurement only); `/aies-status detalle` prints the full report",
+    description: "Muestra el estado de la sesión AIES (solo medición); `/aies-status detalle` imprime el reporte completo",
     handler: async (args, ctx) => {
       guard(() => {
         state = applyModel(state, ctx.model);

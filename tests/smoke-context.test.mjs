@@ -143,15 +143,15 @@ describe("AIES-007 Context Governor — Smoke Tests", () => {
     });
 
     const report = renderStatusReport(toSnapshot(state), Date.now());
-    assert.match(report, /^Context governor:$/mu);
-    assert.match(report, /zone\s+pressure/u);
-    assert.match(report, /current\s+104k/u);
-    assert.match(report, /compact at\s+120k/u);
-    assert.match(report, /ceiling\s+150k/u);
-    assert.match(report, /pending\s+no/u);
-    assert.match(report, /compacting\s+no/u);
-    assert.match(report, /compactions\s+1/u);
-    assert.match(report, /oversized\s+2/u);
+    assert.match(report, /^Gobernador de contexto:$/mu);
+    assert.match(report, /zona\s+pressure/u);
+    assert.match(report, /actual\s+104k/u);
+    assert.match(report, /compactar en\s+120k/u);
+    assert.match(report, /techo\s+150k/u);
+    assert.match(report, /pendiente\s+no/u);
+    assert.match(report, /compactando\s+no/u);
+    assert.match(report, /compactaciones\s+1/u);
+    assert.match(report, /sobredimensionados\s+2/u);
 
     // Check footer formatting under pressure
     const footer = renderFooter(toSnapshot(state), Date.now());

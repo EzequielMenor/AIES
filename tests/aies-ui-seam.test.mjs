@@ -75,11 +75,13 @@ function createHost(overrides = {}) {
   const handlers = new Map();
   const commands = new Map();
   const appended = [];
-  const statuses = [];
   const notifications = [];
   const widgets = [];
   const renderers = new Map();
   const sendMessages = [];
+  const footers = [];
+  const headers = [];
+  const renderRequests = { footer: 0, header: 0 };
 
   const pi = {
     on(event, handler) {
@@ -124,8 +126,14 @@ function createHost(overrides = {}) {
     },
     ui: {
       theme: { fg: (_color, text) => text },
-      setStatus(key, text) {
-        statuses.push({ key, text });
+      setFooter(factory) {
+        footers.push(factory);
+      },
+      setHeader(factory) {
+        headers.push(factory);
+      },
+      setStatus(_key, _text) {
+        throw new Error("the runtime must not use setStatus anymore");
       },
       setWidget(key, content) {
         widgets.push(content === undefined ? { key, cleared: true } : { key, factory: content });
@@ -133,8 +141,27 @@ function createHost(overrides = {}) {
       notify(message, type) {
         notifications.push({ message, type });
       },
+      select: async () => undefined,
+      confirm: async () => false,
     },
   };
+
+  /** Mount the installed footer/header factory and expose a rendered snapshot. */
+  function mountFooter(width = 200) {
+    const factory = footers.at(-1);
+    assert.ok(typeof factory === "function", "no custom footer installed");
+    const tui = { requestRender() { renderRequests.footer += 1; } };
+    const component = factory(tui, plainTheme, {});
+    return { component, text: () => component.render(width).join("\n") };
+  }
+
+  function mountHeader(width = 200) {
+    const factory = headers.at(-1);
+    assert.ok(typeof factory === "function", "no custom header installed");
+    const tui = { requestRender() { renderRequests.header += 1; } };
+    const component = factory(tui, plainTheme);
+    return { component, lines: () => component.render(width) };
+  }
 
   async function emit(event, payload = {}) {
     const results = [];
@@ -148,7 +175,7 @@ function createHost(overrides = {}) {
     await emit("session_start", { reason });
   }
 
-  return { pi, ctx, options, emit, start, handlers, commands, appended, statuses, notifications, widgets, renderers, sendMessages };
+  return { pi, ctx, options, emit, start, handlers, commands, appended, notifications, widgets, renderers, sendMessages, footers, headers, renderRequests, mountFooter, mountHeader };
 }
 
 const plainTheme = { fg: (_color, text) => text };
@@ -181,33 +208,56 @@ describe("AIES UI seam", () => {
     assert.deepEqual(host.sendMessages, [], "UI must never reach the conversation");
   });
 
-  it("pushes a quiet footer under the aies status key", async () => {
+  it("installs a full custom footer with the AIES identity and no telemetry", async () => {
     const host = createHost();
     await host.start();
 
-    const status = host.statuses.at(-1);
-    assert.equal(status.key, "aies");
-    assert.equal(status.text, "AIES · ready · ctx 10k");
-    assert.match(status.text, /^AIES ·/u);
-    for (const banned of ["peak", "tools", "cmp"]) {
-      assert.equal(status.text.includes(banned), false, status.text);
+    assert.equal(host.footers.length, 1, "one custom footer for the session");
+    const footer = host.mountFooter(29);
+    assert.equal(footer.text(), "❈ AIES · listo · ctx 10k");
+    assert.match(footer.text(), /^❈ AIES ·/u);
+    for (const banned of ["peak", "tools", "cmp", "files"]) {
+      assert.equal(footer.text().includes(banned), false, footer.text());
     }
-    assert.equal(/\d{2}:\d{2}/u.test(status.text), false, `elapsed clock in footer: ${status.text}`);
+    assert.equal(/\d{2}:\d{2}/u.test(footer.text()), false, `elapsed clock in footer: ${footer.text()}`);
   });
 
-  it("re-pushes the status only when the rendered text changes", async () => {
+  it("requests a footer render only when the rendered text changes", async () => {
     const host = createHost();
     await host.start();
-    assert.equal(host.statuses.length, 1);
+    host.mountFooter();
+    assert.equal(host.renderRequests.footer, 0);
 
     await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "x" }] });
     await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "y" }] });
-    assert.equal(host.statuses.length, 1, "identical state must not repaint the footer");
+    assert.equal(host.renderRequests.footer, 0, "identical state must not repaint the footer");
 
     host.options.contextUsage = { tokens: 20_000, contextWindow: 200_000, percent: 10 };
     await host.emit("tool_result", { toolName: "read", content: [{ type: "text", text: "z" }] });
-    assert.equal(host.statuses.length, 2);
-    assert.equal(host.statuses.at(-1).text, "AIES · ready · ctx 20k");
+    assert.equal(host.renderRequests.footer, 1);
+    assert.equal(host.mountFooter(29).text(), "❈ AIES · listo · ctx 20k");
+  });
+
+  it("installs a ticket header and requests a render when the ticket appears", async () => {
+    const host = createHost();
+    await host.start();
+    assert.equal(host.headers.length, 1, "one custom header for the session");
+    assert.deepEqual(host.mountHeader().lines(), [], "no ticket, no header lines");
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: { ticket: { identifier: "EZE-422", title: "Implement first-run guidance", status: "In Progress" } },
+    });
+
+    assert.equal(host.renderRequests.header, 1, "a new ticket must repaint the header");
+    const lines = host.mountHeader(80).lines();
+    const text = lines.join("\n");
+    assert.match(text, /❈ EZE-422/u);
+    assert.match(text, /Implement first-run guidance/u);
+    assert.match(text, /In Progress/u);
+
+    assert.deepEqual(host.mountHeader(40).lines(), ["EZE-422 · In Progress"]);
   });
 
   it("registers the aies-activity widget and renders the role and task", async () => {
@@ -261,13 +311,13 @@ describe("AIES UI seam", () => {
     assert.equal(entries[0].data.activity.role, "verify");
     assert.equal(entries[0].data.activity.outcome, "done");
 
-    assert.equal(host.statuses.at(-1).text, "AIES · DONE · ctx 10k");
+    assert.equal(host.mountFooter(29).text(), "❈ AIES · DONE · ctx 10k");
     assert.equal(host.widgets.some((widget) => widget.cleared === true), false, "the finished card lingers for its TTL");
 
     timers.advance(ACTIVITY_TTL_MS + 1);
     timers.lastInterval().fn();
     assert.equal(host.widgets.at(-1).cleared, true, "the widget clears itself once the TTL passed");
-    assert.equal(host.statuses.at(-1).text, "AIES · DONE · ctx 10k");
+    assert.equal(host.mountFooter(29).text(), "❈ AIES · DONE · ctx 10k");
   });
 
   it("renders the durable entry renderers for a finished child", async () => {
@@ -289,7 +339,7 @@ describe("AIES UI seam", () => {
     assert.deepEqual(collapsed, ["✓ Explore · 00:00 · 2 archivos relevantes"]);
 
     const expanded = render(entry, { expanded: true }, plainTheme).render(80);
-    assert.deepEqual(expanded, ["✓ Explore · 00:00 · 2 archivos relevantes", "  Encontré el handoff"]);
+    assert.deepEqual(expanded, ["✓ Explore · 00:00 · 2 archivos relevantes"], "the durable entry never leaks the raw child summary");
   });
 
   it("appends exactly one summary on autonomy transitions and none on user_required", async () => {
@@ -367,7 +417,8 @@ describe("AIES UI seam", () => {
       details: { status: "done", summary: "ok", changes: [], checks: [] },
     });
 
-    assert.deepEqual(host.statuses, []);
+    assert.equal(host.footers.length, 0, "no custom footer where there is no TUI");
+    assert.equal(host.headers.length, 0, "no custom header where there is no TUI");
     assert.deepEqual(host.widgets, []);
     assert.deepEqual(host.notifications, []);
     assert.equal(host.appended.filter((item) => item.type === "aies-agent").length, 1);
@@ -390,5 +441,7 @@ describe("AIES UI seam", () => {
     await host.emit("session_shutdown", { reason: "quit" });
     assert.equal(timers.cleared.includes(active), true);
     assert.equal(host.widgets.at(-1).cleared, true);
+    assert.equal(host.footers.at(-1), undefined, "the custom footer is restored on shutdown");
+    assert.equal(host.headers.at(-1), undefined, "the custom header is restored on shutdown");
   });
 });

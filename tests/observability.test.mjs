@@ -236,7 +236,7 @@ describe("observability state", () => {
     assert.equal(snap.peakContextWindow, 200_000, "but it keeps the window it belongs to");
 
     const report = renderStatusReport(snap, T0);
-    assert.equal(field(report, "peak"), "150k (ventana 200k)");
+    assert.equal(field(report, "pico"), "150k (ventana 200k)");
   });
 
   it("ignores an unusable usage sample", () => {
@@ -249,11 +249,11 @@ describe("observability state", () => {
 
   it("annotates a peak only when its window differs from the current one", () => {
     const same = applyContextUsage(stateFrom(), usage(150_000, 200_000));
-    assert.equal(field(renderStatusReport(toSnapshot(same), T0), "peak"), "150k");
+    assert.equal(field(renderStatusReport(toSnapshot(same), T0), "pico"), "150k");
 
     let switched = same;
     switched = applyContextUsage(switched, { tokens: null, contextWindow: 128_000, percent: null });
-    assert.equal(field(renderStatusReport(toSnapshot(switched), T0), "peak"), "150k (ventana 200k)");
+    assert.equal(field(renderStatusReport(toSnapshot(switched), T0), "pico"), "150k (ventana 200k)");
   });
 
   it("counts compactions", () => {
@@ -364,7 +364,7 @@ describe("observability rendering", () => {
     const footer = renderFooter(toSnapshot(filled()), T0 + 134_000);
 
     assert.equal(footer.split("\n").length, 1);
-    assert.equal(footer, "AIES · ready · ctx 34k");
+    assert.equal(footer, "❈ AIES · listo · ctx 34k");
   });
 
   it("never puts counters, peak or the compaction count in the footer", () => {
@@ -388,16 +388,16 @@ describe("observability rendering", () => {
 
     assert.equal(report.split("\n")[0], "AIES — estado de la sesión");
     assert.equal(field(report, "actual"), "34k / 200k (17.0%)");
-    assert.equal(field(report, "peak"), "34k");
-    assert.equal(field(report, "compactions"), "0");
-    assert.equal(field(report, "tool calls"), "2");
-    assert.equal(field(report, "reads"), "1");
+    assert.equal(field(report, "pico"), "34k");
+    assert.equal(field(report, "compactaciones"), "0");
+    assert.equal(field(report, "llamadas"), "2");
+    assert.equal(field(report, "lecturas"), "1");
     assert.equal(field(report, "búsquedas"), "0");
     assert.equal(field(report, "shell inspección"), "1");
     assert.equal(field(report, "archivos"), "1");
     assert.equal(field(report, "devueltos"), "2");
     assert.equal(field(report, "caracteres"), "200");
-    assert.equal(field(report, "mayor"), "120 chars");
+    assert.equal(field(report, "mayor"), "120 caracteres");
     assert.equal(field(report, "activa"), "01:00");
     assert.match(report, /Mide, no gobierna/u);
   });
@@ -416,10 +416,10 @@ describe("observability rendering", () => {
     const report = renderStatusReport(toSnapshot(stateFrom()), T0);
 
     assert.equal(field(report, "actual"), "?");
-    assert.equal(field(report, "peak"), "0");
+    assert.equal(field(report, "pico"), "0");
     assert.equal(field(report, "modelo"), "-");
     assert.equal(field(report, "más usadas"), "-");
-    assert.equal(field(report, "stop reason"), "-");
+    assert.equal(field(report, "motivo de parada"), "-");
   });
 });
 
@@ -445,7 +445,8 @@ function createHost(overrides = {}) {
   const handlers = new Map();
   const commands = new Map();
   const appended = [];
-  const statuses = [];
+  const footers = [];
+  const headers = [];
   const notifications = [];
 
   const pi = {
@@ -487,8 +488,11 @@ function createHost(overrides = {}) {
       },
     },
     ui: {
-      setStatus: (key, text) => {
-        statuses.push({ key, text });
+      setFooter: (factory) => {
+        footers.push(factory);
+      },
+      setHeader: (factory) => {
+        headers.push(factory);
       },
       notify: (message, type) => {
         notifications.push({ message, type });
@@ -504,9 +508,17 @@ function createHost(overrides = {}) {
     return results;
   }
 
+  /** Render the installed custom footer, or `undefined` when none was installed. */
+  function footerText(width = 29) {
+    const factory = footers.at(-1);
+    if (typeof factory !== "function") return undefined;
+    const component = factory({ requestRender() {} }, { fg: (_color, text) => text }, {});
+    return component.render(width).join("\n");
+  }
+
   async function start(reason = "startup") {
     await emit("session_start", { reason });
-    return { footer: statuses.at(-1) };
+    return { footer: { key: "aies", text: footerText() } };
   }
 
   async function report() {
@@ -527,7 +539,7 @@ function createHost(overrides = {}) {
     return notifications[0].message;
   }
 
-  return { emit, start, report, overview, handlers, commands, appended, statuses, notifications, ctx, options };
+  return { emit, start, report, overview, handlers, commands, appended, footers, headers, footerText, notifications, ctx, options };
 }
 
 describe("verification observability (AIES-005)", () => {
@@ -551,12 +563,12 @@ describe("verification observability (AIES-005)", () => {
     await host.start();
 
     await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
-    assert.match(host.statuses.at(-1).text, /· VERIFY ·/u);
-    assert.equal(host.statuses.at(-1).text.includes("V:"), false, host.statuses.at(-1).text);
+    assert.match(host.footerText(), /· VERIFY ·/u);
+    assert.equal(host.footerText().includes("V:"), false, host.footerText());
 
     await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
 
-    const footer = host.statuses.at(-1).text;
+    const footer = host.footerText();
     assert.match(footer, /· DONE ·/u);
     assert.equal(footer.includes("V:PASS"), false, footer);
     assert.equal(footer.includes("VERIFY"), false);
@@ -568,16 +580,16 @@ describe("verification observability (AIES-005)", () => {
 
     await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
-    assert.match(host.statuses.at(-1).text, /· DONE ·/u);
+    assert.match(host.footerText(), /· DONE ·/u);
 
     await host.emit("tool_call", toolCall("edit", { path: "config.js" }));
 
-    assert.match(host.statuses.at(-1).text, /V:STALE/u);
+    assert.match(host.footerText(), /V:STALE/u);
     const report = await host.report();
     assert.equal(field(report, "estado"), "PASS");
     assert.equal(field(report, "válido"), "no");
     assert.equal(field(report, "intentos"), "1");
-    assert.equal(field(report, "repairs"), "0 / 2");
+    assert.equal(field(report, "reparaciones"), "0 / 2");
     assert.equal(field(report, "cambios tras PASS"), "1");
     assert.match(field(report, "última duración"), /^\d{2}:\d{2}$/u);
   });
@@ -587,15 +599,15 @@ describe("verification observability (AIES-005)", () => {
     await failed.start();
     await failed.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     await failed.emit("tool_result", verifyResult({ status: "fail", attempts: 1, repairs: 0, maxRepairs: 2, valid: false }));
-    assert.match(failed.statuses.at(-1).text, /V:FAIL/u);
+    assert.match(failed.footerText(), /V:FAIL/u);
     assert.equal(field(await failed.report(), "estado"), "FAIL");
 
     const blocked = createHost();
     await blocked.start();
     await blocked.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     await blocked.emit("tool_result", verifyResult({ status: "blocked", attempts: 1, repairs: 0, maxRepairs: 2, valid: false }));
-    assert.match(blocked.statuses.at(-1).text, /· BLOCKED ·/u);
-    assert.equal(blocked.statuses.at(-1).text.includes("V:BLOCKED"), false, blocked.statuses.at(-1).text);
+    assert.match(blocked.footerText(), /· BLOCKED ·/u);
+    assert.equal(blocked.footerText().includes("V:BLOCKED"), false, blocked.footerText());
     assert.equal(field(await blocked.report(), "estado"), "BLOCKED");
   });
 
@@ -628,9 +640,9 @@ describe("verification observability (AIES-005)", () => {
     });
     await host.start("resume");
 
-    assert.match(host.statuses.at(-1).text, /V:FAIL/u);
+    assert.match(host.footerText(), /V:FAIL/u);
     assert.equal(field(await host.report(), "intentos"), "2");
-    assert.equal(field(await host.report(), "repairs"), "1 / 2");
+    assert.equal(field(await host.report(), "reparaciones"), "1 / 2");
 
     await host.emit("session_shutdown", { reason: "quit" });
     assert.equal(host.appended.at(-1).data.verification.status, "fail");
@@ -655,7 +667,7 @@ describe("observability extension", () => {
       ],
     );
     assert.deepEqual([...host.commands.keys()], ["aies-status"]);
-    assert.match(host.commands.get("aies-status").description, /measurement only/u);
+    assert.match(host.commands.get("aies-status").description, /solo medición/u);
   });
 
   it("shows a footer line at session start", async () => {
@@ -663,7 +675,7 @@ describe("observability extension", () => {
     const { footer } = await host.start();
 
     assert.equal(footer.key, "aies");
-    assert.match(footer.text, /^AIES · ready · ctx 10k$/u);
+    assert.match(footer.text, /^❈ AIES · listo · ctx 10k$/u);
   });
 
   it("counts a tool call and leaves the call untouched", async () => {
@@ -676,7 +688,7 @@ describe("observability extension", () => {
 
     assert.deepEqual(results, [undefined], "an observer must not answer a tool_call");
     assert.deepEqual(event, before, "the event must not be mutated");
-    assert.equal(field(await host.report(), "tool calls"), "1");
+    assert.equal(field(await host.report(), "llamadas"), "1");
     assert.equal(field(await host.report(), "archivos"), "1");
   });
 
@@ -689,8 +701,8 @@ describe("observability extension", () => {
     }
 
     const report = await host.report();
-    assert.equal(field(report, "tool calls"), "4");
-    assert.equal(field(report, "reads"), "2");
+    assert.equal(field(report, "llamadas"), "4");
+    assert.equal(field(report, "lecturas"), "2");
     assert.equal(field(report, "búsquedas"), "1");
     assert.equal(field(report, "shell inspección"), "1");
     assert.equal(field(report, "archivos"), "1");
@@ -717,7 +729,7 @@ describe("observability extension", () => {
     const report = await host.report();
     assert.equal(field(report, "devueltos"), "1");
     assert.equal(field(report, "caracteres"), "5");
-    assert.equal(field(report, "mayor"), "5 chars");
+    assert.equal(field(report, "mayor"), "5 caracteres");
   });
 
   it("keeps the peak across a drop and stamps a compaction", async () => {
@@ -731,9 +743,9 @@ describe("observability extension", () => {
 
     const report = await host.report();
     assert.equal(field(report, "actual"), "20k / 200k (10.0%)");
-    assert.equal(field(report, "peak"), "120k");
-    assert.equal(field(report, "compactions"), "1");
-    assert.equal(host.statuses.at(-1).text.includes("cmp"), false, host.statuses.at(-1).text);
+    assert.equal(field(report, "pico"), "120k");
+    assert.equal(field(report, "compactaciones"), "1");
+    assert.equal(host.footerText().includes("cmp"), false, host.footerText());
   });
 
   it("tracks model, tool surface and final state", async () => {
@@ -746,8 +758,8 @@ describe("observability extension", () => {
 
     const report = await host.report();
     assert.equal(field(report, "modelo"), "model-b (openai)");
-    assert.equal(field(report, "tools activas"), "4");
-    assert.equal(field(report, "stop reason"), "toolUse");
+    assert.equal(field(report, "herramientas activas"), "4");
+    assert.equal(field(report, "motivo de parada"), "toolUse");
     assert.equal(field(report, "sesión"), "session-1");
   });
 
@@ -756,11 +768,11 @@ describe("observability extension", () => {
     await host.start();
 
     await host.emit("tool_call", readCall("docs/x.md"));
-    assert.equal(field(await host.report(), "tool calls"), "1");
+    assert.equal(field(await host.report(), "llamadas"), "1");
 
     await host.emit("tool_call", shell("sed -n '1,2p' docs/x.md"));
     const report = await host.report();
-    assert.equal(field(report, "tool calls"), "2");
+    assert.equal(field(report, "llamadas"), "2");
     assert.equal(field(report, "shell inspección"), "1");
     assert.equal(host.notifications.every((entry) => entry.type === "info"), true);
   });
@@ -824,7 +836,7 @@ describe("observability extension", () => {
     assert.deepEqual(await host.emit("tool_call", readCall("x.ts")), [undefined]);
 
     const report = await host.report();
-    assert.equal(field(report, "tool calls"), "1");
+    assert.equal(field(report, "llamadas"), "1");
     assert.equal(field(report, "actual"), "?");
     assert.equal(field(report, "archivos"), "1");
     assert.deepEqual(host.appended, [], "a failed resume lookup never writes a snapshot");
@@ -835,8 +847,9 @@ describe("observability extension", () => {
     await host.start();
     await host.emit("tool_call", readCall("docs/x.md"));
 
-    assert.deepEqual(host.statuses, [], "no footer where there is no TUI");
-    assert.equal(field(await host.report(), "tool calls"), "1", "the metrics still accumulate");
+    assert.equal(host.footerText(), undefined, "no footer where there is no TUI");
+    assert.equal(host.headers.length, 0, "no header where there is no TUI");
+    assert.equal(field(await host.report(), "llamadas"), "1", "the metrics still accumulate");
   });
 
   it("persists one snapshot when the session is torn down", async () => {
@@ -867,15 +880,15 @@ describe("observability extension", () => {
     await host.start("resume");
 
     const report = await host.report();
-    assert.equal(field(report, "tool calls"), "9");
-    assert.equal(field(report, "compactions"), "2");
-    assert.equal(field(report, "peak"), "70k");
+    assert.equal(field(report, "llamadas"), "9");
+    assert.equal(field(report, "compactaciones"), "2");
+    assert.equal(field(report, "pico"), "70k");
     assert.equal(field(report, "archivos"), "2");
     assert.ok(field(report, "esta ejecución"), "the resume is visible");
 
     await host.emit("tool_call", readCall("c.ts"));
     const after = await host.report();
-    assert.equal(field(after, "tool calls"), "10");
+    assert.equal(field(after, "llamadas"), "10");
     assert.equal(field(after, "archivos"), "3");
 
     await host.emit("session_shutdown", { reason: "resume" });
@@ -886,7 +899,7 @@ describe("observability extension", () => {
     const host = createHost({ entries: [{ type: "message", message: { role: "user" } }] });
     await host.start("resume");
 
-    assert.equal(field(await host.report(), "tool calls"), "0");
+    assert.equal(field(await host.report(), "llamadas"), "0");
   });
 
   it("restarts the counters when a new session starts in the same process", async () => {
@@ -894,14 +907,14 @@ describe("observability extension", () => {
     await host.start();
     await host.emit("tool_call", readCall("docs/x.md"));
     await host.emit("session_compact", {});
-    assert.equal(field(await host.report(), "tool calls"), "1");
+    assert.equal(field(await host.report(), "llamadas"), "1");
 
     await host.emit("session_shutdown", { reason: "new" });
     await host.start("new");
 
     const report = await host.report();
-    assert.equal(field(report, "tool calls"), "0");
-    assert.equal(field(report, "compactions"), "0");
+    assert.equal(field(report, "llamadas"), "0");
+    assert.equal(field(report, "compactaciones"), "0");
     assert.equal(field(report, "archivos"), "0");
   });
 });

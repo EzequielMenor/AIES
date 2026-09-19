@@ -9,6 +9,15 @@
 
 import { singleLine } from "./format.ts";
 
+/** The two choices the approval dialog offers, exactly as a human reads them. */
+export const APPROVAL_ALLOW_LABEL = "Permitir una vez";
+export const APPROVAL_DENY_LABEL = "Denegar";
+
+/** The closed set a `ui.select` approval offers, in display order. */
+export function approvalOptions(): string[] {
+  return [APPROVAL_ALLOW_LABEL, APPROVAL_DENY_LABEL];
+}
+
 /** What the approval gate knows about the request. */
 export interface ApprovalRequest {
   action: string;
@@ -49,4 +58,13 @@ export function renderApprovalPrompt(request: ApprovalRequest): { title: string;
   }
 
   return { title: "AIES necesita permiso", message: lines.join("\n") };
+}
+
+/**
+ * The title a `ui.select` approval shows: the dialog title, then the structured
+ * prompt. Pi renders the selector title as wrapped text, so the whole decision
+ * stays visible next to the two choices.
+ */
+export function renderApprovalSelectTitle(prompt: { title: string; message: string }): string {
+  return prompt.message ? `${prompt.title}\n\n${prompt.message}` : prompt.title;
 }

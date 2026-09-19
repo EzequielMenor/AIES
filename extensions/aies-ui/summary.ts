@@ -163,7 +163,7 @@ export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: 
   const autonomy = snapshot.autonomy;
   const stage = deriveStage(snapshot);
   const runRows = [
-    row("stage", autonomy?.enabled ? `${stage} · activa` : `${stage} · pausada`),
+    row("etapa", autonomy?.enabled ? `${stage} · activa` : `${stage} · pausada`),
   ];
   if (autonomy) {
     runRows.push(row("continuaciones", String(autonomy.continuationCount)));
@@ -171,7 +171,7 @@ export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: 
     const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
     if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
-  sections.push([paint.fg("muted", "Run"), ...runRows]);
+  sections.push([paint.fg("muted", "Ejecución"), ...runRows]);
 
   sections.push([paint.fg("dim", "Estado completo: /aies-status")]);
   return sections.map((section) => section.join("\n")).join("\n\n");
@@ -185,17 +185,17 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
 
   const ticket = snapshot.ticket;
   if (ticket?.active && ticket.identifier) {
-    const rows = [row("identifier", ticket.identifier)];
-    if (ticket.status) rows.push(row("status", ticket.status));
-    if (ticket.title) rows.push(row("title", ticket.title));
+    const rows = [row("id", ticket.identifier)];
+    if (ticket.status) rows.push(row("situación", ticket.status));
+    if (ticket.title) rows.push(row("título", ticket.title));
     sections.push([paint.fg("muted", "Ticket"), ...rows]);
   }
 
-  // Run is always worth a row: the stage is the headline answer to "what is it
-  // doing?", and a stopped autonomy owes the human the reason it stopped.
+  // Ejecución is always worth a row: the stage is the headline answer to "what is
+  // it doing?", and a stopped autonomy owes the human the reason it stopped.
   const stage = deriveStage(snapshot);
   const autonomy = snapshot.autonomy;
-  const runRows = [row("stage", autonomy?.enabled ? `${stage} · autonomía activa` : stage)];
+  const runRows = [row("etapa", autonomy?.enabled ? `${stage} · autonomía activa` : stage)];
   if (autonomy) {
     runRows.push(
       row("transcurrido", `${formatDuration(now - snapshot.startedAt)} · continuaciones ${autonomy.continuationCount}`),
@@ -203,7 +203,7 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
     const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
     if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
-  sections.push([paint.fg("muted", "Run"), ...runRows]);
+  sections.push([paint.fg("muted", "Ejecución"), ...runRows]);
 
   const verification = snapshot.verification;
   if (verification && (verification.status !== "none" || verification.attempts > 0 || verification.repairs > 0 || verification.awaiting)) {
@@ -211,7 +211,7 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
       paint.fg("muted", "Verificación"),
       row("estado", verification.status === "none" ? "pendiente" : verification.status.toUpperCase()),
       row("intentos", String(verification.attempts)),
-      row("repairs", `${verification.repairs} / ${verification.maxRepairs}`),
+      row("reparaciones", `${verification.repairs} / ${verification.maxRepairs}`),
     ]);
   }
 
@@ -219,8 +219,8 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
   const zone = snapshot.contextWindow ? zoneLabel(snapshot.contextGovernor?.zone) : "";
   const contextRows = [
     row("actual", `${formatTokens(snapshot.contextTokens)}${window}${zone ? ` · ${zone}` : ""}`),
-    row("peak", formatTokens(snapshot.peakContextTokens)),
-    row("compactions", String(snapshot.compactionCount)),
+    row("pico", formatTokens(snapshot.peakContextTokens)),
+    row("compactaciones", String(snapshot.compactionCount)),
   ];
   sections.push([paint.fg("muted", "Contexto"), ...contextRows]);
 
@@ -231,7 +231,7 @@ export function renderStatusOverview(snapshot: AiesSnapshot, now: number, option
     for (const role of ["explore", "worker", "verify"]) {
       const count = delegations.byRole?.[role] ?? 0;
       if (active === role) rows.push(row(role, "activo"));
-      else if (count > 0) rows.push(row(role, "done"));
+      else if (count > 0) rows.push(row(role, "terminado"));
     }
     if (active && !["explore", "worker", "verify"].includes(active)) rows.push(row(active, "activo"));
     if (rows.length) sections.push([paint.fg("muted", "Agentes"), ...rows]);
