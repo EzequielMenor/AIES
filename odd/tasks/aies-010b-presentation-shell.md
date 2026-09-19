@@ -1,6 +1,6 @@
 # AIES-010B — Presentation Shell, Spanish UX & Real-Run Hardening
 
-Status: in progress
+Status: blocked — final live Linear smoke needs a valid isolated-profile model credential
 Branch: `feat/aies-010b-presentation-shell`
 Baseline: latest real `EZE-422` session in the isolated AIES profile
 Scope: presentation of AIES-specific workflow plus the narrowly authorized Verify handoff fix
@@ -45,7 +45,7 @@ Only these documentation files may change:
 | T2 Spanish shell and ticket identity | complete | Added the resident Spanish rule, responsive ticket header and AIES footer, Spanish status/approval/DONE/BLOCKED projections, safer agent-card copy and invariant tests. | `bba2ede` |
 | T3 Quiet AIES plumbing and agent cards | complete | Added compact Spanish `aies_ticket` rendering, card-first `aies_delegate` rendering, visible collapsed errors, complete expanded detail and effective compact Linear MCP settings. | `89a0c0f` |
 | T4 Verify protocol hardening | complete | Reproduced EZE-422, made a schema-validated child completion tool the sole verdict authority, separated `protocol_error` from domain verdicts, and prevented repair/retry on protocol faults. | `73af9e3` |
-| T5 Documentation and real-run evidence | pending | Update the three allowed docs, run full/isolation/headless/PTY checks, perform the safe real E2E smoke, capture before/after metrics and close the task record. | — |
+| T5 Documentation and real-run evidence | blocked | Documented the shipped shell/protocol, passed full isolation checks, and exercised cmux, headless and 80-column TUI surfaces. The safe live E2E stopped before its first AIES tool call because the isolated CLI model credential returned Anthropic 401, so Linear Done and after metrics remain unverified. | `17acbc3` |
 
 ## Baseline EZE-422
 
@@ -137,8 +137,20 @@ converted into a domain `blocked` verdict and retried three times.
 - T4 deterministic regression and smoke verification: 212/212 focused checks and 439/439 full/isolation checks pass; shell syntax passes.
 - T4 independent verifier confirmed the EZE-422 free-form PASS pattern now becomes `protocol_error` once, with zero repairs and no automatic rerun; captured tool verdicts survive malformed or failing final prose.
 - T4 native review lineage `review-8f0a4e587dc336a6` could not capture its reviewer because the Pi host relay returned `MissingSessionID`; no review verdict or authority acknowledgement was produced.
+- Residual presentation hardening `ba9064f`: raw Worker summaries remain internal and exact Spanish denial/status copy is covered; focused checks passed 42/42 plus 10/10, with independent readback.
+- T5 final repository verification: `npm test` and `npm run check:isolation` pass 440/440; `bash -n bin/aies scripts/*.sh` and `git diff --check` pass; repository root contains neither `.codegraph/` nor `.cursor/`.
+- Isolated real-run profile: `AIES_HOME=/tmp/aies-010b-smoke`.
+- Headless `/aies-status` exits successfully without attempting TUI output.
+- cmux real TUI renders the idle shell, `/aies-status` overview and `/aies-status detalle` in Spanish; 80-column tmux keeps the footer and overview legible.
+- Safe `/aies-run EZE-422` reached the autonomy handoff, then the CLI provider returned Anthropic 401 before the first `aies_ticket` call. No AIES tool or Linear mutation ran; EZE-422 remains `In Progress`. Linear Done and comparable after metrics are blocked on a valid model credential in the isolated profile.
 - Real baseline session located at:
   `~/.local/share/aies/agent/sessions/--Users-ezequielmenor-Proyectos-Developer-aies-smoke--/2026-09-19T14-37-13-751Z_01a0ba19-9497-7401-8142-d9e10e631d26.jsonl`.
+
+## Remaining unblock
+
+Provide a valid model credential to the isolated CLI profile, rerun `/aies-run EZE-422`
+in `aies-smoke`, confirm Verify reaches one authoritative PASS, Linear reaches Done,
+and then record the after metrics. No source change is currently indicated.
 
 ## Known constraints
 
