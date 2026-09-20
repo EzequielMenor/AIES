@@ -41,7 +41,7 @@ DONE, responsive degradation and clean terminal restoration.
 
 | Task | Status | Outcome | Commit |
 |---|---|---|---|
-| T1 Exact Gentle/Pi audit and design boundary | complete | Audited exact gentle-pi@3.2.1 and Pi 0.85.1: fullscreen/alternate-screen and quiet startup are public settings; the Gentle right rail is an experimental private layout-node patch and cannot be reused under AIES's public-API boundary. | pending commit |
+| T1 Exact Gentle/Pi audit and design boundary | complete | Audited exact gentle-pi@3.2.1 and Pi 0.85.1: fullscreen/alternate-screen and quiet startup are public settings; the Gentle right rail is an experimental private layout-node patch and cannot be reused under AIES's public-API boundary. | `ee2b646` |
 | T2 Clean launch, idle state and teardown | pending | Implement the supported clean-screen/full-screen profile path, suppress or compact bootstrap chrome, hide thinking by default when supported, and prove safe teardown/headless behavior. | — |
 | T3 Product shell, responsive status and quiet transcript | pending | Refine the status/sidebar approximation, footer bands, active agent, `/agents`, successful/error tool rows and compact DONE without changing workflow semantics. | — |
 | T4 Documentation and automated verification | pending | Update only UX/decisions/task docs; run focused tests, full suite, isolation, shell syntax, diff checks and performance/LOC comparison. | — |
@@ -81,3 +81,5 @@ config editor, pricing database, analytics backend or agent architecture changes
 - The strongest supported AIES approximation is therefore a fixed `belowEditor` widget in Pi fullscreen, visually outside the scrolling transcript: full at 120+ columns, compact at 80–119 and hidden below 80 with a rich footer fallback.
 - Gentle quiet tools use public `create*Tool` delegation with `renderShell: "self"`; this is the missing mechanism behind AIES-010C's still-large green success backgrounds. Pi's native expansion state still supplies raw detail.
 - Gentle's active agent card and full agents view are ordinary public widget/custom-component patterns. AIES can refine its existing equivalents without touching registry or agent semantics.
+
+- 2026-09-20: T2 followed red/green tests (`fullscreen-shell`, `spanish-ux`). The delegated writer failed before its first turn with the known host `MODULE_NOT_FOUND` incident; no native Agent fallback was exposed, so the bounded implementation ran inline. Headless print-mode smoke exited 0 with no output or terminal side effects.

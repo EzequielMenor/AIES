@@ -44,14 +44,6 @@ function report(cwd: string, mode: string): string {
 }
 
 export default function aiesIdentity(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => {
-    if (!ctx.hasUI) return;
-
-    // The shell belongs to the runtime observer (`aies-runtime`), which renders
-    // the full AIES footer. This extension reports the profile once, at start.
-    ctx.ui.notify(`Perfil AIES: ${getAgentDir()}`, "info");
-  });
-
   pi.on("before_agent_start", async (event) => {
     const systemPrompt = typeof event?.systemPrompt === "string" ? event.systemPrompt : "";
     if (systemPrompt.includes(RULE_MARKER)) return { systemPrompt };

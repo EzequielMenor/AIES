@@ -1,3 +1,10 @@
 {
-  "packages": ["npm:pi-mcp-adapter"]
+  "tuiMode": "fullscreen",
+  "fullscreenExitOutput": "resume-hint",
+  "fullscreenScrollbar": "auto",
+  "quietStartup": true,
+  "hideThinkingBlock": true,
+  "packages": [
+    "npm:pi-mcp-adapter"
+  ]
 }

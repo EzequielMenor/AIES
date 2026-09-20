@@ -103,17 +103,21 @@ describe("identity projection", () => {
     assert.equal(message.includes("agent dir"), false, message);
   });
 
-  it("announces the profile in Spanish without touching non-UI sessions", async () => {
+  it("keeps startup silent in UI and headless sessions", async () => {
     const pi = fakePi();
     aiesIdentity(pi);
-    const handler = pi.handlers.get("session_start")[0];
+    const handlers = pi.handlers.get("session_start") ?? [];
 
     let told = "";
-    await handler({ type: "session_start", reason: "startup" }, { hasUI: true, ui: { notify: (text) => { told = text; } } });
-    assert.match(told, /Perfil AIES/u);
+    for (const handler of handlers) {
+      await handler({ type: "session_start", reason: "startup" }, { hasUI: true, ui: { notify: (text) => { told = text; } } });
+    }
+    assert.equal(told, "", "profile diagnostics belong to /aies-info, not startup");
 
     let silent = "";
-    await handler({ type: "session_start", reason: "startup" }, { hasUI: false, ui: { notify: (text) => { silent = text; } } });
+    for (const handler of handlers) {
+      await handler({ type: "session_start", reason: "startup" }, { hasUI: false, ui: { notify: (text) => { silent = text; } } });
+    }
     assert.equal(silent, "", "a headless session must stay silent");
   });
 });
