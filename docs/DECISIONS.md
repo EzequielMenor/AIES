@@ -475,6 +475,185 @@ error, never silently turned into a different domain verdict.
 
 ---
 
+## D20 - Agent Observatory: an ephemeral registry with real child usage and a Main/Agents/Total that cannot double count (AIES-010C)
+
+**Decision.**
+1. `extensions/aies-agents/observatory.ts` is a session-local registry that
+   observes the existing Explore, Worker and Verify children. It is **ephemeral
+   presentation state, not agent orchestration**: pure (no Pi import, no
+   filesystem, no clock of its own), no persistence and no authority. It never
+   routes, authorizes, persists, retries or changes a child's prompt, and it holds
+   no transcript and no reasoning.
+2. A record carries a stable `<role>-<ordinal>` id, the lifecycle `status`
+   (`running`, `completed`, `failed`, `blocked`), caller-supplied `startedAt` /
+   `finishedAt`, the resolved model and provider identity, a bounded ring of the
+   last 5 mechanically worded Spanish activity events (`Leyendo`, `Buscando`,
+   `Editando`, `Ejecutando`, `Comprobando`), `changedPaths`, `toolCount`, a
+   compact `result` and the child's real `totalTokens` / `cost`.
+3. Wiring: `session.ts` attaches exactly one event-driven `session.subscribe`
+   listener per observed child. Tool starts become mechanical activities, and
+   `turn_end` / `agent_settled` / `agent_end` sample the public `SessionStats`
+   (`tokens.total`, `cost`). `explore.ts`, `worker.ts` and `verify.ts` each open
+   and close exactly one record in a `finally`, so a record exists even when the
+   child throws. `delegate.ts` passes the singleton and a provider display label.
+   Handoff shapes, prompts, tool surfaces and routing are unchanged.
+4. Telemetry: `extensions/aies-runtime/usage.ts` reduces usage into three buckets
+   with `aggregateUsage`. **Main** is the Parent usage since the run baseline;
+   **Agents** is the sum of the registry's child records; **Total** is
+   `main + agents`, counted once. An unknown cost is `null` and is never
+   estimated, and any included bucket with an unknown cost makes the aggregate
+   cost `null` too.
+5. Parent usage is read from the session's own assistant `usage` records, reduced
+   incrementally (each entry is read once and the cache is reset on
+   `session_start`); the first sample after a run start becomes the baseline.
+   Child usage is sampled from the child's own `SessionStats` before disposal.
+   Children are isolated in-memory sessions (`noExtensions: true`), the Parent
+   session's entries never contain child usage and `aies_delegate` returns no
+   nested `usage` field, so Main excludes children by construction and the Total
+   adds each token exactly once.
+6. The `agents` projection is ephemeral end to end: `toSnapshot` never writes it
+   and `fromSnapshot` never reads it, so a resume or `/fork` starts with an empty
+   registry and cannot resurrect a finished child as live.
+7. The registry crosses the extension boundary on Pi's documented `pi.events`
+   bus. Pi loads each extension through its own jiti instance
+   (`moduleCache: false`), so the `observatory` singleton is **not** shared
+   between `aies-agents` and `aies-runtime`. `aies-agents` re-publishes every
+   registry mutation on the stable `aies:agents` channel; `aies-runtime` consumes
+   it, folds it through `applyAgents` and repaints once. An absent bus or a silent
+   publisher leaves the projection empty; it never crashes the runtime.
+
+**Why.** AIES-010 and AIES-010B made the workflow legible but left the run opaque
+at two points: it could not answer "which agents ran and what did they cost", and
+a child's own identity and cost were unobservable while the finished card lingered
+on a TTL. Reading the child session's own public usage at its
+own lifecycle boundaries is the only measurement that is real instead of
+estimated, and doing it in a registry that has no authority keeps a presentation
+phase from becoming a second workflow engine. Keeping the projection out of the
+persisted snapshot is what stops a `/resume` from fabricating a live child that no
+longer exists.
+
+**Consequence.** The status panel, the mini agents widget, `/agents`,
+`/aies-status` and the compact DONE card all read this registry, and the child
+model, token count and cost are now visible without inventing a value. Because Pi
+loads each extension through its own jiti instance, the projection reaches the
+runtime only over the `aies:agents` event channel: a silent publisher leaves it
+empty rather than failing the run. No behavioural authority changes: routing,
+verification, permissions, sandbox, Context Governor thresholds, Linear policy,
+autonomy and the repair budget keep their semantics. This refines D8's
+consequence that "measuring subagent activity is a separate phase's problem": it
+is now that phase, resolved without touching the Parent counters. It refines D16
+item 2 by adding the surfaces the registry feeds, and it supersedes the D16 item 5
+rule that a finished child's widget expires after a 60 second TTL. Detailed
+reference: `docs/UX.md` §6 and §15.
+
+---
+
+## D21 - Presentation shell refinements: a status panel, one identity glyph, one durable entry, and quiet generic tools (AIES-010C)
+
+**Decision.**
+1. The status panel is a persistent widget below the editor
+   (`ctx.ui.setWidget(PANEL_KEY, factory, { placement: "belowEditor" })`), not
+   `ctx.ui.setHeader`: Pi's header is the startup header and scrolls out of view.
+   From `100` columns the panel is a borderless block of at most 4 lines, each at
+   most `72` columns wide; from `72` to `99` columns it is a single-column box of
+   at most 6 lines (4 body rows plus the top and bottom borders) at most `72`
+   columns wide; below `72` columns it renders nothing. The startup ticket header
+   renders no lines while the panel is visible, so the two never duplicate a fact.
+   The panel is not a sidebar: it steals no editor width and holds no state.
+2. The footer renders its minimal form while the panel is visible (identity,
+   ticket, stage, context and alarms) and the rich footer returns when it is not,
+   so the human is never told the same fact twice. The documented drop order
+   (model -> cwd -> `V:PASS` -> `AUTO` -> stage -> `ctx`) still applies to the
+   rich form; identity, ticket and alarms are never dropped.
+3. There is one AIES identity glyph: `✧` in the footer, the panel title and the
+   ticket header. The retired `❈` is gone.
+4. One durable transcript entry per finished child, and the live card clears as
+   soon as the child finishes: the AIES-010B finished-card TTL is removed, so the
+   durable entry is the only remaining trace and duplicated `✓ Worker` rows cannot
+   recur. The observatory's mini widget (`aies-agents`) is the second widget and
+   clears itself when the registry empties.
+5. The six generic tools that carry raw file and shell traffic (`read`, `bash`,
+   `grep`, `find`, `edit`, `write`) are re-registered through the documented Pi
+   override pattern: `extensions/aies-runtime/quiet-tools.ts` creates one public
+   `create*Tool(cwd)` instance per tool, delegates `execute` to it untouched, and
+   adds only the `extensions/aies-ui/tools.ts` renderers. The native shell is kept
+   (no `renderShell: "self"`), so a failure stays framed by Pi; the collapsed row
+   is `› <tool> <target>`, a real error never collapses away, and expanded output
+   is the raw bytes plus the real detail facts.
+6. `/agents` is one `ctx.ui.custom()` component with arrow navigation and Escape
+   and with all index math in the pure `selectAgent`; the compact DONE summary
+   replaces the verbose DONE card, and `/aies-status` gains the `Uso` section in
+   the human overview plus the per-child observatory rows in `detalle`.
+7. The DONE card is edge-triggered on the observed ticket reaching Linear's
+   completed state, and autonomy stopping with `completed` shares the same single
+   latch, so a run appends exactly one DONE `aies-summary` entry. DONE and BLOCKED
+   both go through one publish path: the durable entry is always appended, and its
+   headline is sent through `notify` only where the durable card cannot be drawn
+   (a non-TUI mode, or a host without entry renderers), so the human never sees
+   the same headline twice.
+
+**Why.** The AIES-010B shell showed the ticket and the footer but the run's
+headline facts (model, context, elapsed, cost, agents) had no home, and the
+footer still carried facts a different surface could show better. Pi's own header
+is the startup header, which scrolls out of view once the transcript grows, so a
+persistent panel below the editor is the only surface that keeps those facts on
+screen; making the footer minimal while it is present removes the repetition
+without removing the fallback. The quiet generic
+tool rows were deferred in AIES-010 as duplication, but the generic tools are the
+ones that flood the transcript with raw traffic, and the documented override
+pattern lets AIES change only their drawing while Pi keeps execution and the
+native error shell. Removing the TTL is what makes "one durable line per child"
+literally true instead of a source of duplicates.
+
+**Consequence.** Fewer always-visible slices of the same fact and more
+information on demand, all still rendered by pure functions from one snapshot. No
+behavioural authority changes: execution, `content`, `details`, the error flag and
+the schemas are untouched, and `mcp` is still not wrapped. This refines D18 item 1
+(the full custom footer and the startup header are now a footer, a below-editor
+panel and a content-driven fallback) and D18 item 4. It supersedes the D16 item 5
+finished-card TTL rule and the D18 item 4 statement that generic Pi tools keep
+Pi's rendering and are never wrapped, for the six named tools only. It also
+supersedes the D16 item 2 "one widget key" phrasing: the shell now owns three
+widget keys, one command view (`/agents`) and the quiet tool registration.
+Detailed reference: `docs/UX.md` §3, §5, §6, §12, §13, §17, §18 and §22.
+
+---
+
+## D22 - Linear identity boundary fails closed: a remote issue with no usable identity never mutates state (AIES-010C)
+
+**Decision.**
+1. `readIssueIdentity` / `hasUsableIssueIdentity` in
+   `extensions/aies-agents/linear/contract.ts` accept only a non-empty `identifier`
+   first, then a non-empty `id`. The `uuid` the real MCP projection always carries
+   is Linear's internal key, not the human ticket key, so it is never accepted as
+   the user-facing identity.
+2. Both the load path and the remote-refresh path in `TicketManager` reject an
+   identity-less payload **before** `normalizeTicketContract` runs and before any
+   state mutation, returning the typed error `invalid_remote_payload`. On a failed
+   refresh the active ticket is left unchanged.
+3. The collapsed `aies_ticket` row renders `respuesta inválida de Linear`.
+4. `no_pending_remote` is documented as the expected stale-replay guard: it occurs
+   only after the pending operation was already consumed, and repeating the action
+   without `remote` safely re-derives the directive. No transport behaviour changed.
+
+**Why.** The EZE-423 smoke proved the defect was reachable: `performLoad()`
+accepted any truthy object and `normalizeTicketContract()` let both `identifier`
+and `id` collapse to `undefined` before mutating `activeTicket`, so a truthy MCP
+replay carrying neither key activated an identity-less ticket. Accepting the
+internal `uuid` to satisfy the type would have hidden the missing human key
+exactly the way the bug depended on. Rejecting before normalization is the only
+boundary that cannot partially mutate state.
+
+**Consequence.** A malformed remote payload is now a visible, typed failure that
+preserves the previous ticket, instead of a silent activation. This refines D14's
+normalization and remote-refresh rules (items 3 and 6): the compact contract and
+the conflict check are unchanged, but normalization is now preceded by a
+fail-closed identity gate. It is the one bounded behaviour change AIES-010C made
+to the Linear workflow, and it was proven by the EZE-423 smoke, not inferred.
+Detailed reference: `docs/ARCHITECTURE.md` (Linear ticket workflow).
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

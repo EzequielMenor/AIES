@@ -97,14 +97,18 @@ extension and never receive the Parent rule: their prompts stay technical.
 ## The runtime observer (`extensions/aies-runtime/`)
 
 AIES-002. Sensors, no actuators: it measures the parent session and changes
-nothing about how Pi runs it. It registers one footer line and one command, and
-no tools.
+nothing about how Pi runs it. Since AIES-010B and AIES-010C it also installs the
+shell (the full footer and the ticket header), the widgets, the `/aies-status` and
+`/agents` commands and the quiet renderers for six generic tools; no handler
+returns a value, so none of it can block a call or patch a result.
 
 | Module | Job |
 |---|---|
-| `state.ts` | The typed state and its transitions. Pure: no Pi import, no I/O, no timers. Token counts come from Pi, never estimated here |
-| `status.ts` | Turns a snapshot into the footer line and the `/aies-status` report. Pure presentation |
-| `index.ts` | The only file in AIES-002 that touches Pi |
+| `state.ts` | The typed state and its transitions. Pure: no Pi import, no I/O, no timers. Token counts come from Pi, never estimated here. Since AIES-010C it also holds `RunUsageState` and the ephemeral `agents` projection |
+| `usage.ts` | `aggregateUsage`, the pure Main / Agents / Total reduction. An unknown cost propagates as `null` and is never estimated |
+| `status.ts` | Turns a snapshot into the `/aies-status` report. Pure presentation |
+| `quiet-tools.ts` | The Pi boundary of the quiet generic tool surface: the six public `create*Tool(cwd)` instances with `execute` delegated untouched and only renderers added |
+| `index.ts` | The only runtime file that touches Pi: events -> state -> strings, the footer and header, the three widgets, the `/agents` view and the quiet-tool registration |
 
 What it reads, from `session_start`, `tool_call`, `tool_result`, `turn_end`,
 `model_select`, `session_compact`, `agent_settled` and `session_shutdown`:
@@ -123,21 +127,28 @@ What it reads, from `session_start`, `tool_call`, `tool_result`, `turn_end`,
   it counted, the duration it measured, and the parent mutations seen since a
   PASS - which is what turns an old `V:PASS` into `V:STALE` in the footer.
 
-The footer names an in-flight verification as well:
+The footer names an in-flight verification through the workflow stage and the
+independent indicator:
 
 ```
-AIES · VERIFY · ctx 44k/peak 46k · tools 6 · files 3 · V:? · 02:11
-AIES · ctx 46k/peak 46k · tools 8 · files 3 · V:PASS · 02:28
+✧ AIES · EZE-417 · VERIFY · ctx 45k
+✧ AIES · EZE-417 · ctx 46k · V:PASS
 ```
+
+`V:BLOCKED` and `V:?` are not footer vocabulary: the stage already carries them.
+`V:ERROR` is kept because a verification protocol fault is its own fact. The full
+footer specification lives in the presentation layer and in `docs/UX.md`.
 
 Two invariants, both under test: no handler ever returns a value (nothing can
 block a call or patch a result), and every measurement sits behind a guard (the
 observer degrades into silence instead of into a Pi extension error). No
-threshold, counter or ratio feeds any decision yet: that is AIES-003.
+threshold, counter or ratio in this observer feeds any decision: routing policy is
+AIES-003 and lives in `aies-agents`.
 
-The footer refreshes on events and every five seconds, and only when its text
-actually changed, so it never repaints itself. The clock is `unref`ed and cleared
-on `session_shutdown`.
+The footer, the header and the panel refresh on events and on one adaptive timer
+— 1s while a child is active, 5s otherwise — and only when their text actually
+changed, so they never repaint themselves. The clock is `unref`ed and cleared on
+`session_shutdown`.
 
 ### Where the numbers come from, and where they stop
 
@@ -152,8 +163,10 @@ never enters the model's context. A `/resume` therefore keeps its cumulative
 counters and its peak; a session interrupted by a hard kill loses whatever was not
 checkpointed yet, and a `/new` starts clean by definition. Known limits:
 
-- the counters describe the **parent** session only. What a subagent reads or
-  costs is invisible here, because the parent only sees one call to its own tool;
+- the counters describe the **parent** session only. The parent sees one call to
+  its own delegation tool, so child reads and child cost are never in these
+  counters; AIES-010C observes child usage through a separate registry (see the
+  presentation layer), and the two sources are aggregated once, never merged;
 - `filesInspected` counts paths given to the reading tools, not files a `grep`
   matched. A shell command contributes one counter and no paths: this is a
   heuristic with a test, not a shell parser;
@@ -215,7 +228,8 @@ Parent Session (AgentSession)
 | `agents/explore.md` | Role prompt defining progressive disclosure and read-only search rules |
 | `agents/worker.md` | Role prompt defining scoped implementation, worktree protection, and checks |
 | `agents/verify.md` | Role prompt defining independent verification and the three verdicts |
-| `extensions/aies-agents/session.ts` | Shared isolated child `AgentSession` creation and disposal lifecycle |
+| `extensions/aies-agents/session.ts` | Shared isolated child `AgentSession` creation and disposal lifecycle, plus the single event listener that observes a child for the Agent Observatory |
+| `extensions/aies-agents/observatory.ts` | The ephemeral, session-local Agent Observatory registry: pure, no Pi import, no persistence, no authority |
 | `extensions/aies-agents/tgrep.ts` | Scoped code search tool with path containment, output limits, and fallback |
 | `extensions/aies-agents/command-guard.ts` | The command mechanics and rules Worker and Verify share, parameterised by role |
 | `extensions/aies-agents/worker-guard.ts` | Worker command policy and guarded bash tool definition |
@@ -627,13 +641,16 @@ remains the UI runtime.
 ```
 extensions/aies-ui/          pure: snapshot -> strings, no Pi import, no state
   paint.ts                   semantic colors behind an injected Paint adapter
-  format.ts                  formatTokens, formatDuration, clip, singleLine
+  format.ts                  formatTokens, formatDuration, formatCost, clip, singleLine
   vocabulary.ts              deriveStage + independent indicators
   footer.ts                  renderFooter/renderHeader with width degradation
+  panel.ts                   the status panel and its responsive bands
   activity.ts                live child card, finished line, entry data
+  agents.ts                  mini agents widget, /agents view, selectAgent
+  tools.ts                   quiet projections for the six generic tools
   approval.ts                structured permission prompt
   summary.ts                 DONE/BLOCKED cards, /aies-status overview, /aies-run status
-extensions/aies-runtime/     the only writer of the footer, the header and the widget
+extensions/aies-runtime/     the only writer of the footer, the header and the widgets
 ```
 
 AIES-010B replaces the AIES `setStatus` footer segment with a full custom footer
@@ -643,6 +660,73 @@ code, paths, identifiers, models and the technical tokens (`IDLE`..`DONE`,
 `PASS`/`FAIL`/`BLOCKED`, `V:*`, `AUTO`) stay in their original language.
 `/aies-status` defaults to the human overview and keeps the full telemetry behind
 `detalle`/`all`.
+
+AIES-010C makes the active run legible at a glance without adding intelligence.
+It adds the session-local Agent Observatory and the run telemetry, a status panel
+below the editor on wide terminals, a compact mini agents widget, one interactive
+`/agents` view, quiet rendering for the six generic Pi tools, and a compact DONE
+projection. Every new fact is a reading of a snapshot; nothing here routes,
+verifies or persists.
+
+### The Agent Observatory and run telemetry (AIES-010C)
+
+The Agent Observatory is **ephemeral presentation state, not agent
+orchestration**. `extensions/aies-agents/observatory.ts` is a session-local
+registry that observes the existing Explore, Worker and Verify children. It
+imports nothing (no Pi, no filesystem, no clock of its own), holds no transcript
+and no reasoning, and has no authority: it never routes, authorizes, persists,
+retries or changes a child's prompt. It is reset on `session_start` and never
+restored from the session file.
+
+| Field group | What a record carries |
+|---|---|
+| Identity | A stable `<role>-<ordinal>` id, the role and the lifecycle `status` (`running`, `completed`, `failed`, `blocked`) |
+| Timing | `startedAt` and `finishedAt`, supplied by the caller |
+| Model / provider | `modelId`, `modelLabel`, `providerId`, `providerLabel`, resolved by the role runner |
+| Activity | `currentActivity` and a bounded ring of the last 5 mechanically worded tool events (`Leyendo`, `Buscando`, `Editando`, `Ejecutando`, `Comprobando`) |
+| Work | `toolCount`, `changedPaths`, and a compact single-line `result` |
+| Usage | `totalTokens` and `cost`, sampled from the child's own `SessionStats` |
+
+Child wiring: `session.ts` attaches exactly one event-driven `session.subscribe`
+listener per observed child. Tool starts become mechanical activities, and
+`turn_end` / `agent_settled` / `agent_end` sample the public `SessionStats`
+(`tokens.total`, `cost`) before disposal. `explore.ts`, `worker.ts` and
+`verify.ts` each open and close exactly one record in a `finally`, so a record
+exists even when the child throws. `delegate.ts` passes the singleton and a
+provider display label. Handoff shapes, prompts, tool surfaces and routing are
+unchanged: the registry only watches.
+
+**Crossing the extension boundary.** Pi loads each extension through its own
+jiti instance (`moduleCache: false`), so the `observatory` singleton that
+`aies-agents` mutates is **not** the module `aies-runtime` imports. The registry
+therefore crosses the boundary on Pi's documented `pi.events` bus: `aies-agents`
+re-publishes every registry mutation on the stable `aies:agents` channel, and
+`aies-runtime` consumes it, folds it through `applyAgents` and repaints once. An
+absent bus or a silent publisher leaves the projection empty; it never crashes
+the runtime.
+
+The `agents` projection is deliberately ephemeral. `toSnapshot` never writes it
+and `fromSnapshot` never reads it, so a resume or `/fork` cannot resurrect a
+finished child as if it were still running.
+
+**Run telemetry.** `usage.ts` reduces usage into three buckets with
+`aggregateUsage`: Main, Agents and Total.
+
+- **Main** is the Parent usage since the current run's baseline. The baseline is
+  the first Parent sample after `applyRunStart`, and Parent usage comes from the
+  session's own assistant `usage` records, reduced incrementally (each entry is
+  read once and the cache is reset on `session_start`).
+- **Agents** is the sum of the observatory's child records, whose usage the
+  wiring sampled from the child session before disposal.
+- **Total** is `main + agents`, counted once.
+- An unknown cost is `null` at every level and is never estimated; when any
+  included bucket has an unknown cost, the aggregate cost is `null` too.
+
+Child usage cannot double count into Main: a delegated child runs in an isolated
+in-memory session created with `noExtensions: true`, the Parent session's entries
+never contain child usage, and `aies_delegate` returns no nested `usage` field.
+Main excludes children by construction, and Agents is the registry alone, so the
+Total adds each token exactly once.
 
 ### Authority boundary
 
@@ -672,26 +756,45 @@ independent indicators and are never folded into the stage.
 | Surface | Pi API | Owner | Lifetime |
 |---|---|---|---|
 | Custom footer | `ctx.ui.setFooter` | `aies-runtime` | until cleared or session end |
-| Ticket header | `ctx.ui.setHeader` | `aies-runtime` | until cleared or session end |
-| Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs, plus a 60s tail |
+| Startup ticket header | `ctx.ui.setHeader` | `aies-runtime` | until cleared or session end; renders no lines while the panel is visible |
+| Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs; cleared as soon as it finishes |
+| Widget `aies-agents` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while the observatory has records |
+| Widget `aies-panel` | `ctx.ui.setWidget` (factory, below editor) | `aies-runtime` | while the terminal is at least 72 columns |
+| `/agents` view | `ctx.ui.custom` | `aies-runtime` | until Escape |
 | Finished child / DONE / BLOCKED entries | `pi.appendEntry` + `pi.registerEntryRenderer` | `aies-runtime` | persisted in the session file |
+| Quiet generic tool rows | `pi.registerTool` with `renderCall`/`renderResult` | `aies-runtime` | re-registered once per working directory |
 | Permission prompt | `ctx.ui.confirm` | `aies-agents` | until answered |
+
+The panel is content-driven. At `>= 72` terminal columns the status panel is a
+persistent widget below the editor and the startup ticket header renders no
+lines, so the two never duplicate a fact; below that the panel is absent and the
+responsive ticket header is the identity surface. While the panel is visible the
+footer renders its minimal form (identity, ticket, stage, context and alarms) so
+it does not repeat what the panel already shows; otherwise the rich footer
+returns. The panel is never a sidebar, takes no editor width and holds no state.
 
 One timer exists, owned by `aies-runtime`: 1s while a child is active, 5s
 otherwise, cleared on shutdown and unreferenced so it can never hold the process
-open.
+open. The observatory adds no timer of its own; its widget repaints from the
+registry subscription and that single clock.
 
 ### AIES tool rendering
 
-Only the two AIES-owned tools receive presentation hooks. `aies_ticket` and
+AIES-owned plumbing receives presentation-only hooks. `aies_ticket` and
 `aies_delegate` define `renderCall`/`renderResult` that project structured args
 and details into one compact Spanish row, hide settled chrome, keep a real error
 visible when collapsed, and print the original content byte-identical when
-expanded. The hooks never touch execution, `content`, `details`, the error flag or
-the schema, and they never send a conversation message. Generic Pi tools keep
-Pi's own rendering; the external `mcp` tool is not wrapped or replaced. The
-adapter's quiet result mode is pinned in `profile/mcp.json` (see above), which
-changes only the drawing of an MCP result.
+expanded. Since AIES-010C the six generic tools that carry raw file and shell
+traffic (`read`, `bash`, `grep`, `find`, `edit`, `write`) are re-registered
+through the documented Pi override pattern: `quiet-tools.ts` creates one public
+`create*Tool(cwd)` instance per tool, delegates `execute` to it unchanged, and
+adds only the `extensions/aies-ui/tools.ts` projections. The native shell is kept
+(no `renderShell: "self"`), so Pi still frames a failure, and expanded output is
+the raw text byte for byte. Tool hooks never touch execution, `content`,
+`details`, the error flag or the schema, and they never send a conversation
+message. The external `mcp` tool is still not wrapped or replaced: the adapter's
+quiet result mode is pinned in `profile/mcp.json` (see above), which changes only
+the drawing of an MCP result.
 
 ### No context pollution
 
@@ -704,15 +807,30 @@ the human watches stays invisible to the model. `tests/aies-ui-seam.test.mjs`
 fails if any UI path starts sending messages, and fails if the retired
 `setStatus` is used again.
 
+The DONE and BLOCKED summaries travel through one publish path. The DONE card is
+edge-triggered on the observed ticket reaching Linear's completed state, and
+autonomy stopping with `completed` shares the same single latch, so a run appends
+exactly one DONE `aies-summary` entry. The durable entry is always appended, and its
+headline is sent through `notify` only where the durable card cannot be drawn (a
+non-TUI mode, or a host without entry renderers), so the human never sees the same
+headline twice.
+
 ### Degradation
 
-- Narrow terminal: the footer drops segments by documented priority
+- Terminal width: at `>= 100` columns the status panel (a widget below the
+  editor) is a borderless block of at most 4 lines, each at most `72` columns
+  wide; from `72` columns it is a single-column box of at most 6 lines, at most
+  `72` columns wide; below `72` it renders nothing and the responsive ticket
+  header is the identity surface. While the panel is present the footer is
+  minimal; otherwise it drops segments by documented priority
   (model -> cwd -> `V:PASS` -> `AUTO` -> stage -> `ctx`) and keeps identity,
-  ticket and alarms (`V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`, `SANDBOX OFF`);
-  the ticket header collapses to one line and the activity card clips its
-  subtitle.
-- No UI (print, json, RPC without dialogs): no widget, no status, no entries. The
-  workflow is unchanged and `/aies-status` still answers.
+  ticket and alarms (`V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`, `SANDBOX OFF`). The
+  ticket header collapses to one line below 60 columns, the activity card is boxed
+  from 48 columns and capped at `72`, and the mini agents widget renders from 48
+  columns.
+- No UI (print, json, RPC without dialogs): no widget, no status, no entries, no
+  panel. The workflow is unchanged; `/aies-status` still answers and `/agents`
+  answers through `notify`.
 - A failing projection is swallowed: observation is optional, Pi's behaviour is not.
 
 Detailed reference: `docs/UX.md`.
@@ -739,6 +857,14 @@ the real Pi profile), so the suite proves both isolation and override.
 | Verify completion authority (AIES-010B) | the schema-validated `aies_verify_complete` tool as the sole verdict source, `protocol_error` separated from `pass`/`fail`/`blocked`, one attempt with zero repairs and no rerun, and a captured verdict that survives a failing final prose (`tests/verify.test.mjs`, `tests/smoke-verify.test.mjs`) |
 | Spanish presentation (AIES-010B) | the resident Parent rule, the Spanish identity/footer/status/approval copy, the responsive ticket header, and the absence of a raw child summary in the card or entry, driven directly (`tests/spanish-ux.test.mjs`) |
 | AIES tool rendering (AIES-010B) | `aies_ticket`/`aies_delegate` compact pending/success/error rows, visible collapsed errors and byte-identical expanded content (`tests/tool-rendering.test.mjs`), plus the effective compact MCP presentation settings (`tests/isolation.test.mjs`) |
+| observatory registry (AIES-010C) | the pure module boundary (no Pi, filesystem or network), sequential `<role>-<ordinal>` ids, the bounded 5-entry activity ring, mechanical Spanish wording, changed paths, live/final usage, missing cost and the Main/Agents/Total reduction without double counting (`tests/agent-observatory.test.mjs`) |
+| observatory child wiring (AIES-010C) | exactly one `subscribe` listener per child, usage sampled only on lifecycle boundaries, the last sample surviving disposal, and a throwing observer or unavailable `subscribe` never failing the run (`tests/agent-observatory-wiring.test.mjs`) |
+| run telemetry (AIES-010C) | the run baseline subtracted from Parent lifetime usage, run start/restart, Main kept Parent-only, Agents as the registry sum, and an unknown cost propagating as `null` (`tests/run-telemetry.test.mjs`) |
+| status panel (AIES-010C) | the wide borderless / mid box / hidden tiers and their breakpoints, row omission with no value, and `formatCost` rendering an em dash for an unknown value (`tests/aies-panel.test.mjs`) |
+| `/agents` view (AIES-010C) | the mini widget cap and `… N más` overflow, the detail rows, and the wrap-around `selectAgent` navigation (`tests/agents-view.test.mjs`) |
+| observatory UI seam (AIES-010C) | the panel below the editor with no duplicate ticket header, the minimal footer exactly while the panel is visible, the `aies-agents` widget, `/agents` navigation and the compact DONE telemetry, all through a fake `ExtensionAPI` (`tests/observatory-ui.test.mjs`) |
+| quiet generic tools (AIES-010C) | the six re-registered tools delegating `execute` untouched, collapsed success rows, the always-visible bounded error rows, the truncation hint and byte-identical expanded output (`tests/quiet-tools.test.mjs`) |
+| Linear identity boundary (AIES-010C) | a remote issue without a non-empty `identifier`/`id` rejected before normalization or state mutation, uuid-only payloads refused, the active ticket preserved on invalid refresh, and `no_pending_remote` kept as the stale-replay guard (`tests/linear.test.mjs`) |
 | skills policy | RPC `get_commands` contains zero `source: "skill"` entries |
 | package isolation | `aies list` output excludes every package of the ambient profile |
 | non-regression | sha256 of the ambient profile's `settings.json`, `auth.json`, `models.json` and the session directory listing are unchanged |
@@ -747,12 +873,21 @@ No credentials and no model calls are involved, so the suite runs anywhere. The
 checks above are unit and integration checks: they prove the wiring, not a live
 Linear workflow. The shell additionally ran by hand in a real TUI — `/aies-status`
 and `/aies-status detalle` render in Spanish in cmux, and the shell renders
-correctly in an 80-column `tmux`. The end-to-end ticket smoke did **not** finish:
-in the isolated profile the only CLI model credential returned an Anthropic 401
-invalid API key, so the `EZE-422` workflow stopped before any AIES tool executed
-and the ticket remains `In Progress`. That is an environment credential failure,
-not a product defect, and nothing here should be read as a verified real Linear
-`Done`.
+correctly in an 80-column `tmux`. The AIES-010C suites bring the suite to 607
+passing tests across the observatory, telemetry, panel, agents view and quiet tool
+checks listed above.
+
+The phase also ran live smokes in a scratch `aies-smoke` repository on the
+isolated profile. `EZE-424` (a 140-column TUI) and `EZE-425` reached
+`Worker -> Verify PASS -> Linear Done`, with Linear really reaching `Done`. One
+`EZE-425` attempt stopped on `BLOCKED · V:ERROR` because the scratch fixture
+itself left `npm test` red, so Verify could not close its criteria: that is the
+protocol-error path rendering correctly, not a product defect, and the fixture was
+repaired before the successful run. `aies -p "/aies-status"` exits 0 with no TUI
+surface, and `--mode rpc` slash-command prompts fail identically in ambient `pi`,
+so that failure is Pi's RPC behavior and not an AIES regression. Startup measures
+`0.19s` against a `0.18-0.20s` baseline, and the observer still owns exactly one
+adaptive interval.
 
 ## Generated versus versioned
 

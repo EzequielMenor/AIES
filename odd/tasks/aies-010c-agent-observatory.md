@@ -1,6 +1,6 @@
 # AIES-010C — Agent Observatory, Telemetry & Final Visual Polish
 
-Status: in progress
+Status: complete
 Branch: `feat/aies-010c-agent-observatory`
 Baseline: real EZE-423 smoke (`Worker → Verify PASS → Linear Done`)
 Scope: final presentation and observability phase before AIES-011 Calibration
@@ -52,8 +52,8 @@ interactive `/agents` view over session-local child facts.
 | T2 Linear invalid-load boundary | complete | Rejects remote issues without non-empty `identifier`/`id` before state mutation, keeps the previous ticket on invalid refresh, renders a Spanish failure, and proves `no_pending_remote` is the expected stale-replay guard. | `70ad842` |
 | T3 Ephemeral Agent Observatory and exact usage | complete | Added the pure session-local registry, mechanical Spanish activity derivation, real child `SessionStats` usage sampling that survives disposal, event-driven child wiring, and run-scoped Main/Agents/Total aggregation with incremental Parent sampling. | `832b549` |
 | T4 Observatory presentation and `/agents` | complete | Added the boxed status panel, panel-aware minimal footer, boxed live card with no lingering finished card, mini agents widget, interactive `/agents`, telemetry in `/aies-status` and the compact DONE projection. | `22481aa` |
-| T5 Quiet generic tool rendering | complete | Re-registered the six generic tools through the documented Pi pattern with delegated execution, compact `›` rows, always-visible bounded errors and byte-identical native expansion. | pending commit |
-| T6 Documentation, full verification and real smokes | pending | Update architecture/UX/decision docs, run full/isolation/shell checks, compare startup/render cadence, validate cmux + 80 columns + headless, and complete safe live `/aies-run` plus `/agents` smoke. | — |
+| T5 Quiet generic tool rendering | complete | Re-registered the six generic tools through the documented Pi pattern with delegated execution, compact `›` rows, always-visible bounded errors and byte-identical native expansion. | `d176fb4` |
+| T6 Documentation, full verification and real smokes | complete | Documented the shipped observatory, corrected the docs after the smoke-driven fixes, ran three real `/aies-run` smokes plus `/agents`, width and headless checks, and closed with 630/630 tests, isolation and shell syntax green. | `cc3c593` + docs |
 
 ## Design freeze
 
@@ -172,3 +172,86 @@ capture, routing/autonomy/permission/context-policy redesign, push or PR.
   `✗ bash  npm test` with three bounded error lines, and byte-identical expanded
   output. Two cosmetic notes recorded: a trailing blank line in expanded raw text
   (faithful to the bytes) and no live-TUI render proof yet — T6 covers that.
+
+### T6 real smokes (safe `aies-smoke` repository, isolated AIES profile)
+
+- Smoke 1 — `EZE-424` (new safe ticket, broken `clamp` fixture), 140-column tmux
+  TUI, model MiniMax-M3: `LOAD → START → Worker → Verify PASS 7/7 → Linear Done`.
+  Linear really reached `Done` (state history confirms). Compact tool rows worked
+  live (`› bash  pwd && ls -la ✓`, `› read  …/src/cla… ✓`), MCP rows stayed one
+  line with `(Ctrl+O to expand)`, and the session file held exactly two
+  `aies-agent` entries — one Worker, one Verify — with no duplicate.
+- Smoke 1 defects found (all invisible to the unit suites):
+  1. The status panel lived in `ctx.ui.setHeader`, which is Pi's *startup*
+     header: it scrolled out of view as soon as the transcript grew, so the panel
+     was never visible during the run.
+  2. The compact DONE card was never emitted — no `aies-summary` entry exists in
+     the session file. The `✓ EZE-424 · completado` line in the transcript was the
+     `aies_ticket` complete row, not the card.
+  3. The idle panel printed `Coste Main/Agents/Total $0.00` with no run.
+- Smoke 2 — `EZE-425`, first attempt: ended `BLOCKED · V:ERROR` because my own
+  fixture left `npm test` red through a pre-existing `calculator.js` defect, so
+  Verify could not close its criteria. That is a fixture mistake, not an AIES
+  defect, and it is real evidence that the protocol-error path renders correctly
+  (`BLOCKED` stage plus the `V:ERROR` alarm in both panel and footer, no fake
+  verdict, no automatic retry). The fixture was repaired on `main` and the ticket
+  reset to `Todo`.
+- Smoke 2 — `EZE-425`, second attempt: `LOAD → START → Explore → Worker →
+  Verify PASS 5/5 → Linear Done`, confirmed in Linear. Live surfaces observed:
+  persistent panel below the editor with model/provider, `ctx`, run time, agent
+  count and `Tokens`/`Coste` Main·Agents·Total; the boxed live card; the mini
+  agents widget; one durable entry per child (`✓ Explore · 00:33 · 7 archivos
+  relevantes`, `✓ Worker · 00:16 · 1 archivo modificado · checks aprobados`,
+  `✓ Verify · PASS · 00:17 · 5/5 criterios`); and the compact DONE card with
+  `Linear ✓ Done`, `Tokens 374k (main 253k · agents 121k)`, `Coste $0.05`,
+  `Tiempo 02:03`.
+- `/agents` real smoke: opened while Verify was running, it listed `Explore #1
+  completed`, `Worker #1 completed`, `Verify #1 running` with model, provider
+  display name, elapsed, tokens, cost, tool count, recent mechanical activity and
+  result; `→` moved the selection and updated the detail; `Esc` closed it. After
+  completion the same records remained with their telemetry.
+- Structural defect found by smoke 2 and fixed: Pi loads each extension with its
+  own jiti instance (`moduleCache: false`), so the `observatory` singleton was two
+  different objects in `aies-agents` and `aies-runtime` — the panel showed
+  `Agentes 0`, `Tokens Agents 0` and `/agents` said `sin agentes en esta sesión`
+  while children had really run. The registry now crosses the extension boundary
+  through Pi's documented `pi.events` bus on the stable `aies:agents` channel.
+- Width degradation, live: 140 columns → wide panel (4 lines) + minimal footer;
+  80 columns → mid single-column boxed panel + minimal footer; 60 columns → panel
+  hidden and the rich footer fallback returns (`… · ctx 19k · MiniMax-M3 ·
+  aies-smoke`).
+- Headless: `aies -p "/aies-status"` exits 0 with no TUI surface and no leak.
+  `--mode rpc` slash-command prompts fail with
+  `Cannot read properties of undefined (reading 'startsWith')` for *every*
+  command including `/nonexistent-xyz` — and the ambient `pi --mode rpc` behaves
+  identically, so this is Pi's RPC prompt behavior, not an AIES regression.
+- Performance: startup after the phase is 0.19s, 0.19s, 0.19s
+  (`AIES_HOME=/tmp/aies-010c-startup-after bin/aies --aies-info`) against the
+  0.20s/0.18s/0.18s baseline. Still exactly one adaptive interval (1s active,
+  5s idle), Parent usage reduced incrementally once per session entry, and no
+  flicker was observed across the captured frames.
+- Autonomy note: the persisted `aies-autonomy` entry shows `stopReason: null`
+  because `aies-agents/index.ts` appends that snapshot *before* calling
+  `controller.handleSettled(...)`. The policy itself is correct, and the DONE card
+  no longer depends on it: it is edge-triggered on the observed ticket completion.
+- Smoke 3 — `EZE-426` after the bridge and polish fixes: the persistent panel,
+  capped boxed card (`╭─ ◆ Verify ─…╮` at 72 columns), mini widget with a
+  mechanical activity (`◆ Verify   Ejecutando git l… 00:09`), live
+  `Tokens Main 67k · Agents 91k · Total 158k` and `Coste Main $0.01 · Agents
+  $0.01 · Total $0.02` were all observed while the run worked. The run ended
+  `BLOCKED` for a cause outside this phase: the Verify child tried nine PASS
+  completions and `aies_verify_complete` rejected every one, so the child
+  reported `BLOCKED` with one blocking defect. `git diff f10cc84..HEAD` proves
+  `handoff.ts` (the validator) is untouched by AIES-010C and `verify.ts` changed
+  only for observatory begin/finish, so this is pre-existing AIES-010B strictness
+  under D19, not a regression. The presentation behaved exactly as specified:
+  `! Verify · BLOCKED · 04:13 · 1/1 criterio · 1 defecto bloqueante` once, stage
+  `BLOCKED` in panel and footer, and the Parent refused to force `Done` without a
+  PASS. Recorded as a known limitation for AIES-011 Calibration.
+- Duplicate-headline defect found by smoke 2 and fixed: the transcript showed the
+  `aies_ticket` complete row, the DONE card and a third `notify` headline. The
+  summary headline is now notified only when the durable card is not drawn.
+- `/agents` absolute-path defect found by smoke 2 and fixed: the detail `archivos`
+  row now uses bounded repository-relative short paths with a `… N más` remainder.
+- Final repository verification: `npm test` 630/630, `npm run check:isolation`
+  green, `bash -n bin/aies scripts/*.sh` clean, `git diff --check` clean.
