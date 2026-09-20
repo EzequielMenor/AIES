@@ -255,3 +255,33 @@ capture, routing/autonomy/permission/context-policy redesign, push or PR.
   row now uses bounded repository-relative short paths with a `… N más` remainder.
 - Final repository verification: `npm test` 630/630, `npm run check:isolation`
   green, `bash -n bin/aies scripts/*.sh` clean, `git diff --check` clean.
+
+### Native review (RDD)
+
+- Review switch on (global). `inspect` on the clean tree reported an empty
+  workspace candidate and required an explicit base ref, so the phase was
+  presented as a committed range.
+- `START` over the whole phase (`f10cc841…`..`bcfed88`, 40 files, +7812/−409)
+  failed preflight with `lens_context_budget_exceeded`: **no review authority was
+  created** (`mutation_outcome: not_started`, `retry_safe: true`). The native
+  continuation is to review smaller candidates.
+- Reduced candidate `d176fb40…`..`bcfed88` (the smoke-fix work unit plus its
+  docs: 17 files, 2392 changed lines) created lineage `review-5431251ed21b69d0`,
+  tier **medium**, one lens `review-reliability`, correction budget 200. No
+  consent envelope was returned.
+- The materialize slot forecast one `pi_host_relay` model run; the acknowledged
+  capture failed with `pi-host-relay-transport-failure` —
+  `400 {"type":"MissingSessionID"}`. Fresh bound STATUS reoffered the exact same
+  one-slot binding, and the single permitted relaunch failed identically.
+- Outcome: **no reviewer verdict and no authority acknowledgement was produced**.
+  Both captures reported `mutation_performed: false`, `mutation_outcome: none`, so
+  nothing was admitted and nothing was burned. The lineage remains in `reviewing`
+  with no captured artifacts; it was neither abandoned nor reset, because both are
+  destructive and require an explicit user decision.
+- This is the same environment defect that blocked all four AIES-010B lineages
+  (`review-19dac445e85037cd`, `review-f74ac7fe1328db6d`,
+  `review-8f0a4e587dc336a6`, `review-fd81930d5d202d1b`). It is a host relay
+  transport fault (a missing `x-opencode-session` header), not a candidate fault.
+- Independent verification was therefore carried by the delegated verifiers: T3
+  (7/7 invariants PASS), T4 (8/8 PASS, and it found the mini-widget collision that
+  was then fixed) and T5 (7/7 PASS), plus the three real TUI smokes.
