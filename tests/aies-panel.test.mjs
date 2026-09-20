@@ -103,30 +103,44 @@ describe("status panel", () => {
     assert.deepEqual(renderStatusPanel(snap, T0, { width: undefined }), []);
   });
 
-  it("renders a two-column box at the wide tier", () => {
-    const lines = renderStatusPanel(snapOf(richState()), T0 + 31_000, { width: 120 });
-    assert.ok(lines.length <= 8, `wide panel has ${lines.length} lines:\n${lines.join("\n")}`);
-    assert.ok(lines[0].startsWith("╭"), lines[0]);
-    assert.ok(lines.at(-1).startsWith("╰"), lines.at(-1));
-    assert.ok(boxWidthOf(lines) <= 72, `box is ${boxWidthOf(lines)} wide`);
+  it("renders a compact four-line block at the wide tier", () => {
+    const lines = renderStatusPanel(snapOf(richState()), T0 + 31_000, { width: 140 });
+    assert.ok(lines.length <= 4, `wide panel has ${lines.length} lines:\n${lines.join("\n")}`);
+    assert.ok(lines.length >= 3, `wide panel lost its facts:\n${lines.join("\n")}`);
+    assert.equal(lines[0].startsWith("╭"), false, "the persistent wide tier is not a box");
+    assert.ok(lines.every((line) => line.length <= 72), lines.join("\n"));
 
-    const text = lines.join("\n");
-    assert.match(text, /✧ AIES · EZE-417 · WORK/u);
-    assert.match(text, /Modelo/u);
-    assert.match(text, /Qwen 3.8 Flash/u);
-    assert.match(text, /openrouter/u);
-    assert.match(text, /Contexto/u);
-    assert.match(text, /Tiempo/u);
-    assert.match(text, /Agentes/u);
-    assert.match(text, /2 · Worker activo/u);
-    assert.match(text, /Tokens/u);
-    assert.match(text, /Main/u);
-    assert.match(text, /Coste/u);
+    assert.match(lines[0], /^✧ AIES · EZE-417 · WORK/u);
+    // model·provider + context + time + agents share one compact row
+    assert.match(lines[1], /Qwen 3\.8 Flash · openrouter/u);
+    assert.match(lines[1], /ctx 42k/u);
+    assert.match(lines[1], /00:31/u);
+    assert.match(lines[1], /2 · Worker activo/u);
+    assert.match(lines[2], /^Tokens /u);
+    assert.match(lines[2], /Main 12k/u);
+    assert.match(lines[2], /Total 16k/u);
+    assert.match(lines[3], /^Coste /u);
   });
 
   it("shows the ticket placeholder at IDLE and always carries the stage", () => {
     const lines = renderStatusPanel(snapOf(createState(T0)), T0, { width: 120 });
     assert.match(lines.join("\n"), /✧ AIES · listo · IDLE/u);
+  });
+
+  it("keeps an idle wide panel to model, context and time only", () => {
+    let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
+    state = applyModel(state, { id: "qwen3.8-flash", provider: "openrouter", name: "Qwen 3.8 Flash" });
+    const lines = renderStatusPanel(snapOf(state), T0, { width: 140 });
+    assert.ok(lines.length <= 4, lines.join("\n"));
+
+    const text = lines.join("\n");
+    assert.match(text, /Qwen 3\.8 Flash · openrouter/u);
+    assert.match(text, /ctx 31k/u);
+    assert.match(text, /00:00/u);
+    assert.equal(text.includes("Agentes"), false, text);
+    assert.equal(text.includes("Tokens"), false, text);
+    assert.equal(text.includes("Coste"), false, text);
+    assert.equal(text.includes("$0.00"), false, text);
   });
 
   it("omits every fact it cannot read", () => {
@@ -137,8 +151,42 @@ describe("status panel", () => {
     assert.equal(text.includes("Coste"), false, text);
     assert.equal(text.includes("Agentes"), false, text);
     assert.equal(text.includes("$0.00"), false, text);
-    assert.match(text, /Contexto/u);
-    assert.match(text, /Tiempo/u);
+    assert.match(text, /ctx 31k/u);
+    assert.match(text, /00:00/u);
+  });
+
+  it("omits the Agentes row when the registry is empty, even while a role is active", () => {
+    let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
+    state = applyDelegationStart(state, "verify", T0);
+
+    const wide = renderStatusPanel(snapOf(state), T0, { width: 140 }).join("\n");
+    assert.equal(wide.includes("Agentes"), false, wide);
+    assert.equal(wide.includes("0 ·"), false, `a zero count leaked: ${wide}`);
+    assert.equal(wide.includes("0 · Verify"), false, wide);
+
+    const mid = renderStatusPanel(snapOf(state), T0, { width: 80 }).join("\n");
+    assert.equal(mid.includes("Agentes"), false, mid);
+    assert.equal(mid.includes("0 ·"), false, `a zero count leaked: ${mid}`);
+  });
+
+  it("omits the tokens row when the run measured nothing", () => {
+    let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
+    state = applyRunStart(state, T0);
+    state = applyRunUsage(state, { totalTokens: 0, cost: null }, [], T0);
+    const text = renderStatusPanel(snapOf(state), T0, { width: 140 }).join("\n");
+    assert.equal(text.includes("Tokens"), false, text);
+  });
+
+  it("omits the cost row when there are no agents and the run cost is zero", () => {
+    let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
+    state = applyRunStart(state, T0);
+    state = applyRunUsage(state, { totalTokens: 2_000, cost: 0 }, [], T0);
+    state = applyRunUsage(state, { totalTokens: 4_000, cost: 0 }, [], T0 + 1_000);
+    const lines = renderStatusPanel(snapOf(state), T0 + 1_000, { width: 140 });
+    const text = lines.join("\n");
+    assert.match(text, /Tokens/u);
+    assert.equal(text.includes("Coste"), false, text);
+    assert.equal(text.includes("$0.00"), false, text);
   });
 
   it("marks context pressure and compaction", () => {
@@ -180,10 +228,11 @@ describe("status panel", () => {
     assert.match(text, /Agentes/u);
   });
 
-  it("keeps the box inside its own width budget across the tiers", () => {
+  it("keeps every line inside its own width budget across the tiers", () => {
     for (const width of [PANEL_MIN_WIDTH, 80, PANEL_WIDE_WIDTH, 160]) {
       const lines = renderStatusPanel(snapOf(richState()), T0, { width });
       assert.ok(lines.length > 0, `no panel at ${width}`);
+      assert.ok(lines.length <= 6, `width ${width}: ${lines.length} lines`);
       for (const line of lines) {
         assert.ok(line.length <= width, `width ${width}: "${line}"`);
         assert.ok(line.length <= 72, `width ${width}: "${line}" exceeds the 72 max`);

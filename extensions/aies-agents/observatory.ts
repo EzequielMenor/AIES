@@ -17,6 +17,14 @@ export type AgentStatus = "running" | "completed" | "failed" | "blocked";
 /** How many mechanical activity entries a record keeps. */
 export const MAX_ACTIVITIES = 5;
 
+/**
+ * The stable `pi.events` channel that carries observatory snapshots between
+ * extensions. Pi loads each extension through its own module registry, so the
+ * `observatory` singleton below is **not** shared across an extension boundary;
+ * this channel is the documented inter-extension wire replacement for it.
+ */
+export const AGENTS_CHANNEL = "aies:agents";
+
 const ACTIVITY_TEXT_MAX = 80;
 const COMMAND_MAX = 60;
 const RESULT_MAX = 160;

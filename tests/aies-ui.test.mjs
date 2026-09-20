@@ -472,6 +472,30 @@ describe("activity", () => {
     assert.match(text, /\$0\.03/u);
   });
 
+  it("caps the boxed card at the panel width so it reads as a card, not a banner", () => {
+    const activity = {
+      role: "worker",
+      task: "Implementar el cambio",
+      startedAt: T0,
+      currentActivity: "Editando calculator.js",
+      changedPaths: ["src/calculator.js"],
+      modelLabel: "Qwen 3.8 Flash",
+      totalTokens: 34_000,
+      cost: 0.03,
+    };
+
+    const wide = renderActivityCard(activity, "WORK", T0 + 31_000, { width: 140 });
+    assert.match(wide[0], /^╭─ ◆ Worker/u);
+    for (const line of wide) assert.ok(line.length <= 72, `wide card line ${line.length}: ${line}`);
+
+    const mid = renderActivityCard(activity, "WORK", T0 + 31_000, { width: 60 });
+    assert.match(mid[0], /^╭─ ◆ Worker/u);
+    for (const line of mid) assert.ok(line.length <= 60, `mid card line ${line.length}: ${line}`);
+
+    const narrow = renderActivityCard(activity, "WORK", T0 + 31_000, { width: 40 });
+    for (const line of narrow) assert.ok(line.length <= 40, `narrow card line ${line.length}: ${line}`);
+  });
+
   it("omits every unknown metric from the boxed card", () => {
     const activity = { role: "worker", task: "", startedAt: T0 };
     const text = renderActivityCard(activity, "WORK", T0 + 12_000, { width: 60 }).join("\n");

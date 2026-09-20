@@ -72,7 +72,7 @@ import { registerQuietTools } from "./quiet-tools.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
-import { observatory } from "../aies-agents/observatory.ts";
+import { AGENTS_CHANNEL, type ObservatorySnapshot } from "../aies-agents/observatory.ts";
 import { getActiveContinuationController } from "../aies-agents/autonomy/controller.ts";
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
@@ -83,6 +83,9 @@ const ACTIVITY_KEY = "aies-activity";
 
 /** The compact observatory widget: one row per session child. */
 const AGENTS_KEY = "aies-agents";
+
+/** The persistent status panel, rendered below the editor. */
+const PANEL_KEY = "aies-panel";
 
 /** Durable transcript entries: one per finished child, one per workflow summary. */
 const AGENT_ENTRY_TYPE = "aies-agent";
@@ -180,6 +183,24 @@ interface KeybindingsLike {
 
 function arrayLength(value: unknown): number | undefined {
   return Array.isArray(value) ? value.length : undefined;
+}
+
+/** The shared event-bus surface, read structurally so a partial host degrades to silence. */
+interface EventsSurface {
+  on?(channel: string, handler: (data: unknown) => void): unknown;
+}
+
+function eventsOf(pi: ExtensionAPI): EventsSurface | undefined {
+  try {
+    return (pi as unknown as { events?: EventsSurface }).events;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The observatory projection the bus carries; an unreadable payload is empty. */
+function asAgentSnapshot(payload: unknown): ObservatorySnapshot {
+  return Array.isArray(payload) ? (payload as ObservatorySnapshot) : [];
 }
 
 /**
@@ -290,6 +311,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let clockPeriod: number | undefined;
   let footer = "";
   let header = "";
+  let panel = "";
   let persisted = "";
   let widgetTui: WidgetTui | undefined;
   let footerTui: WidgetTui | undefined;
@@ -297,16 +319,35 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let widgetRegistered = false;
   let agentsWidgetTui: WidgetTui | undefined;
   let agentsWidgetRegistered = false;
+  let panelWidgetTui: WidgetTui | undefined;
+  let panelWidgetRegistered = false;
   let observatoryUnsubscribe: (() => void) | undefined;
 
-  // Whether the status panel owns the header band. Single source for the footer
-  // minimal form; recomputed on every render pass so a resize degrades cleanly.
+  // Whether this host accepted AIES's durable summary renderer. Only a host that
+  // draws the card may skip the headline notify; everywhere else the notify is
+  // the only surface, so headless users still get exactly one summary line.
+  let summaryCardsRendered = false;
+
+  // Whether the status panel owns the run status. Single source for the footer
+  // minimal form and the header/panel exclusivity; recomputed on every render
+  // pass so a resize degrades cleanly.
   let panelVisible = false;
 
   // Autonomy transitions are edges, not levels: a new signal is one transition.
   let autonomySignal = "";
   let autonomyEnabled = false;
   let autonomyStopReason: string | null = null;
+
+  // The DONE card is emitted at most once per run, from either completion path
+  // (the observed ticket reaching Linear's completed state, or autonomy stopping
+  // with `completed`). A new run re-arms the latch.
+  let doneEmitted = false;
+  // Whether the observed ticket has already been read as completed in this run,
+  // so the DONE edge fires once per completion rather than on every render.
+  let ticketWasComplete = false;
+  // A Linear `statusType: "completed"` seen on the ticket tool result, kept out
+  // of the persisted snapshot because the runtime only observes it.
+  let ticketStatusTypeComplete = false;
 
   // The last verdict facts Verify reported, kept for the BLOCKED summary.
   let lastVerify: { criteriaPassed?: number; criteriaTotal?: number; checksPassed?: number } | undefined;
@@ -356,6 +397,32 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
    */
   function uiSnapshot(): AgentsSnapshot {
     return { ...toSnapshot(state), agents: state.agents };
+  }
+
+  /**
+   * Consume the observatory snapshots the agents extension re-publishes on the
+   * shared `pi.events` bus. Pi loads each extension through its own module
+   * registry, so the registry singleton is not shared across the boundary; the
+   * bus is the documented bridge. A host without the bus, or a silent publisher,
+   * simply leaves the projection empty: the registry is optional observation and
+   * must never crash the runtime. Returns the bus unsubscribe for shutdown.
+   */
+  function subscribeToAgentsBus(ctx: ExtensionContext): (() => void) | undefined {
+    const events = eventsOf(pi);
+    if (!events || typeof events.on !== "function") return undefined;
+
+    try {
+      const unsubscribe = events.on(AGENTS_CHANNEL, (payload: unknown) => {
+        guard(() => {
+          state = applyAgents(state, asAgentSnapshot(payload));
+          syncAgentsWidget(ctx);
+          requestRender();
+        });
+      });
+      return typeof unsubscribe === "function" ? (unsubscribe as () => void) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   function usageOf(ctx: ExtensionContext) {
@@ -453,6 +520,27 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
   }
 
+  /**
+   * Whether the durable summary entry is actually drawn on this host. Only a TUI
+   * that accepted AIES's entry renderer paints the card; every other host (no
+   * TUI, or no entry-renderer support) cannot, so the headline must travel through
+   * `notify` there instead of being silently lost.
+   */
+  function summaryCardIsDrawn(ctx: ExtensionContext): boolean {
+    return ctx.mode === "tui" && summaryCardsRendered;
+  }
+
+  /**
+   * Emit one summary across exactly one visible surface: append the durable card
+   * always, and notify its headline only where the card is not drawn. The card and
+   * the notify are never both visible, which stops the completed row from printing
+   * twice in one transcript.
+   */
+  function publishSummary(ctx: ExtensionContext, data: unknown, headline: string): void {
+    appendEntry(SUMMARY_ENTRY_TYPE, data);
+    if (!summaryCardIsDrawn(ctx)) notify(ctx, headline, "info");
+  }
+
   /** Sample every telemetry source into the state. */
   function syncObservation(ctx: ExtensionContext): void {
     state = applyContextUsage(state, usageOf(ctx));
@@ -481,15 +569,16 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   /**
-   * Fold the current registry and the cumulative Parent usage into the run
-   * telemetry. It reuses the observer's single render pass and adds no timer, loop
-   * or poller; a session that cannot answer leaves the last known numbers intact
+   * Fold the ephemeral agents projection and the cumulative Parent usage into
+   * the run telemetry. The projection is filled by the shared bus, not by a
+   * direct singleton read: Pi loads each extension through its own module
+   * registry, so the registry the agents extension mutates is not this module's.
+   * It reuses the observer's single render pass and adds no timer, loop or
+   * poller; a session that cannot answer leaves the last known numbers intact
    * through `parentUsageOf` returning undefined.
    */
   function sampleRunUsage(ctx: ExtensionContext): void {
-    const snapshot = observatory.snapshot();
-    state = applyAgents(state, snapshot);
-    state = applyRunUsage(state, parentUsageOf(ctx), snapshot, Date.now());
+    state = applyRunUsage(state, parentUsageOf(ctx), state.agents ?? [], Date.now());
   }
 
   /** Fire at most once per autonomy edge (enable, or a new stop reason). */
@@ -513,8 +602,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
     if (enabling) {
       // Autonomy just started a ticket run: the panel reports from here, not from
-      // the whole session's lifetime usage.
+      // the whole session's lifetime usage, and the DONE latch re-arms.
       state = applyRunStart(state, Date.now());
+      doneEmitted = false;
       notify(ctx, `◆ AUTO · ${ticket ?? "sesión"}`, "info");
     }
     if (newStop && stopReason) handleStopReason(ctx, stopReason);
@@ -527,23 +617,59 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
 
     if (stopReason === "completed") {
-      const { data, headline } = doneSummary();
-      appendEntry(SUMMARY_ENTRY_TYPE, data);
-      notify(ctx, headline, "info");
+      emitDone(ctx);
       return;
     }
 
     const sentence = BLOCKED_SENTENCES[stopReason];
     if (sentence) {
       const { data, headline } = blockedSummary(sentence);
-      appendEntry(SUMMARY_ENTRY_TYPE, data);
-      notify(ctx, headline, "info");
+      publishSummary(ctx, data, headline);
       return;
     }
 
     // `user_stopped`, the continuation limit and anything unrecognised: notify only.
     if (stopReason === "user_stopped") notify(ctx, "Autonomía detenida.", "info");
     else if (stopReason === "continuation_limit") notify(ctx, "Se alcanzó el límite de continuaciones automáticas.", "info");
+  }
+
+  /**
+   * Emit the DONE card at most once per run. Both completion paths (the observed
+   * ticket reaching Linear's completed state, and autonomy stopping with
+   * `completed`) share this one latch, so a run appends exactly one summary.
+   */
+  function emitDone(ctx: ExtensionContext): void {
+    if (doneEmitted) return;
+    doneEmitted = true;
+    const { data, headline } = doneSummary();
+    publishSummary(ctx, data, headline);
+  }
+
+  /** Whether the observed ticket has reached Linear's completed state. */
+  function ticketReachedCompletion(snapshot: AgentsSnapshot): boolean {
+    const ticket = snapshot.ticket;
+    if (!ticket?.active) return false;
+    if (ticket.workState === "complete") return true;
+    if (ticketStatusTypeComplete) return true;
+    const status = typeof ticket.status === "string" ? ticket.status.trim().toLowerCase() : "";
+    return status === "done" || status === "completed";
+  }
+
+  /**
+   * Edge-triggered DONE emission, independent of the autonomy controller: the
+   * moment the observed ticket reaches the completed state, with a single latch
+   * so a long run of renders cannot append more than one card. Observing a
+   * non-completed ticket clears the edge for the next completion.
+   */
+  function observeTicketCompletion(ctx: ExtensionContext): void {
+    const complete = ticketReachedCompletion(uiSnapshot());
+    if (!complete) {
+      ticketWasComplete = false;
+      return;
+    }
+    if (doneEmitted || ticketWasComplete) return;
+    ticketWasComplete = true;
+    emitDone(ctx);
   }
 
   function verificationText(): string | undefined {
@@ -598,7 +724,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     const warnings = doneWarnings(snapshot);
     if (warnings.length) data.warnings = warnings;
 
-    return { data, headline: ticket ? `✓ ${ticket} completado` : "✓ Tarea completada" };
+    return { data, headline: ticket ? `✓ ${ticket} · completado` : "✓ Tarea completada" };
   }
 
   /** Run wall-clock start: the ticket run when one exists, the session otherwise. */
@@ -787,12 +913,70 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     agentsWidgetTui = undefined;
   }
 
+  /**
+   * The persistent status panel, below the editor. It appears only while the
+   * terminal is wide enough for `renderStatusPanel` to produce lines, is cleared
+   * the moment it would render empty or the session ends, and re-renders in place
+   * from the live snapshot: no timer of its own.
+   */
+  function syncPanelWidget(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui") return;
+    const ui = uiOf(ctx);
+    if (!ui || typeof ui.setWidget !== "function") return;
+
+    if (panelVisible) {
+      if (panelWidgetRegistered) return;
+      try {
+        ui.setWidget(
+          PANEL_KEY,
+          (tui: unknown, theme: unknown) => {
+            panelWidgetTui = tui as WidgetTui;
+            return {
+              render: (width: number): string[] =>
+                renderStatusPanel(uiSnapshot(), Date.now(), {
+                  width,
+                  paint: themePaint(theme as ThemeLike | undefined),
+                }),
+              invalidate() {},
+            };
+          },
+          { placement: "belowEditor" },
+        );
+        panelWidgetRegistered = true;
+      } catch {
+        panelWidgetRegistered = false;
+        panelWidgetTui = undefined;
+      }
+      return;
+    }
+
+    if (panelWidgetRegistered) clearPanelWidget(ui);
+  }
+
+  function clearPanelWidget(ui: UiSurface): void {
+    try {
+      ui.setWidget?.(PANEL_KEY, undefined);
+    } catch {
+      // Clearing a widget that cannot be cleared is not an error.
+    }
+    panelWidgetRegistered = false;
+    panelWidgetTui = undefined;
+  }
+
+  function clearPanel(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    if (panelWidgetRegistered && ui) clearPanelWidget(ui);
+    panelWidgetRegistered = false;
+    panelWidgetTui = undefined;
+  }
+
   /** Ask Pi to repaint the shell and the widgets. Every surface is optional. */
   function requestRender(): void {
     if (typeof footerTui?.requestRender === "function") footerTui.requestRender();
     if (typeof headerTui?.requestRender === "function") headerTui.requestRender();
     if (widgetRegistered && typeof widgetTui?.requestRender === "function") widgetTui.requestRender();
     if (agentsWidgetRegistered && typeof agentsWidgetTui?.requestRender === "function") agentsWidgetTui.requestRender();
+    if (panelWidgetRegistered && typeof panelWidgetTui?.requestRender === "function") panelWidgetTui.requestRender();
   }
 
   /**
@@ -824,9 +1008,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   /**
-   * Install the header band. Above `PANEL_MIN_WIDTH` the status panel owns the
-   * band and the separate ticket header is not rendered (the panel already
-   * carries the ticket identity); below it the responsive ticket header stays.
+   * Install the header band. The persistent panel widget owns the run status, so
+   * while it is visible the ticket header stays silent; below `PANEL_MIN_WIDTH`
+   * the responsive ticket header is the identity fallback. The two never render
+   * the same fact at once.
    */
   function installHeader(ctx: ExtensionContext): void {
     const ui = uiOf(ctx);
@@ -836,11 +1021,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         headerTui = tui as WidgetTui;
         return {
           render: (width: number): string[] => {
+            measurePanelVisibility();
+            if (panelVisible) return [];
             const paint = themePaint(theme as ThemeLike | undefined);
-            const columns = measurePanelVisibility();
-            if (panelVisible && columns !== undefined) {
-              return renderStatusPanel(uiSnapshot(), Date.now(), { width: columns, paint });
-            }
             return renderHeader(toSnapshot(state), width, { paint });
           },
           invalidate() {},
@@ -898,45 +1081,50 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (agentsWidgetRegistered && typeof agentsWidgetTui?.requestRender === "function") {
       agentsWidgetTui.requestRender();
     }
+    if (panelWidgetRegistered && typeof panelWidgetTui?.requestRender === "function") {
+      panelWidgetTui.requestRender();
+    }
   }
 
   /**
-   * The header string the memo compares. When the panel is visible the panel's
-   * own text (ticket, stage, elapsed) is the memo; otherwise the ticket header's.
+   * The panel string the memo compares. It is computed at a comfortably wide cell
+   * count, so a content change repaints while a terminal-resize change is left to
+   * Pi's own TUI diffing, exactly like the footer and header.
    */
-  function shellHeaderMemo(snapshot: AgentsSnapshot, now: number, columns: number | undefined): string {
-    if (panelVisible && columns !== undefined) {
-      return renderStatusPanel(snapshot, now, { width: columns }).join("\n");
-    }
-    return renderHeader(snapshot, SHELL_MEMO_WIDTH).join("\n");
+  function panelMemo(snapshot: AgentsSnapshot, now: number): string {
+    return renderStatusPanel(snapshot, now, { width: SHELL_MEMO_WIDTH }).join("\n");
   }
 
   /**
    * Sample the state and, in the interactive TUI only, repaint the shell and the
-   * activity widget and keep the single timer armed. The footer and header are
-   * repainted only when their text actually changed, so the shell never repaints
-   * itself between events.
+   * widgets and keep the single timer armed. The footer, the header and the
+   * persistent panel are repainted only when their text actually changed, so the
+   * shell never repaints itself between events.
    */
   function render(ctx: ExtensionContext): void {
     syncObservation(ctx);
     observeAutonomy(ctx);
     sampleRunUsage(ctx);
+    observeTicketCompletion(ctx);
 
     if (ctx.mode !== "tui") return;
 
-    const columns = measurePanelVisibility();
+    measurePanelVisibility();
     const snapshot = uiSnapshot();
     const now = Date.now();
     const nextFooter = renderFooter(snapshot, now, { width: SHELL_MEMO_WIDTH, cwd: ctx.cwd, panelVisible });
-    const nextHeader = shellHeaderMemo(snapshot, now, columns);
-    if (nextFooter !== footer || nextHeader !== header) {
+    const nextHeader = renderHeader(toSnapshot(state), SHELL_MEMO_WIDTH).join("\n");
+    const nextPanel = panelMemo(snapshot, now);
+    if (nextFooter !== footer || nextHeader !== header || nextPanel !== panel) {
       footer = nextFooter;
       header = nextHeader;
+      panel = nextPanel;
       requestRender();
     }
 
     syncActivity(ctx);
     syncAgentsWidget(ctx);
+    syncPanelWidget(ctx);
     armClock(ctx);
   }
 
@@ -995,11 +1183,20 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         break;
       }
     }
+
+    // A resumed session whose ticket already finished must not replay the DONE card.
+    if (toSnapshot(state).ticket?.workState === "complete") {
+      ticketWasComplete = true;
+      doneEmitted = true;
+    }
   }
 
   /** Two durable entry renderers: the finished child line and the workflow summary. */
   function registerEntryRenderers(): void {
-    if (typeof (pi as { registerEntryRenderer?: unknown }).registerEntryRenderer !== "function") return;
+    if (typeof (pi as { registerEntryRenderer?: unknown }).registerEntryRenderer !== "function") {
+      summaryCardsRendered = false;
+      return;
+    }
 
     try {
       pi.registerEntryRenderer(AGENT_ENTRY_TYPE, (entry, _options, theme) => {
@@ -1021,8 +1218,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
           : renderDoneSummary(data as unknown as DoneSummaryInput, { paint });
         return { render: () => lines, invalidate() {} };
       });
+      summaryCardsRendered = true;
     } catch {
       // A host without entry renderers simply keeps the entries invisible.
+      summaryCardsRendered = false;
     }
   }
 
@@ -1033,30 +1232,28 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       const now = Date.now();
       footer = "";
       header = "";
+      panel = "";
       footerTui = undefined;
       headerTui = undefined;
       persisted = "";
       autonomySignal = "";
       autonomyEnabled = false;
       autonomyStopReason = null;
+      doneEmitted = false;
+      ticketWasComplete = false;
+      ticketStatusTypeComplete = false;
       lastVerify = undefined;
 
       // A session switch must not carry another session's cumulative Parent
       // usage: reset the incremental cache before the first sample.
       resetParentUsageCache();
 
-      // The observatory registry is one session's run. Start from empty, then
-      // repaint once per child event; a stale subscription is dropped first so
-      // records never leak across sessions.
+      // The observatory registry is one session's run, owned by the agents
+      // extension and delivered over the shared bus. Subscribe to the bus with
+      // this context and start from an empty projection, so records never leak
+      // across sessions and a missing publisher degrades to an empty registry.
       observatoryUnsubscribe?.();
-      observatory.reset();
-      observatoryUnsubscribe = observatory.subscribe((snapshot) => {
-        guard(() => {
-          state = applyAgents(state, snapshot);
-          syncAgentsWidget(ctx);
-          requestRender();
-        });
-      });
+      observatoryUnsubscribe = subscribeToAgentsBus(ctx);
 
       // An ephemeral widget does not survive a session switch: drop the flag so
       // the new session re-registers from its own (empty) registry.
@@ -1065,6 +1262,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       panelVisible = false;
 
       state = createState(now);
+      state = applyAgents(state, []);
       state = applySessionMeta(state, {
         sessionId: ctx.sessionManager.getSessionId(),
         sessionFile: ctx.sessionManager.getSessionFile(),
@@ -1136,6 +1334,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         const details = event.details as Record<string, unknown> | undefined;
         if (details?.ticket) {
           const t = details.ticket as Record<string, unknown>;
+          ticketStatusTypeComplete = t.statusType === "completed";
           state = applyTicketObservationSync(state, {
             active: true,
             identifier: typeof t.identifier === "string" ? t.identifier : undefined,
@@ -1187,6 +1386,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     guard(persist);
     guard(() => clearActivity(ctx));
     guard(() => clearAgents(ctx));
+    guard(() => clearPanel(ctx));
     guard(() => clearShell(ctx));
     stopClock();
     observatoryUnsubscribe?.();

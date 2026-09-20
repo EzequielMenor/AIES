@@ -7,6 +7,7 @@
  */
 
 import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { PANEL_MAX_WIDTH } from "./panel.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import type { Stage } from "./vocabulary.ts";
 
@@ -263,7 +264,10 @@ export function renderActivityCard(
     const content = [line, currentFileLine(activity), metricsLine(activity, elapsed)].filter(
       (entry): entry is string => Boolean(entry),
     );
-    return boxedCard(role, content, width, paint);
+    // Cap the box to the same maximum the status panel uses, so a wide terminal
+    // reads it as a card and not as a full-width banner; narrow terminals keep
+    // their own (smaller) width and clip inside it.
+    return boxedCard(role, content, Math.min(width, PANEL_MAX_WIDTH), paint);
   }
 
   const head = paint.fg("accent", `◆ ${role}`);

@@ -28,6 +28,7 @@ import {
 } from "../extensions/aies-runtime/state.ts";
 import aiesRuntime from "../extensions/aies-runtime/index.ts";
 import { AgentObservatory, observatory } from "../extensions/aies-agents/observatory.ts";
+import { publishObservatoryOn } from "../extensions/aies-agents/index.ts";
 import {
   ContinuationController,
   setActiveContinuationController,
@@ -38,6 +39,29 @@ const T0 = 1_700_000_000_000;
 
 const bucket = (totalTokens, cost) => ({ totalTokens, cost });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} !≈ ${expected}`);
+
+/** Observers opened by this suite's hosts, detached between tests. */
+const bridges = [];
+
+/**
+ * A minimal, well-behaved `pi.events` bus for the harness. Pi loads each
+ * extension through its own module registry, so the runtime does not share the
+ * observatory singleton; the bus is the documented wire between them.
+ */
+function createBus() {
+  const listeners = new Map();
+  return {
+    on(channel, handler) {
+      const set = listeners.get(channel) ?? new Set();
+      set.add(handler);
+      listeners.set(channel, set);
+      return () => set.delete(handler);
+    },
+    emit(channel, data) {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+  };
+}
 
 /** Fake timers and a frozen clock: the runtime uses the globals, so we swap them. */
 function installFakes() {
@@ -126,8 +150,10 @@ function createHost(overrides = {}) {
   const footers = [];
   const headers = [];
   const renderRequests = { footer: 0 };
+  const bus = createBus();
 
   const pi = {
+    events: bus,
     on(event, handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -144,6 +170,9 @@ function createHost(overrides = {}) {
   };
 
   aiesRuntime(pi);
+  // The runtime subscribes to the bus at `session_start`; the agents bridge is the
+  // publisher that carries each registry mutation across the extension boundary.
+  bridges.push(publishObservatoryOn(bus));
 
   const ctx = {
     mode: options.mode,
@@ -349,6 +378,7 @@ describe("AIES-010C run telemetry wiring", () => {
   });
 
   afterEach(() => {
+    for (const detach of bridges.splice(0)) detach();
     timers.restore();
     setActiveContinuationController(undefined);
     observatory.reset();
@@ -441,14 +471,21 @@ describe("AIES-010C run telemetry wiring", () => {
     assert.equal(host.renderRequests.footer, after, "no repaint after unsubscribe");
   });
 
-  it("resets the registry on a new session", async () => {
+  it("starts a new session from an empty projection", async () => {
     const host = createHost();
     await host.emit("session_start", { reason: "startup" });
     observatory.begin({ role: "worker", at: T0 });
-    assert.equal(observatory.snapshot().length, 1);
+    observatory.updateUsage("worker-1", { totalTokens: 400, cost: 0.2 });
+    await host.emit("tool_result", { toolName: "read", content: "x" });
 
     await host.emit("session_start", { reason: "new" });
-    assert.deepEqual(observatory.snapshot(), [], "a new session starts with an empty registry");
+    // The registry is owned by the agents extension and may still hold the old
+    // record; the runtime's projection must not, so nothing leaks across sessions.
+    await host.emit("tool_result", { toolName: "read", content: "y" });
+    await host.emit("session_shutdown", { reason: "quit" });
+
+    const runUsage = persisted(host).runUsage;
+    assert.equal(runUsage.agents.totalTokens, 0, "a new session starts from an empty projection");
   });
 
   it("reduces each appended entry exactly once across repeated samples", async () => {

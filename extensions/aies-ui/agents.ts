@@ -14,7 +14,7 @@
  * carried by the record.
  */
 
-import type { AgentRecord } from "../aies-agents/observatory.ts";
+import { shortPath, type AgentRecord } from "../aies-agents/observatory.ts";
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint } from "./paint.ts";
@@ -34,6 +34,9 @@ const MAX_MINI_ROWS = 4;
 
 /** Mechanical activity entries the detail block shows. */
 const MAX_RECENT = 5;
+
+/** Paths the `/agents` detail row lists before it collapses the rest into `… N más`. */
+const MAX_DETAIL_PATHS = 3;
 
 const ROLE_WIDTH = 9;
 const DETAIL_WIDTH = 18;
@@ -187,6 +190,20 @@ function agentLabel(record: AgentRecord, index: number): string {
   return `${capitalize(record.role)} #${index + 1}`;
 }
 
+/**
+ * The `/agents` detail `archivos` value: bounded short paths on one line. It
+ * reuses the same two-segment `shortPath` form as the rest of the UI, so an
+ * absolute home prefix never reaches the screen, and collapses the tail into
+ * `… N más` once the list grows past a few entries.
+ */
+function changedPathsValue(paths: readonly unknown[]): string {
+  const short = paths.map((path) => shortPath(path)).filter(Boolean);
+  if (short.length === 0) return "";
+  const shown = short.slice(0, MAX_DETAIL_PATHS).join(", ");
+  const remaining = short.length - MAX_DETAIL_PATHS;
+  return remaining > 0 ? `${shown}, … ${remaining} más` : shown;
+}
+
 function detailRows(record: AgentRecord, now: number, width: number): string[] {
   const rows: string[] = [];
   const add = (label: string, value: string | null | undefined): void => {
@@ -203,7 +220,8 @@ function detailRows(record: AgentRecord, now: number, width: number): string[] {
   if (typeof record.toolCount === "number" && record.toolCount > 0) add("herramientas", String(record.toolCount));
 
   const paths = Array.isArray(record.changedPaths) ? record.changedPaths : [];
-  if (paths.length) add("archivos", paths.join(", "));
+  const changed = changedPathsValue(paths);
+  if (changed) add("archivos", changed);
 
   const activities = Array.isArray(record.activities) ? record.activities.slice(0, MAX_RECENT) : [];
   if (activities.length) {

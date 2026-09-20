@@ -165,6 +165,42 @@ describe("renderAgentsView", () => {
     for (const line of lines) assert.ok(line.length <= 80, line);
   });
 
+  it("bounds the archivos row to short paths with a remainder count", () => {
+    const list = [
+      record({
+        id: "worker-1",
+        role: "worker",
+        status: "completed",
+        startedAt: T0,
+        finishedAt: T0 + 5_000,
+        changedPaths: [
+          "/Users/someone/Proyectos/Developer/aies-smoke/src/round.js",
+          "/Users/someone/Proyectos/Developer/aies-smoke/src/app.ts",
+          "/Users/someone/Proyectos/Developer/aies-smoke/src/lib/util.ts",
+          "/Users/someone/Proyectos/Developer/aies-smoke/tests/a.test.ts",
+          "/Users/someone/Proyectos/Developer/aies-smoke/tests/b.test.ts",
+        ],
+      }),
+    ];
+
+    const text = renderAgentsView(list, 0, T0 + 6_000, { width: 200 }).join("\n");
+    const row = text.split("\n").find((line) => line.includes("archivos"));
+    assert.ok(row, text);
+
+    // The detail row never leaks the absolute home prefix.
+    assert.equal(row.includes("/Users/"), false, row);
+    assert.equal(row.includes("/home/"), false, row);
+    // It keeps the same two-segment short form the rest of the UI uses.
+    assert.match(row, /src\/round\.js/u);
+    assert.match(row, /src\/app\.ts/u);
+    // Five paths collapse to a few plus the remainder count.
+    assert.match(row, /… 2 más$/u);
+    // And it stays a single clipped line at a narrow width.
+    for (const line of renderAgentsView(list, 0, T0 + 6_000, { width: 60 })) {
+      assert.ok(line.length <= 60, line);
+    }
+  });
+
   it("moves the detail block with the selection", () => {
     const list = [
       record({ id: "worker-1", role: "worker", status: "running", modelLabel: "Qwen 3.8 Flash" }),

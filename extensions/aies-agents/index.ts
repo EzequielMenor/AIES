@@ -31,6 +31,7 @@ import { TicketManager } from "./linear/manager.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
 import type { TicketSnapshot } from "./linear/types.ts";
+import { AGENTS_CHANNEL, observatory, type ObservatorySnapshot } from "./observatory.ts";
 import {
   applyMcpStatusEvent,
   createMcpIntegrationState,
@@ -53,6 +54,35 @@ let activeTicketManager: TicketManager | undefined;
 
 export function getActiveTicketManager(): TicketManager | undefined {
   return activeTicketManager;
+}
+
+/** The minimal event surface the observatory bridge needs. */
+export interface ObservatoryEventSink {
+  emit?(channel: string, data: unknown): void;
+}
+
+/**
+ * Re-publish every observatory mutation on the shared `pi.events` bus. Pi loads
+ * each extension through its own module registry, so the registry singleton is
+ * not shared with `aies-runtime`; the bus is the documented bridge. The registry
+ * already emits exactly once per mutation, so this adds no per-keystroke noise,
+ * and the guard keeps a missing bus or a throwing subscriber from ever breaking
+ * a child run.
+ */
+export function publishObservatoryOn(events: ObservatoryEventSink | undefined): () => void {
+  const publish = (snapshot: ObservatorySnapshot): void => {
+    try {
+      events?.emit?.(AGENTS_CHANNEL, snapshot);
+    } catch {
+      // A broken or absent event bus never breaks a child run.
+    }
+  };
+
+  try {
+    return observatory.subscribe(publish);
+  } catch {
+    return () => {};
+  }
 }
 
 export { getActiveContinuationController };
@@ -87,6 +117,11 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   pi.on("session_start", () => {
     mcpState = createMcpIntegrationState();
   });
+
+  // The registry watches the children; this bridge lets the UI extension see it.
+  // Subscribed once per extension instance and never per event: the registry
+  // already emits exactly one snapshot per mutation.
+  publishObservatoryOn(pi.events);
 
   const ticketManager = new TicketManager({
     getVerification: () => verification,

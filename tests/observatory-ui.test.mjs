@@ -14,16 +14,37 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import aiesRuntime from "../extensions/aies-runtime/index.ts";
+import { publishObservatoryOn } from "../extensions/aies-agents/index.ts";
 import { observatory } from "../extensions/aies-agents/observatory.ts";
 import {
   ContinuationController,
   setActiveContinuationController,
 } from "../extensions/aies-agents/autonomy/controller.ts";
 import { applyAgents, createState, toSnapshot } from "../extensions/aies-runtime/state.ts";
+import { renderDoneSummary } from "../extensions/aies-ui/summary.ts";
 
 const ROOT = "/repo";
 const START_MS = 1_700_000_000_000;
 const plainTheme = { fg: (_color, text) => text };
+
+/** Every bridge subscription opened by `createHost`, detached after each test. */
+const bridges = [];
+
+/** A minimal, well-behaved `pi.events` bus for the harness. */
+function createBus() {
+  const listeners = new Map();
+  return {
+    on(channel, handler) {
+      const set = listeners.get(channel) ?? new Set();
+      set.add(handler);
+      listeners.set(channel, set);
+      return () => set.delete(handler);
+    },
+    emit(channel, data) {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+  };
+}
 
 /** Fake timers and a frozen clock: the runtime uses the globals, so we swap them. */
 function installFakes() {
@@ -95,6 +116,9 @@ function createHost(overrides = {}) {
     sessionId: "session-1",
     sessionFile: "/profile/sessions/session-1.jsonl",
     model: { id: "model-a", provider: "anthropic", name: "Model A" },
+    // A partial host may not expose entry renderers at all; the summary then has
+    // no card surface and must fall back to a single notify headline.
+    entryRenderers: true,
     ...overrides,
   };
 
@@ -110,8 +134,10 @@ function createHost(overrides = {}) {
   const customComponents = [];
   const setStatusCalls = [];
   const renderRequests = { footer: 0, header: 0, custom: 0 };
+  const bus = createBus();
 
   const pi = {
+    events: bus,
     on(event, handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -124,9 +150,13 @@ function createHost(overrides = {}) {
     appendEntry(type, data) {
       appended.push({ type, data });
     },
-    registerEntryRenderer(type, renderer) {
-      renderers.set(type, renderer);
-    },
+    ...(options.entryRenderers === false
+      ? {}
+      : {
+          registerEntryRenderer(type, renderer) {
+            renderers.set(type, renderer);
+          },
+        }),
     sendMessage(...args) {
       sendMessages.push(args);
     },
@@ -136,6 +166,11 @@ function createHost(overrides = {}) {
   };
 
   aiesRuntime(pi);
+
+  // The runtime no longer reads the registry singleton directly: the agents
+  // extension re-publishes every mutation on the shared bus. Wire that bridge
+  // here so a singleton mutation still reaches the runtime, exactly as in Pi.
+  bridges.push(publishObservatoryOn(bus));
 
   const ctx = {
     mode: options.mode,
@@ -163,8 +198,8 @@ function createHost(overrides = {}) {
       setStatus(key, text) {
         setStatusCalls.push({ key, text });
       },
-      setWidget(key, content) {
-        widgets.push(content === undefined ? { key, cleared: true } : { key, factory: content });
+      setWidget(key, content, options) {
+        widgets.push(content === undefined ? { key, cleared: true, options } : { key, factory: content, options });
       },
       notify(message, type) {
         notifications.push({ message, type });
@@ -258,6 +293,7 @@ describe("observatory UI seam", () => {
 
   afterEach(() => {
     timers.restore();
+    for (const detach of bridges.splice(0)) detach();
     observatory.reset();
     setActiveContinuationController(undefined);
   });
@@ -288,22 +324,51 @@ describe("observatory UI seam", () => {
     assert.equal(projection.agents.length, 1);
   });
 
-  it("renders the status panel in the header band and never both header and panel", async () => {
+  it("renders the status panel as a belowEditor widget and never duplicates it in the header", async () => {
     const host = createHost();
     await host.start();
     await observeTicket(host);
 
     timers.setColumns(120);
-    const wide = host.mountHeader(120).text();
-    assert.ok(wide.startsWith("╭"), wide);
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+
+    const registered = host.widgets.filter((widget) => widget.key === "aies-panel" && widget.factory);
+    assert.ok(registered.length >= 1, "the persistent panel widget must be registered");
+    assert.equal(registered.at(-1).options?.placement, "belowEditor", "the panel must live below the editor");
+
+    const panel = host.mountWidget("aies-panel", 120);
+    const wide = panel.text();
     assert.match(wide, /✧ AIES · EZE-422/u, wide);
-    assert.equal(wide.includes("╭─ ✧ EZE-422"), false, "the ticket header must not also render in the panel band");
     assert.match(wide, /IDLE/u);
+    assert.equal(wide.startsWith("╭"), false, wide);
+    assert.ok(panel.lines().length <= 4, `wide panel has ${panel.lines().length} lines:\n${wide}`);
+    assert.ok(panel.lines().every((line) => line.length <= 72), wide);
+
+    assert.deepEqual(host.mountHeader(120).lines(), [], "the panel replaces the header band");
 
     timers.setColumns(60);
+    await host.emit("tool_result", { toolName: "read", content: "y" });
+    assert.equal(host.widgets.at(-1).key, "aies-panel");
+    assert.equal(host.widgets.at(-1).cleared, true, "below the breakpoint the panel widget is cleared");
+
     const narrow = host.mountHeader(60).text();
     assert.match(narrow, /╭─ ✧ EZE-422/u, narrow);
     assert.equal(narrow.includes("✧ AIES · EZE-422"), false, "the panel must not render below its minimum width");
+  });
+
+  it("clears the panel widget on shutdown", async () => {
+    const host = createHost();
+    await host.start();
+    await observeTicket(host);
+
+    timers.setColumns(120);
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    assert.equal(host.widgets.at(-1).key, "aies-panel");
+    assert.equal(typeof host.widgets.at(-1).factory, "function");
+
+    await host.emit("session_shutdown", { reason: "quit" });
+    assert.equal(host.widgets.at(-1).key, "aies-panel");
+    assert.equal(host.widgets.at(-1).cleared, true, "shutdown must clear the persistent panel");
   });
 
   it("renders the footer minimal exactly when the panel is visible", async () => {
@@ -311,7 +376,7 @@ describe("observatory UI seam", () => {
     await host.start();
 
     timers.setColumns(120);
-    host.mountHeader(120).text();
+    await host.emit("tool_result", { toolName: "read", content: "x" });
     const minimal = host.mountFooter(200).text();
     assert.equal(minimal, "✧ AIES · listo · ctx 10k");
     for (const hidden of ["model-a", "repo"]) {
@@ -319,7 +384,7 @@ describe("observatory UI seam", () => {
     }
 
     timers.setColumns(60);
-    host.mountHeader(60).text();
+    await host.emit("tool_result", { toolName: "read", content: "y" });
     const rich = host.mountFooter(200).text();
     assert.match(rich, /model-a/u, rich);
     assert.match(rich, /repo/u, rich);
@@ -446,6 +511,229 @@ describe("observatory UI seam", () => {
     assert.match(text, /Tokens 9000 \(main 5000 · agents 4000\)/u);
     assert.match(text, /Coste \$0\.03/u);
     assert.match(text, /Tiempo/u);
+  });
+
+  it("emits exactly one DONE card when the observed ticket completes, with no autonomy stop reason", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-424", title: "Fix clamp", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+
+    const done = host.appended.filter((entry) => entry.type === "aies-summary");
+    assert.equal(done.length, 1, "a completed ticket must emit the DONE card exactly once");
+    assert.equal(done[0].data.kind, "done");
+    assert.equal(done[0].data.ticket, "EZE-424");
+    assert.equal(done[0].data.linear, "Done");
+    assert.equal("commit" in done[0].data, false);
+
+    // A later render must not append a second card for the same completion.
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    await host.emit("tool_result", { toolName: "read", content: "y" });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+
+    // The TUI draws the card; duplicating its headline through notify would print
+    // the completed row twice in one transcript.
+    const cardHeadline = renderDoneSummary(done[0].data, { paint: plainTheme, width: 120 })[0];
+    assert.equal(
+      host.notifications.some((item) => cardHeadline.startsWith(item.message)),
+      false,
+      `the TUI card must not duplicate its headline through notify: ${JSON.stringify(host.notifications)}`,
+    );
+  });
+
+  it("uses exactly one summary surface per host: the TUI card or a headless notify", async () => {
+    // A TUI that accepted the entry renderer draws the card and stays silent.
+    const tui = createHost();
+    await tui.start();
+    await tui.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-425", title: "Polish", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+
+    const tuiCard = tui.appended.find((entry) => entry.type === "aies-summary");
+    assert.ok(tuiCard, "the TUI host still appends the durable record");
+    const tuiHeadline = renderDoneSummary(tuiCard.data, { paint: plainTheme, width: 120 })[0];
+    assert.equal(
+      tui.notifications.filter((item) => tuiHeadline.startsWith(item.message)).length,
+      0,
+      `the drawn card is the only surface: ${JSON.stringify(tui.notifications)}`,
+    );
+
+    // A host without a TUI cannot draw the card: the headline notify is the only
+    // surface, and it must appear exactly once.
+    const headless = createHost({ mode: "print", hasUI: true });
+    await headless.start();
+    await headless.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-425", title: "Polish", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+
+    const headlessCard = headless.appended.find((entry) => entry.type === "aies-summary");
+    assert.ok(headlessCard, "the durable record exists even where it is not drawn");
+    const headlessHeadline = renderDoneSummary(headlessCard.data, { paint: plainTheme, width: 120 })[0];
+    assert.equal(
+      headless.notifications.filter((item) => headlessHeadline.startsWith(item.message)).length,
+      1,
+      `headless mode surfaces the headline once: ${JSON.stringify(headless.notifications)}`,
+    );
+
+    // A TUI host without entry renderers cannot draw the card either: notify again.
+    const partial = createHost({ entryRenderers: false });
+    await partial.start();
+    await partial.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-425", title: "Polish", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+
+    const partialCard = partial.appended.find((entry) => entry.type === "aies-summary");
+    assert.ok(partialCard, "the durable record exists even where it is not drawn");
+    const partialHeadline = renderDoneSummary(partialCard.data, { paint: plainTheme, width: 120 })[0];
+    assert.equal(
+      partial.notifications.filter((item) => partialHeadline.startsWith(item.message)).length,
+      1,
+      `a TUI without entry renderers falls back to notify: ${JSON.stringify(partial.notifications)}`,
+    );
+  });
+
+  it("applies the one-surface rule to the BLOCKED summary too", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+    const tui = createHost();
+    await tui.start();
+    await controller.enable("EZE-426");
+    await tui.emit("tool_result", { toolName: "read", content: "x" });
+    await controller.stop("linear_sync_failed");
+    await tui.emit("tool_result", { toolName: "read", content: "y" });
+
+    const tuiBlocked = tui.appended.find((entry) => entry.type === "aies-summary");
+    assert.ok(tuiBlocked, "the TUI host still appends the durable BLOCKED card");
+    assert.equal(tuiBlocked.data.kind, "blocked");
+    assert.equal(
+      tui.notifications.some((item) => item.message.includes("bloqueado")),
+      false,
+      `the drawn BLOCKED card is the only surface: ${JSON.stringify(tui.notifications)}`,
+    );
+
+    const headlessController = new ContinuationController();
+    setActiveContinuationController(headlessController);
+    const headless = createHost({ mode: "print", hasUI: true });
+    await headless.start();
+    await headlessController.enable("EZE-426");
+    await headless.emit("tool_result", { toolName: "read", content: "x" });
+    await headlessController.stop("linear_sync_failed");
+    await headless.emit("tool_result", { toolName: "read", content: "y" });
+
+    const headlessBlocked = headless.appended.find((entry) => entry.type === "aies-summary");
+    assert.ok(headlessBlocked, "the durable BLOCKED record exists where it is not drawn");
+    assert.equal(headlessBlocked.data.kind, "blocked");
+    assert.equal(
+      headless.notifications.filter((item) => item.message.includes("bloqueado")).length,
+      1,
+      `headless mode surfaces the BLOCKED headline once: ${JSON.stringify(headless.notifications)}`,
+    );
+  });
+
+  it("detects completion from a Linear statusType even when the status name is not Done", async () => {
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-500", title: "x", status: "Completed", statusType: "completed" },
+        workState: "working",
+      },
+    });
+
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+  });
+
+  it("does not duplicate the DONE card when the autonomy stop also reports completed", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+    const host = createHost();
+    await host.start();
+    await controller.enable("EZE-424");
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-424", title: "Fix clamp", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+
+    await controller.stop("completed");
+    await host.emit("tool_result", { toolName: "read", content: "y" });
+    assert.equal(
+      host.appended.filter((entry) => entry.type === "aies-summary").length,
+      1,
+      "the two completion paths must share one latch",
+    );
+  });
+
+  it("re-arms the DONE latch so a later run can emit again", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+    const host = createHost();
+    await host.start();
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-424", title: "a", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+
+    // A new ticket run starts: the completed ticket of the previous run must not
+    // re-fire, but this run's own completion must.
+    await controller.enable("EZE-425");
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-425", title: "b", status: "In Progress", statusType: "started" },
+        workState: "working",
+      },
+    });
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        ticket: { identifier: "EZE-425", title: "b", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 2);
   });
 
   it("keeps the observatory detail in /aies-status detalle only", async () => {

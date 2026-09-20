@@ -1,11 +1,12 @@
 /**
- * The AIES status panel: a pure, boxed header block that answers "what is the
- * run doing and what has it spent" at a glance.
+ * The AIES status panel: a pure status block that answers "what is the run doing
+ * and what has it spent" at a glance, rendered as a persistent widget below the
+ * editor when the terminal is wide enough.
  *
- * Wide terminals get two inner columns, mid terminals a single compact column,
- * and anything narrower gets nothing at all so the caller can fall back to the
- * rich footer. This is a header block, never a sidebar: it renders from the
- * snapshot, decides nothing and holds no state.
+ * Wide terminals get a compact, borderless block of at most four lines; mid
+ * terminals a single compact column box; anything narrower gets nothing at all so
+ * the caller can fall back to the ticket header. It renders from the snapshot,
+ * decides nothing and holds no state.
  *
  * Every row is printed only when it has a value; a fact the snapshot cannot
  * answer is omitted rather than guessed. The `Paint` adapter is injected, so the
@@ -15,7 +16,7 @@
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import type { AgentsSnapshot } from "./agents.ts";
 import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { PLAIN_PAINT, type Paint } from "./paint.ts";
+import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, isCompacting, isContextPressure } from "./vocabulary.ts";
 
 /** Below this width the panel renders nothing. */
@@ -24,16 +25,14 @@ export const PANEL_MIN_WIDTH = 72;
 /** At or above this width the panel switches to the two-column layout. */
 export const PANEL_WIDE_WIDTH = 100;
 
-/** The widest the box is allowed to grow. */
-const PANEL_MAX_WIDTH = 72;
+/** The widest the box (and any AIES card that shares this cap) is allowed to grow. */
+export const PANEL_MAX_WIDTH = 72;
 
-/** Body rows the wide and mid boxes are allowed, so the box never grows unbounded. */
-const WIDE_BODY_ROWS = 6;
+/** The wide tier is a compact, borderless block of at most four lines. */
+export const PANEL_WIDE_LINES = 4;
+
+/** Body rows the mid box is allowed, so the box never grows unbounded. */
 const MID_BODY_ROWS = 4;
-
-/** Inner layout budgets for the two-column tier. */
-const LEFT_WIDTH = 26;
-const COLUMN_GAP = 2;
 
 /** Fixed label width inside a column, so values line up. */
 const LABEL_WIDTH = 9;
@@ -86,8 +85,10 @@ function contextValue(snapshot: AiesSnapshot): string {
 
 function agentsValue(snapshot: AgentsSnapshot): string | undefined {
   const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
+  // An empty registry is not a zero: print the row only when a child was actually
+  // observed, so an active role never renders a `0` count next to it.
+  if (records.length === 0) return undefined;
   const active = snapshot.delegations?.activeRole;
-  if (records.length === 0 && !active) return undefined;
   const role = active ? `${capitalize(active)} activo` : "";
   return role ? `${records.length} · ${role}` : `${records.length}`;
 }
@@ -107,69 +108,71 @@ function panelTitle(snapshot: AiesSnapshot): string {
   return parts.join(" · ");
 }
 
-function leftColumn(snapshot: AgentsSnapshot, now: number): Row[] {
-  const rows: Row[] = [];
+function wideMetaRow(snapshot: AgentsSnapshot, now: number): string {
+  const parts: string[] = [];
   const model = snapshot.model;
   if (model?.label) {
-    rows.push({ label: "Modelo", value: singleLine(model.label) });
-    if (model.provider) rows.push({ label: "", value: singleLine(model.provider) });
+    const label = singleLine(model.label);
+    parts.push(model.provider ? `${label} · ${singleLine(model.provider)}` : label);
   }
-  rows.push({ label: "Contexto", value: contextValue(snapshot) });
-  rows.push({ label: "Tiempo", value: formatDuration(elapsedMs(snapshot, now)) });
+  parts.push(`ctx ${contextValue(snapshot)}`);
+  parts.push(formatDuration(elapsedMs(snapshot, now)));
   const agents = agentsValue(snapshot);
-  if (agents !== undefined) rows.push({ label: "Agentes", value: agents });
-  return rows;
+  if (agents !== undefined) parts.push(agents);
+  return parts.join(" · ");
 }
 
-function groupRows(group: string, entries: Array<[string, string]>): Row[] {
-  return entries.map(([key, value], index) => ({
-    label: index === 0 ? group : "",
-    value: `${key.padEnd(7)}${value}`,
-  }));
+/** Run token telemetry: `Tokens Main … · Agents … · Total …`, omitted when nothing was measured. */
+function wideTokenRow(run: AgentsSnapshot["runUsage"]): string | undefined {
+  if (!run || run.total.totalTokens <= 0) return undefined;
+  const entries: string[] = [];
+  if (run.main.totalTokens > 0) entries.push(`Main ${formatTokens(run.main.totalTokens)}`);
+  if (run.agents.totalTokens > 0) entries.push(`Agents ${formatTokens(run.agents.totalTokens)}`);
+  entries.push(`Total ${formatTokens(run.total.totalTokens)}`);
+  return `Tokens ${entries.join(" · ")}`;
 }
 
-function rightColumn(snapshot: AiesSnapshot): Row[] {
+/**
+ * Whether a cost row carries information: an agent ran, or the run measured a
+ * nonzero/known cost. A run with no agents and a measured zero cost is idle
+ * noise and prints no cost row at all.
+ */
+function costRowVisible(snapshot: AgentsSnapshot): boolean {
   const run = snapshot.runUsage;
-  if (!run) return [];
-
-  const rows: Row[] = [];
-  if (run.total.totalTokens > 0) {
-    const entries: Array<[string, string]> = [];
-    if (run.main.totalTokens > 0) entries.push(["Main", formatTokens(run.main.totalTokens)]);
-    if (run.agents.totalTokens > 0) entries.push(["Agents", formatTokens(run.agents.totalTokens)]);
-    entries.push(["Total", formatTokens(run.total.totalTokens)]);
-    rows.push(...groupRows("Tokens", entries));
-  }
-
-  // A cost block shows only when at least one value was measured; within it an
-  // unknown cost is an em dash, never a zero.
-  if (run.main.cost !== null || run.total.cost !== null) {
-    rows.push(
-      ...groupRows("Coste", [
-        ["Main", formatCost(run.main.cost)],
-        ["Agents", formatCost(run.agents.cost)],
-        ["Total", formatCost(run.total.cost)],
-      ]),
-    );
-  }
-
-  return rows;
+  const hasAgents = Array.isArray(snapshot.agents) && snapshot.agents.length > 0;
+  if (hasAgents) return true;
+  if (!run) return false;
+  if (run.total.cost === 0) return false;
+  return run.main.cost !== null || run.total.cost !== null;
 }
 
-function wideBody(snapshot: AgentsSnapshot, now: number, boxWidth: number): string[] {
-  const left = leftColumn(snapshot, now);
-  const right = rightColumn(snapshot);
-  const inner = boxWidth - 4;
-  const rightWidth = Math.max(0, inner - LEFT_WIDTH - COLUMN_GAP);
-  const rowCount = Math.min(WIDE_BODY_ROWS, Math.max(left.length, right.length));
+/**
+ * Run cost, omitted when there is nothing to report. Within a shown row an
+ * unknown bucket stays an em dash, never a zero the run did not measure.
+ */
+function wideCostRow(snapshot: AgentsSnapshot): string | undefined {
+  if (!costRowVisible(snapshot)) return undefined;
+  const run = snapshot.runUsage;
+  const main = formatCost(run?.main.cost ?? null);
+  const agents = formatCost(run?.agents.cost ?? null);
+  const total = formatCost(run?.total.cost ?? null);
+  return `Coste Main ${main} · Agents ${agents} · Total ${total}`;
+}
 
-  const body: string[] = [];
-  for (let index = 0; index < rowCount; index += 1) {
-    const leftCell = padEnd(hardClip(left[index] ? formatRow(left[index]) : "", LEFT_WIDTH), LEFT_WIDTH);
-    const rightCell = hardClip(right[index] ? formatRow(right[index]) : "", rightWidth);
-    body.push(`${leftCell}${" ".repeat(COLUMN_GAP)}${rightCell}`);
-  }
-  return body;
+/**
+ * The wide tier: the title row, one row carrying model, context, time and agents,
+ * then the usage rows that have a value. At most four compact lines, no box.
+ */
+function wideRows(snapshot: AgentsSnapshot, now: number): Array<{ text: string; color: SemanticColor }> {
+  const rows: Array<{ text: string; color: SemanticColor }> = [
+    { text: panelTitle(snapshot), color: "accent" },
+    { text: wideMetaRow(snapshot, now), color: "text" },
+  ];
+  const tokens = wideTokenRow(snapshot.runUsage);
+  if (tokens) rows.push({ text: tokens, color: "muted" });
+  const cost = wideCostRow(snapshot);
+  if (cost) rows.push({ text: cost, color: "muted" });
+  return rows.slice(0, PANEL_WIDE_LINES);
 }
 
 function midBody(snapshot: AgentsSnapshot, now: number): string[] {
@@ -189,9 +192,7 @@ function midBody(snapshot: AgentsSnapshot, now: number): string[] {
 
   const run = snapshot.runUsage;
   if (run && run.total.totalTokens > 0) rows.push({ label: "Tokens", value: formatTokens(run.total.totalTokens) });
-  if (run && (run.main.cost !== null || run.total.cost !== null)) {
-    rows.push({ label: "Coste", value: formatCost(run.total.cost) });
-  }
+  if (costRowVisible(snapshot)) rows.push({ label: "Coste", value: formatCost(run?.total.cost ?? null) });
 
   // Cost is dropped first, then tokens, then the model: the base rows the human
   // is always owed stay, and the least critical fact goes first.
@@ -212,16 +213,19 @@ function box(title: string, body: string[], boxWidth: number, paint: Paint): str
 
 /**
  * Render the status panel. `[]` below `PANEL_MIN_WIDTH` (or without a width) so
- * the caller falls back to the rich footer. The box never exceeds 72 columns and
- * the wide tier never exceeds 8 lines; the mid tier never exceeds 6.
+ * the caller falls back to the ticket header. At `PANEL_WIDE_WIDTH` and above it
+ * is a persistent, borderless block of at most `PANEL_WIDE_LINES` lines, each at
+ * most 72 columns; between the two thresholds it keeps the single-column box.
  */
 export function renderStatusPanel(snapshot: AgentsSnapshot, now: number, options: PanelOptions = {}): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
   const width = positiveWidth(options.width);
   if (width === undefined || width < PANEL_MIN_WIDTH) return [];
 
-  const boxWidth = Math.min(width, PANEL_MAX_WIDTH);
-  const title = panelTitle(snapshot);
-  const body = width >= PANEL_WIDE_WIDTH ? wideBody(snapshot, now, boxWidth) : midBody(snapshot, now);
-  return box(title, body, boxWidth, paint);
+  const budget = Math.min(width, PANEL_MAX_WIDTH);
+  if (width >= PANEL_WIDE_WIDTH) {
+    return wideRows(snapshot, now).map((row) => paint.fg(row.color, hardClip(row.text, budget)));
+  }
+
+  return box(panelTitle(snapshot), midBody(snapshot, now), budget, paint);
 }

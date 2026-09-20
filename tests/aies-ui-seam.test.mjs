@@ -25,6 +25,7 @@ function installFakes() {
   const realSetInterval = globalThis.setInterval;
   const realClearInterval = globalThis.clearInterval;
   const realNow = Date.now;
+  const realColumns = process.stdout.columns;
 
   let now = START_MS;
   const intervals = [];
@@ -46,6 +47,9 @@ function installFakes() {
     advance(ms) {
       now += ms;
     },
+    setColumns(value) {
+      process.stdout.columns = value;
+    },
     lastInterval() {
       return intervals.at(-1);
     },
@@ -53,6 +57,7 @@ function installFakes() {
       globalThis.setInterval = realSetInterval;
       globalThis.clearInterval = realClearInterval;
       Date.now = realNow;
+      process.stdout.columns = realColumns;
     },
   };
 }
@@ -138,8 +143,8 @@ function createHost(overrides = {}) {
       setStatus(_key, _text) {
         throw new Error("the runtime must not use setStatus anymore");
       },
-      setWidget(key, content) {
-        widgets.push(content === undefined ? { key, cleared: true } : { key, factory: content });
+      setWidget(key, content, options) {
+        widgets.push(content === undefined ? { key, cleared: true, options } : { key, factory: content, options });
       },
       notify(message, type) {
         notifications.push({ message, type });
@@ -166,6 +171,13 @@ function createHost(overrides = {}) {
     return { component, lines: () => component.render(width) };
   }
 
+  function mountWidget(key, width = 120) {
+    const entry = [...widgets].reverse().find((widget) => widget.key === key && widget.factory);
+    assert.ok(entry, `no ${key} widget mounted`);
+    const component = entry.factory({ requestRender() {} }, plainTheme);
+    return { component, lines: () => component.render(width), text: () => component.render(width).join("\n") };
+  }
+
   async function emit(event, payload = {}) {
     const results = [];
     for (const handler of handlers.get(event) ?? []) {
@@ -178,7 +190,7 @@ function createHost(overrides = {}) {
     await emit("session_start", { reason });
   }
 
-  return { pi, ctx, options, emit, start, handlers, commands, appended, notifications, widgets, renderers, sendMessages, footers, headers, renderRequests, tools, mountFooter, mountHeader };
+  return { pi, ctx, options, emit, start, handlers, commands, appended, notifications, widgets, renderers, sendMessages, footers, headers, renderRequests, tools, mountFooter, mountHeader, mountWidget };
 }
 
 const plainTheme = { fg: (_color, text) => text };
@@ -287,6 +299,74 @@ describe("AIES UI seam", () => {
     assert.match(text, /In Progress/u);
 
     assert.deepEqual(host.mountHeader(40).lines(), ["EZE-422 · In Progress"]);
+  });
+
+  it("registers the status panel as a persistent belowEditor widget, exclusive with the header", async () => {
+    const host = createHost();
+    timers.setColumns(140);
+    await host.start();
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: { ticket: { identifier: "EZE-424", title: "Fix clamp", status: "In Progress" } },
+    });
+
+    assert.equal(host.widgets.at(-1).key, "aies-panel");
+    assert.equal(typeof host.widgets.at(-1).factory, "function");
+    assert.equal(host.widgets.at(-1).options?.placement, "belowEditor", "the panel lives below the editor");
+
+    const panel = host.mountWidget("aies-panel", 140);
+    const lines = panel.lines();
+    assert.ok(lines.length <= 4, `panel has ${lines.length} lines:\n${panel.text()}`);
+    assert.ok(lines.every((line) => line.length <= 72), panel.text());
+    assert.match(panel.text(), /✧ AIES · EZE-424/u);
+    assert.equal(panel.text().startsWith("╭"), false, "the persistent wide tier is not a box");
+    assert.deepEqual(host.mountHeader(140).lines(), [], "the panel owns the band; the header stays quiet");
+
+    // Below the breakpoint the panel widget is cleared and the header identity returns.
+    timers.setColumns(70);
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    assert.equal(host.widgets.at(-1).key, "aies-panel");
+    assert.equal(host.widgets.at(-1).cleared, true, "below the breakpoint the panel is cleared");
+    assert.match(host.mountHeader(70).lines().join("\n"), /╭─ ✧ EZE-424/u);
+
+    await host.emit("session_shutdown", { reason: "quit" });
+    assert.equal(host.widgets.at(-1).cleared, true, "shutdown clears the persistent panel");
+  });
+
+  it("renders an idle persistent panel with model, context and time only", async () => {
+    const host = createHost();
+    timers.setColumns(140);
+    await host.start();
+
+    const text = host.mountWidget("aies-panel", 140).text();
+    assert.match(text, /✧ AIES · listo · IDLE/u);
+    assert.match(text, /Model A · anthropic/u);
+    assert.match(text, /ctx 10k/u);
+    assert.equal(text.includes("Agentes"), false, text);
+    assert.equal(text.includes("Tokens"), false, text);
+    assert.equal(text.includes("Coste"), false, text);
+    assert.equal(text.includes("$0.00"), false, text);
+  });
+
+  it("emits one DONE card on ticket completion and never duplicates it", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+    const host = createHost();
+    await host.start();
+    await controller.enable("EZE-424");
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: { ticket: { identifier: "EZE-424", status: "Done", statusType: "completed" }, workState: "complete" },
+    });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+
+    await controller.stop("completed");
+    await host.emit("tool_result", { toolName: "read", content: "y" });
+    assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
   });
 
   it("registers the aies-activity widget and renders the role and task", async () => {
