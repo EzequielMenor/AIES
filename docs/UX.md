@@ -40,11 +40,13 @@ AIES adds no terminal renderer of its own. It uses Pi's public extension API:
 | Interactive dialog | `ctx.ui.select` / `confirm` / `input` / `custom` | until answered |
 | Theme colors | `ctx.ui.theme.fg(color, text)` | per render |
 
-Pi's own surfaces (transcript, generic tool rows, editor, spinner, compaction
-loader, keybindings) stay Pi's. While an AIES session is active, AIES installs
-its own footer and ticket header — both rendered from the same snapshot — and
-restores Pi's built-in footer and header on shutdown. The editor is never
-replaced.
+Pi's own fullscreen viewport, transcript, editor, resize handling, terminal
+teardown, keybindings and compaction loader stay Pi's. The isolated profile sets
+`tuiMode: "fullscreen"`, `fullscreenExitOutput: "resume-hint"`,
+`quietStartup: true` and `hideThinkingBlock: true`; AIES does not emit ANSI,
+clear the terminal or intercept reasoning. While a session is active AIES
+installs its footer, ticket header and bounded widgets from one snapshot, then
+clears them on shutdown. The editor is never replaced.
 
 ### The no-context-pollution guarantee
 
@@ -80,22 +82,26 @@ Ticket, workflow stage, context health, autonomy. Nothing else.
 
 ### Wide terminals: the status panel
 
-From 72 columns the same snapshot is drawn as a persistent status panel below the
-editor, and the footer turns minimal. The panel carries the run's headline facts
-(model, context, time, agents) and the run's usage (tokens, cost). It is
-described in §5.
+From 80 columns the same snapshot is drawn as a persistent status dock below the
+editor, outside the scrolling fullscreen transcript, and the footer turns
+minimal. The panel carries the run's headline facts (model, context, time,
+agents) and usage (tokens, cost). It is the public-API fallback for the Gentle
+right rail, not a claimed sidebar. See §5 and §18.
 
 ```
-✧ AIES · EZE-417 · WORK
-Claude Sonnet 4.5 · anthropic · ctx 42k · 04:21 · 2 · Worker activo
-Tokens Main 12k · Agents 3000 · Total 15k
-Coste Main $0.04 · Agents $0.01 · Total $0.05
+╭─ ✧ AIES · EZE-417 · WORK ───────────────────────────────────────────╮
+│ Claude Sonnet 4.5 · anthropic · ctx 42k · 04:21                     │
+│ Tokens Main 12k · Agents 3000 · Total 15k                           │
+│ Coste Main $0.04 · Agents $0.01 · Total $0.05                       │
+│ Agentes ◆ Worker activo · ✓ Explore completado                      │
+╰─────────────────────────────────────────────────────────────────────╯
 ```
 
 ### While a child works
 
-One live card and one mini agents widget: which child, what it is doing, for how
-long, and what it has spent. See §6.
+One live activity card makes the child in flight obvious; the status panel owns
+the bounded agents mini-overview, and `/agents` owns selectable detail. There is
+no duplicate agents widget. See §6.
 
 ### When something matters
 
@@ -176,12 +182,12 @@ segment is gone) and restoring the original on shutdown. It is one line:
 ✧ AIES · listo · ctx 31k
 ```
 
-- One line. Never a second line, never a panel, never `key=value`. The single
-  `✧` is the AIES identity glyph, here as everywhere else.
-- The rich form above prints only when no status panel is on screen. While the
-  panel is visible the footer is **minimal**: identity, ticket, stage, context and
-  alarms, without `AUTO`, `V:PASS`, model or cwd, so the same fact is never told
-  twice. Both forms are the same renderer reading the same snapshot.
+- One line. Never a second line and never `key=value`. The single `✧` is the AIES
+  identity glyph, here as everywhere else.
+- While the panel is visible the footer is **minimal**: identity, ticket, stage,
+  context and alarms. Below 80 columns it becomes the rich fallback and adds the
+  compact `model/provider`, elapsed time and measured total cost when they fit.
+  Both forms are the same renderer reading the same snapshot.
 - `listo` appears only when the stage is `IDLE`. While work is in flight and there
   is no ticket, the line simply omits the token (`✧ AIES · EXPLORE · ctx 42k`):
   `listo` next to `EXPLORE` would read as a contradiction.
@@ -191,67 +197,48 @@ segment is gone) and restoring the original on shutdown. It is one line:
   carries `V:STALE`, which is the state the human actually needs to see.
 - The footer is not `/aies-status`. If a fact needs a label to be understood, it
   belongs in the status report, not here.
-- No percentages, no ceiling, no `peak:`, no tool counts, no elapsed time. Elapsed
-  time belongs to the activity card (§6) and to `/aies-status`.
+- No percentages, no ceiling, no `peak:`, no tool counts and no cwd/branch/dirty
+  plumbing. Elapsed and total cost appear only in the narrow fallback; the panel
+  owns them at larger widths.
 - Autonomy is silent when off: there is no `AUTO OFF`.
-- The parent model and a compact cwd are opportunistic: appended only when the
-  terminal leaves room, and the first two segments the width degradation drops.
+- Model and provider are one compact segment and are the first rich fact dropped
+  when a narrower terminal cannot carry the whole fallback.
 
 ### The status panel
 
-From 72 columns the status panel is a persistent widget below the editor — not
-`ctx.ui.setHeader`, because Pi's header is the startup header and scrolls out of
-view as the transcript grows. It is a block, never a sidebar: it takes no editor
-width, holds no state, and its lines never exceed 72 columns.
+From 80 columns the status panel is a persistent `belowEditor` widget. In Pi
+fullscreen this fixed dock is visually and mechanically separate from the
+scrolling transcript. It is **not** a right sidebar: Pi 0.85.1 exposes no public
+persistent side-rail primitive, and AIES does not use the private layout-tree
+symbol that gentle-pi 3.2.1 uses.
 
 | Terminal width | Panel |
 |---|---|
-| `>= 100` | a borderless block of at most 4 lines, each clipped to at most 72 columns |
-| `72`–`99` | a single-column box of at most 6 lines (4 body rows plus the top and bottom borders), at most 72 columns wide |
-| `< 72` | nothing; the startup ticket header is the identity surface |
+| `>= 120` | full boxed dock, at most 6 lines and 96 columns |
+| `80`–`119` | compact boxed dock, at most 7 lines and 72 columns |
+| `< 80` | no panel; the rich one-line footer and ticket header are the fallback |
 
-Wide tier (`>= 100`), borderless:
-
-```
-✧ AIES · EZE-417 · WORK
-Claude Sonnet 4.5 · anthropic · ctx 42k · 04:21 · 2 · Worker activo
-Tokens Main 12k · Agents 3000 · Total 15k
-Coste Main $0.04 · Agents $0.01 · Total $0.05
-```
-
-- The first line is the title: `✧ AIES · <ticket|listo> · <STAGE>`. A real ticket
-  is always shown; `listo` stands in only when the stage is `IDLE`.
-- The second line carries the model label and its provider, `ctx`, the run time
-  and the agent count, each part printed only when it is known.
-- The `Tokens` row prints `Main`, `Agents` and `Total`; a zero bucket is left out
-  and `Total` is always shown. The row is omitted when nothing was measured.
-- The `Coste` row is omitted when there is no real cost. Within a shown row an
-  unknown bucket is `—`, never an estimated `$0.00`.
-
-Mid tier (`72`–`99`), a single-column box:
+Full tier:
 
 ```
-╭─ ✧ AIES · EZE-417 · WORK ────────────────────────────────────────────╮
-│ Contexto 42k                                                         │
-│ Tiempo   04:21                                                       │
-│ Agentes  2 · Worker activo                                           │
-│ Modelo   Claude Sonnet 4.5 · anthropic                               │
-╰──────────────────────────────────────────────────────────────────────╯
+╭─ ✧ AIES · EZE-417 · WORK ───────────────────────────────────────────╮
+│ Claude Sonnet 4.5 · anthropic · ctx 42k · 04:21                     │
+│ Tokens Main 12k · Agents 3000 · Total 15k                           │
+│ Coste Main $0.04 · Agents $0.01 · Total $0.05                       │
+│ Agentes ◆ Worker activo · ✓ Explore completado                      │
+╰─────────────────────────────────────────────────────────────────────╯
 ```
 
-- Rows are emitted in this order and capped at four: `Contexto`, `Tiempo`,
-  `Agentes`, `Modelo`, `Tokens`, `Coste`. Everything past the fourth is dropped,
-  so cost is dropped first, then tokens, then the model, then the agents.
-  `Contexto` and `Tiempo` are always present.
-- `Contexto` reads `compactando…` while a compaction is in flight and appends
-  ` !` under pressure. `Tiempo` is the current run's wall-clock time.
-- A row is printed only when it has a value: `Agentes` is omitted when the
-  registry is empty, `Modelo` when no model is known, `Tokens` when nothing was
-  measured, and `Coste` when there is no real cost.
+Compact tier keeps the same hierarchy on separate rows. Unknown facts disappear;
+a missing value is never invented. Tokens and costs always retain the
+`Main / Agents / Total` provenance when the row exists. The agents row is bounded
+to the active child plus the newest completed child, active first. This replaces
+the old standalone `aies-agents` widget and removes one duplicated surface.
 
-Observed live: a 140-column terminal renders the wide panel with the minimal
-footer, 80 columns the mid box with the minimal footer, and 60 columns no panel
-with the rich footer fallback.
+The full tier uses at most four body rows; the compact tier at most five. An idle
+panel is still intentional — identity, model/provider, context and elapsed — but
+omits empty usage and agent rows. The header renders no lines while either panel
+tier is visible, and the footer switches to its minimal form.
 
 ### Narrow terminals
 
@@ -260,12 +247,13 @@ segment until the line fits, then truncates as a last resort.
 
 | Segment | Drop priority |
 |---|---|
-| model | dropped first |
-| compact cwd | next |
+| `model/provider` | dropped first |
+| total cost | next |
+| elapsed time | next |
 | `V:PASS` | next |
 | `AUTO` | next |
-| stage | next |
-| `ctx N` | next (the bare number is tried before dropping) |
+| `ctx N` | next |
+| stage | last droppable workflow fact |
 | `AIES`, ticket, alarms (`ctx N !`, `compactando…`, `V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`, `SANDBOX OFF`) | never dropped |
 
 A segment that is itself an alarm is never dropped, and the pressured context
@@ -281,7 +269,7 @@ needed to decide what fits.
 `aies-runtime` installs a small startup header with `ctx.ui.setHeader`, rendered
 from the same snapshot as the footer and showing the active ticket identity. It
 renders no lines while the status panel is visible, so it is the identity surface
-below 72 columns:
+below 80 columns:
 
 ```
 ╭─ ✧ EZE-417 ─────────────────────────────────────────╮
@@ -291,7 +279,7 @@ below 72 columns:
 ```
 
 - No active ticket means no header lines at all.
-- From 72 columns the status panel is what the human reads: the header renders
+- From 80 columns the status panel is what the human reads: the header renders
   no lines while the panel is visible, so the two never duplicate a fact.
 - Below 60 columns it collapses to one compact line
   (`EZE-417 · In Progress · AUTO`); otherwise the boxed identity grows to at most
@@ -302,8 +290,9 @@ below 72 columns:
 ## 6. Agent activity
 
 The Gentle feeling the user asked to keep: *I know a child is working without
-reading its transcript.* The Agent Observatory adds a selectable view of every
-child the session ran: the mini widget and `/agents`.
+reading its transcript.* The Agent Observatory projects the active child into a
+live card, a bounded overview into the status panel, and selectable detail into
+`/agents`.
 
 ### Live (one widget per active child)
 
@@ -370,22 +359,18 @@ Ten children produce ten short lines, not ten cards. Both the card and the durab
 line render structured facts only; a child's free-form `summary` is never
 re-rendered and stays in the internal handoff.
 
-### Mini agents widget
+### Agents mini-overview
 
-While the observatory holds records, one compact widget, key `aies-agents`, sits
-above the editor (from 48 columns; nothing below that). It shows at most four
-rows and collapses the rest into `… N más`:
+The status panel carries at most two compact agent facts, with the active child
+first and the newest completed child second:
 
 ```
-✓ Explore  2 archivos        00:17
-◆ Worker   calculator.js     00:34
+Agentes  ◆ Worker activo · ✓ Explore completado
 ```
 
-Each row is `<glyph> <Role padded> <detail padded> <elapsed>`. The detail is the
-last changed path's basename for a running child (or its mechanical activity, or
-`esperando`), and the changed-file count for a finished one. The widget shares the
-runtime timer and repaints from the registry; it owns no timer and no second
-source of truth.
+This is a projection of the same ephemeral registry as `/agents`; it owns no
+timer and no state. AIES-010D removed the standalone `aies-agents` widget because
+it repeated the same records next to the live activity card and panel.
 
 ### `/agents`
 
@@ -659,14 +644,15 @@ commands printing the same report is the duplication this phase removes.
 
 ## 15. Model, time, cost
 
-- **Model.** The parent model is shown in the status panel (`Modelo`) and in
-  `/aies-status`. Since AIES-010C the observatory also records the model each
+- **Model.** The parent model/provider is shown in the status panel, in the
+  below-80 footer fallback and in `/aies-status`. Since AIES-010C the observatory also records the model each
   child resolved (`modelLabel`) and its provider (`providerLabel`), taken from the
   role runner's resolved model through the public `model.ts` path, and they appear
   in the activity card metric line and in the `/agents` detail. AIES never invents
   a model it cannot read.
 - **Time.** One shared `formatDuration`: `00:14`, `02:31`, `1:04:22`. Used by the
-  activity card, the status panel and `/aies-status`, never in the footer.
+  activity card, the status panel and `/aies-status`; below 80 columns it also
+  appears in the footer fallback.
 - **Cost.** Implemented since AIES-010C, from real `SessionStats.cost` only. The
   panel's `Coste` group, the `/aies-status` `Uso` section, the `/agents` detail and
   the DONE card all read the same run telemetry. An unknown cost is unavailable,
@@ -693,7 +679,7 @@ extensions/aies-ui/            pure presentation, no Pi import, no state
   footer.ts                    renderFooter/renderHeader + width degradation
   panel.ts                     status panel, responsive bands
   activity.ts                  live card, finished line, entry data
-  agents.ts                    mini agents widget, /agents view, selectAgent
+  agents.ts                    /agents view and selectAgent
   tools.ts                     quiet projections for the six generic tools
   approval.ts                  renderApprovalPrompt
   summary.ts                   DONE / BLOCKED cards, /aies-status overview, /aies-run status
@@ -711,8 +697,8 @@ Rules:
 - `aies-ui` imports nothing from Pi and holds no state. Every function is
   `state -> string`.
 - Exactly one owner per Pi surface: `aies-runtime` owns the footer, the startup
-  ticket header, the widget keys `aies-activity`, `aies-agents` and `aies-panel`,
-  the `/agents` custom view, the quiet tool registration and the entry renderers;
+  ticket header, the widget keys `aies-activity` and `aies-panel`, the `/agents`
+  custom view, the quiet tool registration and the entry renderers;
   `aies-agents` owns the approval dialog and produces the observatory records that
   `aies-ui` renders.
 - Painting is injected (`Paint`), so the same renderer works uncolored in tests
@@ -722,13 +708,15 @@ Rules:
 
 ## 17. Terminal and headless
 
-- Narrow: below 72 columns the status panel renders nothing and the rich footer
+- Native fullscreen: Pi owns alternate-screen entry, the scrollable transcript,
+  resize and terminal restoration. AIES sets no cursor mode and emits no ANSI.
+- Narrow: below 80 columns the status panel renders nothing and the rich footer
   returns, degrading by priority (§5); below 60 columns the ticket header is one
   line. The activity card is boxed from 48 columns and otherwise stays three
-  plain lines; the mini agents widget renders from 48 columns and clips the
-  detail before the elapsed time.
-- cmux/Multiplexer: no absolute cursor movement, no full-screen redraw, no
-  terminal-size query beyond `process.stdout.columns`.
+  plain lines.
+- cmux/tmux: AIES uses no absolute cursor movement or custom redraw. Compatibility
+  is therefore bounded by Pi's experimental fullscreen implementation; it must be
+  checked manually rather than inferred from pure render tests.
 - Headless/`print`/`json`: no widget, no status, no entry rendering, no panel. The
   workflow runs identically; `/aies-status` still answers (through `notify`, which
   is a no-op channel there), `/agents` returns its text through `notify`, and the
@@ -763,6 +751,7 @@ API behavior was cross-checked against its installed `docs/` and examples.
 |---|---|
 | Transcript, tool rows, editor, keybindings, working spinner, theme engine, `ctx.ui.*` primitives, `appendEntry`/`registerEntryRenderer` | Pi |
 | The custom footer (`setFooter`) with brand, path, branch, model, gauge, cost, usage bars | gentle-pi (`lib/shell-bar.ts`) |
+| Fullscreen alternate-screen lifecycle and exit restoration | Pi settings (`tuiMode`, `fullscreenExitOutput`) |
 | The agents card, todo card, changes card, dev-binary notice (`setWidget`) | gentle-pi (`lib/agents-widget.ts`, `gentle-todo.ts`, `gentle-shell.ts`) |
 | Task records, history file, completion queue, child dialog relay | gentle-pi runtime (`lib/agents-protocol.ts`) |
 | Spanish/English copy, glyph set (`❀`, `◐`, `○`, `✓`, `✗`), rose palette | presentation choice |
@@ -834,7 +823,9 @@ matter for AIES:
   Pi's native rows, but AIES-010C adopted the idea for exactly the six generic
   tools that flood the transcript (`read`, `bash`, `grep`, `find`, `edit`,
   `write`), through Pi's documented `create*Tool` override pattern rather than a
-  parallel tool list, keeping Pi's execution and its native error shell.
+  parallel tool list, keeping Pi's execution while using `renderShell: "self"`
+  so routine successes no longer get the large native colored shell; its own
+  projection keeps errors red and visible.
 
 Audit note: one referenced document (`orchestration/pi.md`, linked from
 `docs/review-integration.md` in the installed package) was not present at the
@@ -845,10 +836,10 @@ next audit does not chase it twice.
 
 | Gentle concept | AIES decision | Reason |
 |---|---|---|
-| Agent activity cards | Adapt | The core feeling to keep: a child working without its transcript. The live card is one running child; AIES-010C adds a bounded mini list and `/agents` for the children already run, not a Gentle-style live agent table. |
+| Agent activity cards | Adapt | The core feeling to keep: a child working without its transcript. The live card is one running child; the status dock has a bounded two-agent overview and `/agents` has detail, without a duplicate standalone widget. |
 | Context gauge (8-cell bar + `%`) | Reject | A meter needs a ceiling to be read, and a ceiling invites "how full am I" math. `ctx 42k` with an `!` only under pressure is quieter and answers the same question. |
-| Model + effort in the footer | Reject from the footer, adapt on demand | Always-visible model text is decoration in AIES; the parent model is in the status panel and `/aies-status`, and AIES-010C shows the child's resolved model in the activity card and `/agents`. |
-| Elapsed time per row | Adapt | Consistent `formatDuration` in the activity card, the status panel, `/agents` and `/aies-status`, never in the footer. |
+| Model + effort in the footer | Adapt only as narrow fallback | The panel owns model/provider from 80 columns; below that the footer carries compact `model/provider` while it fits. Effort remains absent. |
+| Elapsed time per row | Adapt | Consistent `formatDuration` in the activity card, status panel, `/agents` and `/aies-status`; below 80 columns the footer is the panel fallback and carries elapsed too. |
 | Cost / subscription / usage bars | Reject v1, partially adopted (AIES-010C) | AIES-010 rejected this because there was no reliable per-child source and no own accounting was allowed. AIES-010C reads the real `SessionStats.cost` the child reported and shows Main / Agents / Total; it still builds no pricing catalogue, no subscription meter and no usage bar. |
 | Agent history browser | Reject v1, partially adopted (AIES-010C) | AIES-010 considered it out of scope. AIES-010C adds `/agents` over the ephemeral, session-local registry: this session's children with structured detail. It is still not persistent history, not a task store and not a cross-session browser. |
 | Persistent sidebar / large orchestration panel | Public-API fallback | The requested Gentle rail depends on Pi's private fullscreen layout-node symbol, not `ctx.ui`. AIES will not import that internal. In Pi fullscreen it instead uses a fixed below-editor status widget: visually separate from the scrolling transcript, full at 120+ columns, compact at 80–119 and absent below 80. This is the strongest supported approximation and must be reported as a real limitation, not called a sidebar. |
@@ -856,7 +847,7 @@ next audit does not chase it twice.
 | Finished-row TTL on the widget | Adapt, then dropped (AIES-010C) | AIES-010 copied the TTL to solve "ten historical cards". AIES-010C clears the widget the moment a child finishes and relies on the one durable entry per child, which removes the lingering card and the duplicated rows entirely. |
 | Pure renderer + theme interface, tested without a TUI | Adapt | This is why the AIES renderers live in a Pi-free module with injected paint. |
 | `ui.select` for closed choices | Reject for approvals | `confirm` already expresses allow/deny with a safe default; a select would add a third option nobody acts on. Reused only where AIES already had it. |
-| Compact tool rows (`read path`, `$ command`) from quiet-tools | Reject, then adopted for six tools (AIES-010C) | AIES-010 rejected a second tool list as duplication. AIES-010C re-registers only `read`, `bash`, `grep`, `find`, `edit`, `write` through Pi's documented override pattern, so execution and the native error shell stay Pi's and only the row drawing changes. |
+| Compact tool rows (`read path`, `$ command`) from quiet-tools | Adopt for six tools | The public override delegates execution unchanged and sets `renderShell: "self"`; AIES owns the compact success/error projection, while Pi's expansion state still exposes raw output. |
 | Startup banner with project, branch, MCP, skills, extensions | Reject | AIES is a harness for one developer on one repository; a banner is startup decoration. `/aies-info` already answers "which profile am I running". |
 | Agent overlay, session scope, transcript export | Reject v1, partially adopted (AIES-010C) | AIES-010 rejected it because it needed a child task store, a process protocol and a thread model. AIES-010C adds a bounded, ephemeral `/agents` overlay over in-process session records; there is still no task store, no session scope and no transcript export. |
 | ODD/SDD UI (SDD status, review consent, judgment day) | Reject | AIES has no SDD and no review authority. Importing that UI would import a workflow AIES does not run. |
@@ -875,7 +866,7 @@ next audit does not chase it twice.
 | Autonomy sign | `AUTO`, `AUTO:BLOCKED` | footer | `aies-runtime` | Silent when off (good), but the blocked form carried no reason | redesign as stage + BLOCKED card |
 | `/aies-status` | ~10 sections, 60-80 lines of telemetry | on demand | `aies-runtime` | A dump, not a view; the human had to know which row to look for | redesign as a human view; the dump moves to `detalle` |
 | `/aies-info` | extension path, agent dir, config dir, cwd, mode | on demand | `aies-identity` | Diagnostic text competing with the status command | keep, demote |
-| Startup notification | `AIES profile: <dir>` | every session start | `aies-identity` | Noise for a fact that never changes | keep (it is the isolation proof), stop treating it as a status surface |
+| Startup notification | `AIES profile: <dir>` | every session start | `aies-identity` | Noise for a fact that never changes | remove; `/aies-info` remains the explicit isolation proof |
 | `/aies-ticket` | contract text in a notification | on demand | `aies-agents/linear` | Correct content, transient channel | keep |
 | `/aies-run` | autonomy state as a notification | on demand | `aies-agents/autonomy` | A second report duplicating `/aies-status` rows, with English keys inside Spanish text | redesign into the overview; the command only starts and stops |
 | Child activity | nothing | - | - | The only sign a child was running was Pi's own tool row | add: one live card + one durable line |
@@ -906,6 +897,14 @@ observatory, real Main / Agents / Total usage including each child's resolved
 model and cost, quiet rows for the six generic tools, and a compact DONE
 projection. The finished-child TTL is removed, so the durable entry is the only
 trace of a finished child.
+
+**AIES-010D.** Moves the product into Pi's native fullscreen viewport, restores
+the previous terminal screen on exit, suppresses startup chatter and hides
+thinking blocks through public settings. The fixed status dock now has exact
+120+/80–119/<80 tiers, the narrow footer is the rich fallback, the agents mini
+list lives inside the dock instead of a duplicate widget, and routine successful
+tools own a one-line shell. The unavailable part is explicit: AIES has no true
+right sidebar because Pi exposes no public passive side-rail API.
 
 ## 20. Linear authentication and the MCP handoff
 
@@ -976,7 +975,9 @@ are quiet too.
 `read`, `bash`, `grep`, `find`, `edit` and `write` are re-registered through Pi's
 documented `create*Tool(cwd)` override pattern: one original instance runs, its
 `execute` is delegated untouched, and only `renderCall`/`renderResult` are added.
-The native shell is kept (no `renderShell: "self"`), so Pi still frames a failure.
+Each override sets `renderShell: "self"`, so Pi does not wrap a routine success in
+a large colored block. The AIES projection paints failures with the semantic
+error color and includes real error detail.
 Collapsed success rows:
 
 ```

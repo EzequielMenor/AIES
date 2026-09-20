@@ -216,14 +216,15 @@ describe("footer", () => {
     assert.equal(render(snap(createState(T0))).includes("AUTO"), false);
   });
 
-  it("appends the compact cwd and model only when the width permits", () => {
+  it("appends model/provider and elapsed only when the width permits", () => {
     const ticket = withContext(withTicket(createState(T0)), 42_000);
     const modeled = applyModel(ticket, { id: "model-z", provider: "anthropic" });
 
-    assert.match(render(snap(modeled), T0, { width: 120 }), / · model-z$/u);
+    const wide = render(snap(modeled), T0, { width: 120, cwd: "/home/dev/aies-smoke" });
+    assert.match(wide, /model-z\/anthropic/u);
+    assert.match(wide, /00:00/u);
+    assert.equal(wide.includes("aies-smoke"), false, "cwd is not product status");
     assert.equal(render(snap(modeled), T0, { width: 30 }).includes("model-z"), false);
-    assert.match(render(snap(ticket), T0, { width: 120, cwd: "/home/dev/aies-smoke" }), / · aies-smoke$/u);
-    assert.equal(render(snap(ticket), T0, { width: 30, cwd: "/home/dev/aies-smoke" }).includes("aies-smoke"), false);
   });
 
   it("marks context pressure and compaction without a peak or a ceiling", () => {
@@ -284,7 +285,7 @@ describe("footer", () => {
       assert.equal(footer.split("\n").length, 1);
     }
 
-    assert.equal(render(snap(rich), T0, { width: 70 }), "✧ AIES · EZE-417 · WORK · ctx 42k · AUTO · V:PASS");
+    assert.equal(render(snap(rich), T0, { width: 70 }), "✧ AIES · EZE-417 · WORK · ctx 42k · 00:00 · AUTO · V:PASS");
     assert.equal(render(snap(rich), T0, { width: 48 }), "✧ AIES · EZE-417 · WORK · ctx 42k · AUTO");
     assert.equal(render(snap(rich), T0, { width: 39 }), "✧ AIES · EZE-417 · WORK · ctx 42k");
     assert.equal(render(snap(rich), T0, { width: 32 }), "✧ AIES · EZE-417 · WORK");
@@ -317,12 +318,13 @@ describe("footer", () => {
     const fallback = render(snap(rich), T0, { width: 200, cwd: "/home/dev/aies-smoke" });
     assert.match(fallback, /AUTO/u);
     assert.match(fallback, /V:PASS/u);
-    assert.match(fallback, /model-z/u);
-    assert.match(fallback, /aies-smoke/u);
+    assert.match(fallback, /model-z\/anthropic/u);
+    assert.match(fallback, /00:00/u);
+    assert.equal(fallback.includes("aies-smoke"), false);
 
     const minimal = render(snap(rich), T0, { width: 200, cwd: "/home/dev/aies-smoke", panelVisible: true });
     assert.equal(minimal, "✧ AIES · EZE-417 · WORK · ctx 42k");
-    for (const hidden of ["AUTO", "V:PASS", "model-z", "aies-smoke"]) {
+    for (const hidden of ["AUTO", "V:PASS", "model-z", "anthropic", "00:00", "aies-smoke"]) {
       assert.equal(minimal.includes(hidden), false, minimal);
     }
   });

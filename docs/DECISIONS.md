@@ -654,6 +654,57 @@ Detailed reference: `docs/ARCHITECTURE.md` (Linear ticket workflow).
 
 ---
 
+
+## D23 - Fullscreen is Pi-owned; AIES uses a fixed status dock, not a private sidebar (AIES-010D)
+
+**Decision.**
+1. The isolated profile sets Pi 0.85.1's documented `tuiMode: "fullscreen"`,
+   `fullscreenExitOutput: "resume-hint"`, `fullscreenScrollbar: "auto"`,
+   `quietStartup: true` and `hideThinkingBlock: true`. Pi owns alternate-screen
+   entry, transcript scrolling, resize, Ctrl+C/exit teardown and terminal
+   restoration. AIES emits no ANSI and performs no manual clear.
+2. AIES does not copy gentle-pi 3.2.1's responsive right rail. That rail patches
+   Pi's layout tree through the experimental private symbol
+   `Symbol.for("@earendil-works/pi-tui/layout-node")`; no public passive sidebar
+   primitive exists in Pi 0.85.1. The supported approximation remains the fixed
+   `belowEditor` widget, full at 120+ columns, compact at 80–119 and absent below
+   80. It is documented as a status dock, never presented as a real sidebar.
+3. The full dock is bounded to 96 columns and six lines; the compact dock to 72
+   columns and seven lines. Both carry identity/ticket/stage, model/provider,
+   context, elapsed time, measured Main/Agents/Total usage and at most two agent
+   facts when those values exist. Below 80 columns the rich one-line footer is the
+   fallback; while the dock exists the footer is minimal and non-duplicative.
+4. The standalone `aies-agents` widget is removed. Its bounded mini-overview now
+   lives in the status dock; the live `aies-activity` card and selectable
+   `/agents` registry view remain unchanged.
+5. The six quiet generic tool overrides set the public `renderShell: "self"`.
+   Execution, schema, result bytes and Pi's expansion state remain unchanged;
+   AIES owns the compact success/error projection, so routine success has no
+   large colored shell and failures remain red with real detail.
+6. The identity extension no longer emits a startup profile notification.
+   `/aies-info` remains the explicit isolation diagnostic. Thinking visibility is
+   controlled only by Pi's public setting; no reasoning is intercepted.
+
+**Why.** AIES-010C improved information density but regular TUI mode still left
+shell history and bootstrap chrome around the product, and the generic-tool
+success shell still dominated the transcript. The exact gentle-pi 3.2.1 audit
+showed that the desired right rail is not available at AIES's public API boundary.
+Native fullscreen provides the material product change without forking Pi; a
+bounded fixed dock preserves hierarchy without pretending an internal patch is a
+supported integration.
+
+**Consequence.** AIES launches as a clean fullscreen application and restores the
+previous terminal screen on exit, while headless modes keep their previous
+behavior. The dock, live child card, `/agents`, compact transcript entries and
+rich narrow footer now form one responsive hierarchy. This supersedes D21 items
+1–2 (breakpoints/layout), item 4's standalone `aies-agents` widget, item 5's
+native tool shell, and the consequence that named three widget keys. D1 and D16
+remain intact: Pi is still the runtime, every UI surface remains a projection,
+and no private Pi import or renderer was added. Detailed reference:
+`docs/UX.md` §2, §3, §5, §6, §17, §18, §19 and §22.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

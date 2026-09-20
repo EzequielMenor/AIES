@@ -7,12 +7,14 @@
  */
 
 import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { PANEL_MAX_WIDTH } from "./panel.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import type { Stage } from "./vocabulary.ts";
 
 /** At or above this width the live card is boxed; below it stays three plain lines. */
 const BOXED_ACTIVITY_MIN_WIDTH = 48;
+
+/** The live card stays narrower than the status dock so it never becomes a banner. */
+const ACTIVITY_MAX_WIDTH = 72;
 
 /** One child delegation as the UI reads it. Fields are optional and unreadable input is ignored. */
 export interface ActivityRecord {
@@ -267,7 +269,7 @@ export function renderActivityCard(
     // Cap the box to the same maximum the status panel uses, so a wide terminal
     // reads it as a card and not as a full-width banner; narrow terminals keep
     // their own (smaller) width and clip inside it.
-    return boxedCard(role, content, Math.min(width, PANEL_MAX_WIDTH), paint);
+    return boxedCard(role, content, Math.min(width, ACTIVITY_MAX_WIDTH), paint);
   }
 
   const head = paint.fg("accent", `◆ ${role}`);
