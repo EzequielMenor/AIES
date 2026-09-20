@@ -751,9 +751,11 @@ Rules:
 
 ## 18. gentle-pi audit and decisions
 
-Audited installation: `gentle-pi@3.2.1` at
-`~/.pi/agent/npm/node_modules/gentle-pi`, extensions under `extensions/`, pure
-renderers under `lib/`.
+Audited reference: the immutable npm tarball for `gentle-pi@3.2.1`
+(`sha512-QjH7zdX9tdEaP…`, unpacked under `/tmp` for read-only inspection). The
+active package in the Pi profile is newer, so it was not treated as equivalent
+evidence. Implementation lives under `extensions/` and `lib/`; Pi 0.85.1 public
+API behavior was cross-checked against its installed `docs/` and examples.
 
 ### Pi-native vs gentle-pi-specific
 
@@ -768,20 +770,40 @@ renderers under `lib/`.
 
 ### What makes the Gentle experience work
 
-1. One custom footer line replaces Pi's three-line footer.
-2. A live widget above the editor re-rendered from state — never a message per
-   event (`setWidget(key, (tui) => ({ render })` with `tui.requestRender()`).
-3. Finished rows linger for a TTL and then disappear, so the card never grows.
-4. Durable transcript content uses `appendEntry` + `registerEntryRenderer`,
-   explicitly documented as not participating in the LLM context.
-5. Pure renderers in `lib/`, tested without a TUI (`tests/agents-widget.test.ts`).
-6. Semantic role table per status (`LOOK`), theme colors only, no raw ANSI.
-7. Row/column budget derived from terminal size; label clipped before the number.
+1. **Pi fullscreen owns the terminal.** Gentle relies on Pi's supported
+   `tuiMode: "fullscreen"`, which uses Pi's alternate-screen renderer: the
+   transcript scrolls inside the viewport while editor, widgets and footer stay
+   fixed. `fullscreenExitOutput: "resume-hint"` restores the previous screen on
+   exit instead of dumping the transcript.
+2. **The right rail is not a public Pi primitive.** Gentle 3.2.1 patches Pi's
+   fullscreen layout tree through the internal symbol
+   `Symbol.for("@earendil-works/pi-tui/layout-node")` in
+   `lib/shell-sidebar-layout.ts`. It activates only in fullscreen at 140 columns,
+   installs a 50-column `ScrollView`, caches frames, delegates resize to Pi and
+   restores the original layout node on disposal. AIES cannot reuse this while
+   keeping its public-API boundary.
+3. One custom footer line replaces Pi's three-line footer, and a custom
+   `CustomEditor` frame embeds the working state so the native Working row can be
+   hidden through `setWorkingVisible(false)`.
+4. Live cards use `setWidget` factories and `tui.requestRender()`; durable
+   transcript content uses `appendEntry` + `registerEntryRenderer`, explicitly
+   outside model context. Fullscreen keeps those widgets in the fixed dock rather
+   than letting them disappear in terminal scrollback.
+5. The Agents command uses `ctx.ui.custom()` as a terminal-sized view with a
+   responsive split/narrow/fallback layout. It is a temporary focused screen,
+   not a passive sidebar primitive.
+6. Quiet tools re-register Pi's public `create*Tool` instances, delegate
+   execution unchanged, set `renderShell: "self"` to remove the native colored
+   result box, keep collapsed previews bounded and use Pi's native
+   `app.tools.expand` state for full output.
+7. Pure renderers, semantic theme roles, bounded rows and content-driven width
+   tiers make the hierarchy stable without raw ANSI or a renderer of its own.
 
 ### Confirmations from the installed source
 
-The audit was performed against `gentle-pi@3.2.1` on this machine, reading
-`extensions/` and `lib/`. Points that matter for AIES:
+The audit was performed against the exact published `gentle-pi@3.2.1` package,
+reading `extensions/`, `lib/`, tests and `docs/gentle-shell.md`. Points that
+matter for AIES:
 
 - The compact bar is `✿ gentle shell ⟡ path branch ±changes ⟡ model · effort ⟡
   ctx gauge percent ⟡ cost ⟡ provider statuses`, fed by `ctx.getContextUsage()`,
@@ -829,8 +851,8 @@ next audit does not chase it twice.
 | Elapsed time per row | Adapt | Consistent `formatDuration` in the activity card, the status panel, `/agents` and `/aies-status`, never in the footer. |
 | Cost / subscription / usage bars | Reject v1, partially adopted (AIES-010C) | AIES-010 rejected this because there was no reliable per-child source and no own accounting was allowed. AIES-010C reads the real `SessionStats.cost` the child reported and shows Main / Agents / Total; it still builds no pricing catalogue, no subscription meter and no usage bar. |
 | Agent history browser | Reject v1, partially adopted (AIES-010C) | AIES-010 considered it out of scope. AIES-010C adds `/agents` over the ephemeral, session-local registry: this session's children with structured detail. It is still not persistent history, not a task store and not a cross-session browser. |
-| Persistent sidebar / large orchestration panel | Reject | AIES has one child at a time and one ticket at a time. A sidebar would show a mostly empty tree and permanently steal editor space. The AIES-010C panel is a bounded block below the editor (at most 4 borderless lines from 100 columns, a single-column box of at most 6 lines from 72, never wider than 72 columns), not a sidebar or an editor column, and the startup ticket header renders nothing while the panel is visible. |
-| Custom multi-part footer with brand, path, branch, dirty count | Reject | AIES needs one status segment, not the whole footer. Keeping Pi's footer means fewer surfaces to maintain and no loss of Pi features. |
+| Persistent sidebar / large orchestration panel | Public-API fallback | The requested Gentle rail depends on Pi's private fullscreen layout-node symbol, not `ctx.ui`. AIES will not import that internal. In Pi fullscreen it instead uses a fixed below-editor status widget: visually separate from the scrolling transcript, full at 120+ columns, compact at 80–119 and absent below 80. This is the strongest supported approximation and must be reported as a real limitation, not called a sidebar. |
+| Custom multi-part footer with brand, path, branch, dirty count | Adapt narrowly | AIES already replaces Pi's footer. With a status widget it stays minimal; below 80 columns it becomes the richer fallback with model, provider, context, elapsed and total cost, without branch/dirty plumbing. |
 | Finished-row TTL on the widget | Adapt, then dropped (AIES-010C) | AIES-010 copied the TTL to solve "ten historical cards". AIES-010C clears the widget the moment a child finishes and relies on the one durable entry per child, which removes the lingering card and the duplicated rows entirely. |
 | Pure renderer + theme interface, tested without a TUI | Adapt | This is why the AIES renderers live in a Pi-free module with injected paint. |
 | `ui.select` for closed choices | Reject for approvals | `confirm` already expresses allow/deny with a safe default; a select would add a third option nobody acts on. Reused only where AIES already had it. |
