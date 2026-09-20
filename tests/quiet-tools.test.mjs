@@ -349,11 +349,11 @@ describe("quiet tool registration", () => {
     assert.match(result.content[0].text, /"name": "aies"/u);
   });
 
-  it("keeps the native shell: no renderShell override", () => {
+  it("owns the compact shell so successful tools have no native color block", () => {
     const { pi, tools } = fakeHost();
     registerQuietTools(pi, "/repo", stubFactories().factories);
     for (const tool of tools) {
-      assert.equal(tool.renderShell, undefined, `${tool.name} must keep Pi's default shell`);
+      assert.equal(tool.renderShell, "self", `${tool.name} must render only its compact projection`);
       assert.equal(typeof tool.renderCall, "function");
       assert.equal(typeof tool.renderResult, "function");
     }

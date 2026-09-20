@@ -317,18 +317,18 @@ describe("AIES UI seam", () => {
 
     const panel = host.mountWidget("aies-panel", 140);
     const lines = panel.lines();
-    assert.ok(lines.length <= 4, `panel has ${lines.length} lines:\n${panel.text()}`);
-    assert.ok(lines.every((line) => line.length <= 72), panel.text());
+    assert.ok(lines.length <= 6, `panel has ${lines.length} lines:\n${panel.text()}`);
+    assert.ok(lines.every((line) => line.length <= 96), panel.text());
     assert.match(panel.text(), /✧ AIES · EZE-424/u);
-    assert.equal(panel.text().startsWith("╭"), false, "the persistent wide tier is not a box");
+    assert.ok(panel.text().startsWith("╭"), "the fixed fullscreen dock must read as a separate surface");
     assert.deepEqual(host.mountHeader(140).lines(), [], "the panel owns the band; the header stays quiet");
 
     // Below the breakpoint the panel widget is cleared and the header identity returns.
-    timers.setColumns(70);
+    timers.setColumns(79);
     await host.emit("tool_result", { toolName: "read", content: "x" });
     assert.equal(host.widgets.at(-1).key, "aies-panel");
     assert.equal(host.widgets.at(-1).cleared, true, "below the breakpoint the panel is cleared");
-    assert.match(host.mountHeader(70).lines().join("\n"), /╭─ ✧ EZE-424/u);
+    assert.match(host.mountHeader(79).lines().join("\n"), /╭─ ✧ EZE-424/u);
 
     await host.emit("session_shutdown", { reason: "quit" });
     assert.equal(host.widgets.at(-1).cleared, true, "shutdown clears the persistent panel");

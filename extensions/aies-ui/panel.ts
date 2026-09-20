@@ -1,231 +1,136 @@
-/**
- * The AIES status panel: a pure status block that answers "what is the run doing
- * and what has it spent" at a glance, rendered as a persistent widget below the
- * editor when the terminal is wide enough.
- *
- * Wide terminals get a compact, borderless block of at most four lines; mid
- * terminals a single compact column box; anything narrower gets nothing at all so
- * the caller can fall back to the ticket header. It renders from the snapshot,
- * decides nothing and holds no state.
- *
- * Every row is printed only when it has a value; a fact the snapshot cannot
- * answer is omitted rather than guessed. The `Paint` adapter is injected, so the
- * same renderer is plain text in tests and headless runs.
- */
-
-import type { AiesSnapshot } from "../aies-runtime/state.ts";
-import type { AgentsSnapshot } from "./agents.ts";
-import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
+import type { AgentRecord } from "../aies-agents/observatory.ts";
+import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { PLAIN_PAINT, type Paint } from "./paint.ts";
 import { deriveStage, isCompacting, isContextPressure } from "./vocabulary.ts";
+import type { AgentsSnapshot } from "./agents.ts";
 
-/** Below this width the panel renders nothing. */
-export const PANEL_MIN_WIDTH = 72;
+/** Below this width the status moves into the footer. */
+export const PANEL_MIN_WIDTH = 80;
 
-/** At or above this width the panel switches to the two-column layout. */
-export const PANEL_WIDE_WIDTH = 100;
+/** At this width the panel can combine related facts into fewer rows. */
+export const PANEL_WIDE_WIDTH = 120;
 
-/** The widest the box (and any AIES card that shares this cap) is allowed to grow. */
-export const PANEL_MAX_WIDTH = 72;
-
-/** The wide tier is a compact, borderless block of at most four lines. */
-export const PANEL_WIDE_LINES = 4;
-
-/** Body rows the mid box is allowed, so the box never grows unbounded. */
-const MID_BODY_ROWS = 4;
-
-/** Fixed label width inside a column, so values line up. */
-const LABEL_WIDTH = 9;
-
-interface Row {
-  label: string;
-  value: string;
-}
+/** A fixed dock must read as a card, never a full-width terminal banner. */
+export const PANEL_MAX_WIDTH = 96;
 
 export interface PanelOptions {
   width?: number;
   paint?: Paint;
 }
 
-function positiveWidth(width: number | undefined): number | undefined {
-  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return undefined;
-  return Math.floor(width);
+function usableWidth(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < PANEL_MIN_WIDTH) return undefined;
+  return Math.floor(value);
 }
 
-/** A non-collapsing clip: the box body keeps its internal alignment spacing. */
-function hardClip(text: string, width: number): string {
-  if (width <= 0) return "";
-  if (text.length <= width) return text;
-  if (width === 1) return "…";
-  return `${text.slice(0, width - 1)}…`;
+function modelText(snapshot: AgentsSnapshot): string | undefined {
+  const label = singleLine(snapshot.model?.label ?? snapshot.model?.id ?? "");
+  if (!label) return undefined;
+  const provider = singleLine(snapshot.model?.provider ?? "");
+  return provider ? `${label} · ${provider}` : label;
 }
 
-function padEnd(text: string, width: number): string {
-  return text.length >= width ? text : text + " ".repeat(width - text.length);
+function contextText(snapshot: AgentsSnapshot): string {
+  const pressure = isContextPressure(snapshot) ? " !" : "";
+  const compacting = isCompacting(snapshot) ? " · compactando…" : "";
+  return `${formatTokens(snapshot.contextTokens)}${pressure}${compacting}`;
 }
 
-function capitalize(value: string): string {
-  const trimmed = singleLine(value);
-  if (!trimmed) return "";
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+function usageRows(snapshot: AgentsSnapshot): string[] {
+  const usage = snapshot.runUsage;
+  if (!usage) return [];
+
+  const rows: string[] = [];
+  if (usage.total.totalTokens > 0) {
+    rows.push(
+      `Tokens   Main ${formatTokens(usage.main.totalTokens)} · Agents ${formatTokens(usage.agents.totalTokens)} · Total ${formatTokens(usage.total.totalTokens)}`,
+    );
+  }
+
+  const hasKnownCost = usage.main.cost !== null || usage.agents.cost !== null || usage.total.cost !== null;
+  const hasNonZeroCost = [usage.main.cost, usage.agents.cost, usage.total.cost].some(
+    (value) => typeof value === "number" && value > 0,
+  );
+  if (hasKnownCost && (hasNonZeroCost || usage.agents.totalTokens > 0)) {
+    rows.push(
+      `Coste    Main ${formatCost(usage.main.cost)} · Agents ${formatCost(usage.agents.cost)} · Total ${formatCost(usage.total.cost)}`,
+    );
+  }
+  return rows;
 }
 
-/** Run wall-clock while a run is active, otherwise the session elapsed time. */
-function elapsedMs(snapshot: AiesSnapshot, now: number): number {
-  const run = snapshot.runUsage;
-  if (run?.active && typeof run.startedAt === "number") return Math.max(0, now - run.startedAt);
-  return Math.max(0, now - snapshot.startedAt);
+function roleLabel(role: string): string {
+  const value = singleLine(role);
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Agente";
 }
 
-function contextValue(snapshot: AiesSnapshot): string {
-  if (isCompacting(snapshot)) return "compactando…";
-  const tokens = formatTokens(snapshot.contextTokens);
-  return isContextPressure(snapshot) ? `${tokens} !` : tokens;
+function agentFact(record: AgentRecord): string {
+  const look = {
+    running: ["◆", "activo"],
+    completed: ["✓", "completado"],
+    failed: ["✗", "falló"],
+    blocked: ["!", "bloqueado"],
+  }[record.status] ?? ["·", singleLine(record.status)];
+  return `${look[0]} ${roleLabel(record.role)} ${look[1]}`;
 }
 
-function agentsValue(snapshot: AgentsSnapshot): string | undefined {
+/** Active child first, then the newest completed child; never grow the dock. */
+function agentsRow(snapshot: AgentsSnapshot): string | undefined {
   const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  // An empty registry is not a zero: print the row only when a child was actually
-  // observed, so an active role never renders a `0` count next to it.
-  if (records.length === 0) return undefined;
-  const active = snapshot.delegations?.activeRole;
-  const role = active ? `${capitalize(active)} activo` : "";
-  return role ? `${records.length} · ${role}` : `${records.length}`;
+  if (!records.length) return undefined;
+  const ordered = [...records].sort((left, right) => {
+    if (left.status === "running" && right.status !== "running") return -1;
+    if (right.status === "running" && left.status !== "running") return 1;
+    return right.startedAt - left.startedAt;
+  });
+  return `Agentes  ${ordered.slice(0, 2).map(agentFact).join(" · ")}`;
 }
 
-function formatRow(row: Row): string {
-  return `${row.label.padEnd(LABEL_WIDTH)}${row.value}`;
+function title(snapshot: AgentsSnapshot): string {
+  const ticket = snapshot.ticket?.active && snapshot.ticket.identifier ? snapshot.ticket.identifier : "listo";
+  return `✧ AIES · ${ticket} · ${deriveStage(snapshot)}`;
 }
 
-/** The title line, embedded in the top border: `✧ AIES · <ticket|listo> · <STAGE>`. */
-function panelTitle(snapshot: AiesSnapshot): string {
-  const stage = deriveStage(snapshot);
-  const ticket = snapshot.ticket;
-  const parts = ["✧ AIES"];
-  if (ticket?.active && ticket.identifier) parts.push(singleLine(ticket.identifier));
-  else if (stage === "IDLE") parts.push("listo");
-  parts.push(stage);
-  return parts.join(" · ");
-}
-
-function wideMetaRow(snapshot: AgentsSnapshot, now: number): string {
-  const parts: string[] = [];
-  const model = snapshot.model;
-  if (model?.label) {
-    const label = singleLine(model.label);
-    parts.push(model.provider ? `${label} · ${singleLine(model.provider)}` : label);
-  }
-  parts.push(`ctx ${contextValue(snapshot)}`);
-  parts.push(formatDuration(elapsedMs(snapshot, now)));
-  const agents = agentsValue(snapshot);
-  if (agents !== undefined) parts.push(agents);
-  return parts.join(" · ");
-}
-
-/** Run token telemetry: `Tokens Main … · Agents … · Total …`, omitted when nothing was measured. */
-function wideTokenRow(run: AgentsSnapshot["runUsage"]): string | undefined {
-  if (!run || run.total.totalTokens <= 0) return undefined;
-  const entries: string[] = [];
-  if (run.main.totalTokens > 0) entries.push(`Main ${formatTokens(run.main.totalTokens)}`);
-  if (run.agents.totalTokens > 0) entries.push(`Agents ${formatTokens(run.agents.totalTokens)}`);
-  entries.push(`Total ${formatTokens(run.total.totalTokens)}`);
-  return `Tokens ${entries.join(" · ")}`;
-}
-
-/**
- * Whether a cost row carries information: an agent ran, or the run measured a
- * nonzero/known cost. A run with no agents and a measured zero cost is idle
- * noise and prints no cost row at all.
- */
-function costRowVisible(snapshot: AgentsSnapshot): boolean {
-  const run = snapshot.runUsage;
-  const hasAgents = Array.isArray(snapshot.agents) && snapshot.agents.length > 0;
-  if (hasAgents) return true;
-  if (!run) return false;
-  if (run.total.cost === 0) return false;
-  return run.main.cost !== null || run.total.cost !== null;
-}
-
-/**
- * Run cost, omitted when there is nothing to report. Within a shown row an
- * unknown bucket stays an em dash, never a zero the run did not measure.
- */
-function wideCostRow(snapshot: AgentsSnapshot): string | undefined {
-  if (!costRowVisible(snapshot)) return undefined;
-  const run = snapshot.runUsage;
-  const main = formatCost(run?.main.cost ?? null);
-  const agents = formatCost(run?.agents.cost ?? null);
-  const total = formatCost(run?.total.cost ?? null);
-  return `Coste Main ${main} · Agents ${agents} · Total ${total}`;
-}
-
-/**
- * The wide tier: the title row, one row carrying model, context, time and agents,
- * then the usage rows that have a value. At most four compact lines, no box.
- */
-function wideRows(snapshot: AgentsSnapshot, now: number): Array<{ text: string; color: SemanticColor }> {
-  const rows: Array<{ text: string; color: SemanticColor }> = [
-    { text: panelTitle(snapshot), color: "accent" },
-    { text: wideMetaRow(snapshot, now), color: "text" },
+function box(titleText: string, rows: string[], width: number, paint: Paint): string[] {
+  const inner = width - 4;
+  const label = ` ${clip(titleText, Math.max(1, width - 6))} `;
+  const top = `╭─${label}${"─".repeat(Math.max(0, width - 3 - label.length))}╮`;
+  return [
+    paint.fg("accent", top),
+    ...rows.map((row) => `│ ${clip(row, inner).padEnd(inner)} │`),
+    paint.fg("accent", `╰${"─".repeat(width - 2)}╯`),
   ];
-  const tokens = wideTokenRow(snapshot.runUsage);
-  if (tokens) rows.push({ text: tokens, color: "muted" });
-  const cost = wideCostRow(snapshot);
-  if (cost) rows.push({ text: cost, color: "muted" });
-  return rows.slice(0, PANEL_WIDE_LINES);
-}
-
-function midBody(snapshot: AgentsSnapshot, now: number): string[] {
-  const rows: Row[] = [
-    { label: "Contexto", value: contextValue(snapshot) },
-    { label: "Tiempo", value: formatDuration(elapsedMs(snapshot, now)) },
-  ];
-
-  const agents = agentsValue(snapshot);
-  if (agents !== undefined) rows.push({ label: "Agentes", value: agents });
-
-  const model = snapshot.model;
-  if (model?.label) {
-    const provider = model.provider ? ` · ${singleLine(model.provider)}` : "";
-    rows.push({ label: "Modelo", value: `${singleLine(model.label)}${provider}` });
-  }
-
-  const run = snapshot.runUsage;
-  if (run && run.total.totalTokens > 0) rows.push({ label: "Tokens", value: formatTokens(run.total.totalTokens) });
-  if (costRowVisible(snapshot)) rows.push({ label: "Coste", value: formatCost(run?.total.cost ?? null) });
-
-  // Cost is dropped first, then tokens, then the model: the base rows the human
-  // is always owed stay, and the least critical fact goes first.
-  return rows.slice(0, MID_BODY_ROWS).map(formatRow);
-}
-
-function box(title: string, body: string[], boxWidth: number, paint: Paint): string[] {
-  const inner = boxWidth - 4;
-  const label = ` ${title} `;
-  const dashes = Math.max(0, boxWidth - 3 - label.length);
-  const lines = [paint.fg("accent", `╭─${label}${"─".repeat(dashes)}╮`)];
-  for (const line of body) {
-    lines.push(`│ ${padEnd(hardClip(line, inner), inner)} │`);
-  }
-  lines.push(paint.fg("accent", `╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`));
-  return lines;
 }
 
 /**
- * Render the status panel. `[]` below `PANEL_MIN_WIDTH` (or without a width) so
- * the caller falls back to the ticket header. At `PANEL_WIDE_WIDTH` and above it
- * is a persistent, borderless block of at most `PANEL_WIDE_LINES` lines, each at
- * most 72 columns; between the two thresholds it keeps the single-column box.
+ * The supported fullscreen status dock. Pi owns the fullscreen viewport; this
+ * pure renderer owns only the bounded `belowEditor` widget content.
  */
-export function renderStatusPanel(snapshot: AgentsSnapshot, now: number, options: PanelOptions = {}): string[] {
+export function renderStatusPanel(
+  snapshot: AgentsSnapshot,
+  now: number,
+  options: PanelOptions = {},
+): string[] {
+  const available = usableWidth(options.width);
+  if (available === undefined) return [];
+
   const paint = options.paint ?? PLAIN_PAINT;
-  const width = positiveWidth(options.width);
-  if (width === undefined || width < PANEL_MIN_WIDTH) return [];
+  const width = Math.min(available, available >= PANEL_WIDE_WIDTH ? PANEL_MAX_WIDTH : 72);
+  const elapsed = formatDuration(Math.max(0, now - snapshot.startedAt));
+  const model = modelText(snapshot);
+  const agents = agentsRow(snapshot);
+  const usage = usageRows(snapshot);
 
-  const budget = Math.min(width, PANEL_MAX_WIDTH);
-  if (width >= PANEL_WIDE_WIDTH) {
-    return wideRows(snapshot, now).map((row) => paint.fg(row.color, hardClip(row.text, budget)));
+  if (available >= PANEL_WIDE_WIDTH) {
+    const primary = [model, `ctx ${contextText(snapshot)}`, elapsed].filter(Boolean).join("  ·  ");
+    return box(title(snapshot), [primary, ...usage, agents].filter((row): row is string => Boolean(row)), width, paint);
   }
 
-  return box(panelTitle(snapshot), midBody(snapshot, now), budget, paint);
+  const rows = [
+    model ? `Modelo    ${model}` : undefined,
+    `Contexto  ${contextText(snapshot)} · Tiempo ${elapsed}`,
+    ...usage,
+    agents,
+  ].filter((row): row is string => Boolean(row));
+  return box(title(snapshot), rows, width, paint);
 }

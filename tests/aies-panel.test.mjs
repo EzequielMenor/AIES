@@ -24,6 +24,7 @@ import {
   createState,
   toSnapshot,
 } from "../extensions/aies-runtime/state.ts";
+import { renderFooter } from "../extensions/aies-ui/footer.ts";
 import { formatCost } from "../extensions/aies-ui/format.ts";
 import { PANEL_MIN_WIDTH, PANEL_WIDE_WIDTH, renderStatusPanel } from "../extensions/aies-ui/panel.ts";
 
@@ -103,23 +104,28 @@ describe("status panel", () => {
     assert.deepEqual(renderStatusPanel(snap, T0, { width: undefined }), []);
   });
 
-  it("renders a compact four-line block at the wide tier", () => {
+  it("renders a restrained product panel at the full tier", () => {
     const lines = renderStatusPanel(snapOf(richState()), T0 + 31_000, { width: 140 });
-    assert.ok(lines.length <= 4, `wide panel has ${lines.length} lines:\n${lines.join("\n")}`);
-    assert.ok(lines.length >= 3, `wide panel lost its facts:\n${lines.join("\n")}`);
-    assert.equal(lines[0].startsWith("╭"), false, "the persistent wide tier is not a box");
-    assert.ok(lines.every((line) => line.length <= 72), lines.join("\n"));
+    assert.ok(lines.length <= 6, `full panel has ${lines.length} lines:
+${lines.join("\n")}`);
+    assert.ok(lines.length >= 5, `full panel lost its hierarchy:
+${lines.join("\n")}`);
+    assert.ok(lines[0].startsWith("╭─ ✧ AIES · EZE-417 · WORK"), lines[0]);
+    assert.ok(lines.at(-1).startsWith("╰"), lines.at(-1));
+    assert.ok(lines.every((line) => line.length <= 96), lines.join("\n"));
 
-    assert.match(lines[0], /^✧ AIES · EZE-417 · WORK/u);
-    // model·provider + context + time + agents share one compact row
-    assert.match(lines[1], /Qwen 3\.8 Flash · openrouter/u);
-    assert.match(lines[1], /ctx 42k/u);
-    assert.match(lines[1], /00:31/u);
-    assert.match(lines[1], /2 · Worker activo/u);
-    assert.match(lines[2], /^Tokens /u);
-    assert.match(lines[2], /Main 12k/u);
-    assert.match(lines[2], /Total 16k/u);
-    assert.match(lines[3], /^Coste /u);
+    const text = lines.join("\n");
+    assert.match(text, /Qwen 3\.8 Flash · openrouter/u);
+    assert.match(text, /ctx 42k/u);
+    assert.match(text, /00:31/u);
+    assert.match(text, /Tokens/u);
+    assert.match(text, /Main 12k/u);
+    assert.match(text, /Agents 4000/u);
+    assert.match(text, /Total 16k/u);
+    assert.match(text, /Coste/u);
+    assert.match(text, /Agentes/u);
+    assert.match(text, /◆ Worker activo/u);
+    assert.match(text, /✓ Explore completado/u);
   });
 
   it("shows the ticket placeholder at IDLE and always carries the stage", () => {
@@ -127,11 +133,12 @@ describe("status panel", () => {
     assert.match(lines.join("\n"), /✧ AIES · listo · IDLE/u);
   });
 
-  it("keeps an idle wide panel to model, context and time only", () => {
+  it("keeps an idle full panel intentional but quiet", () => {
     let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
     state = applyModel(state, { id: "qwen3.8-flash", provider: "openrouter", name: "Qwen 3.8 Flash" });
     const lines = renderStatusPanel(snapOf(state), T0, { width: 140 });
-    assert.ok(lines.length <= 4, lines.join("\n"));
+    assert.ok(lines.length <= 5, lines.join("\n"));
+    assert.ok(lines[0].startsWith("╭─ ✧ AIES · listo · IDLE"), lines[0]);
 
     const text = lines.join("\n");
     assert.match(text, /Qwen 3\.8 Flash · openrouter/u);
@@ -215,9 +222,10 @@ describe("status panel", () => {
     assert.equal(text.includes("$0.00"), false, text);
   });
 
-  it("collapses to a single compact column at the mid tier", () => {
+  it("collapses to a bounded compact product panel from 80 to 119 columns", () => {
     const lines = renderStatusPanel(snapOf(richState()), T0 + 31_000, { width: 80 });
-    assert.ok(lines.length <= 6, `mid panel has ${lines.length} lines:\n${lines.join("\n")}`);
+    assert.ok(lines.length <= 7, `compact panel has ${lines.length} lines:
+${lines.join("\n")}`);
     assert.ok(lines[0].startsWith("╭"), lines[0]);
     assert.ok(lines.at(-1).startsWith("╰"), lines.at(-1));
     assert.ok(boxWidthOf(lines) <= 72, `box is ${boxWidthOf(lines)} wide`);
@@ -226,16 +234,29 @@ describe("status panel", () => {
     assert.match(text, /Contexto/u);
     assert.match(text, /Tiempo/u);
     assert.match(text, /Agentes/u);
+    assert.match(text, /Main 12k/u);
+    assert.match(text, /Agents 4000/u);
+    assert.match(text, /Total 16k/u);
+  });
+
+  it("uses the rich one-line footer as the below-80 fallback", () => {
+    const text = renderFooter(toSnapshot(richState()), T0 + 31_000, { width: 79, panelVisible: false });
+    assert.match(text, /^✧ AIES · EZE-417 · WORK/u);
+    assert.match(text, /qwen3\.8-flash\/openrouter/u);
+    assert.match(text, /ctx 42k/u);
+    assert.match(text, /00:31/u);
+    assert.match(text, /\$0\.06/u);
+    assert.ok(text.length <= 79, text);
   });
 
   it("keeps every line inside its own width budget across the tiers", () => {
-    for (const width of [PANEL_MIN_WIDTH, 80, PANEL_WIDE_WIDTH, 160]) {
+    for (const width of [PANEL_MIN_WIDTH, 100, PANEL_WIDE_WIDTH, 160]) {
       const lines = renderStatusPanel(snapOf(richState()), T0, { width });
       assert.ok(lines.length > 0, `no panel at ${width}`);
-      assert.ok(lines.length <= 6, `width ${width}: ${lines.length} lines`);
+      assert.ok(lines.length <= 7, `width ${width}: ${lines.length} lines`);
       for (const line of lines) {
         assert.ok(line.length <= width, `width ${width}: "${line}"`);
-        assert.ok(line.length <= 72, `width ${width}: "${line}" exceeds the 72 max`);
+        assert.ok(line.length <= 96, `width ${width}: "${line}" exceeds the 96 max`);
       }
     }
   });

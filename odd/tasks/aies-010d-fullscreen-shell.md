@@ -83,3 +83,4 @@ config editor, pricing database, analytics backend or agent architecture changes
 - Gentle's active agent card and full agents view are ordinary public widget/custom-component patterns. AIES can refine its existing equivalents without touching registry or agent semantics.
 
 - 2026-09-20: T2 followed red/green tests (`fullscreen-shell`, `spanish-ux`). The delegated writer failed before its first turn with the known host `MODULE_NOT_FOUND` incident; no native Agent fallback was exposed, so the bounded implementation ran inline. Headless print-mode smoke exited 0 with no output or terminal side effects.
+- 2026-09-20: T3 used focused red/green renderer and runtime-seam tests. The required writer retry again failed before its first turn with the same host `MODULE_NOT_FOUND`; implementation remained bounded and ran inline. The production diff removes more UI code than it adds.

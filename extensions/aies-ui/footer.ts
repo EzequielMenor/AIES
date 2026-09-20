@@ -19,7 +19,7 @@
  */
 
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
-import { clip, formatTokens, singleLine } from "./format.ts";
+import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, isCompacting, isContextPressure, verificationIndicator, type Stage } from "./vocabulary.ts";
 
@@ -39,7 +39,7 @@ const HEADER_MAX_WIDTH = 64;
 export interface FooterOptions {
   width?: number;
   paint?: Paint;
-  /** The session working directory, shown compactly only when the width permits. */
+  /** Retained for call-site compatibility; location is no longer shell chrome. */
   cwd?: string;
   /**
    * When a status panel already shows model, cwd, AUTO and V:PASS, the footer
@@ -56,7 +56,7 @@ export interface HeaderOptions {
 const SEPARATOR = " · ";
 
 /** Drop order, least important first, as documented in `docs/UX.md` §5. */
-type DropTag = "model" | "cwd" | "vpass" | "auto" | "ctx" | "stage";
+type DropTag = "model" | "cost" | "elapsed" | "vpass" | "auto" | "ctx" | "stage";
 
 interface Segment {
   text: string;
@@ -80,15 +80,7 @@ function positiveWidth(width: number | undefined): number | undefined {
   return Math.floor(width);
 }
 
-/** The last path segment, so the footer shows a compact location, not a walk to root. */
-function compactPath(path: string): string {
-  const trimmed = singleLine(path).replace(/\/+$/u, "");
-  if (!trimmed) return "";
-  const index = trimmed.lastIndexOf("/");
-  return index >= 0 ? trimmed.slice(index + 1) : trimmed;
-}
-
-function buildSegments(snapshot: AiesSnapshot, minimal: boolean): Segment[] {
+function buildSegments(snapshot: AiesSnapshot, now: number, minimal: boolean): Segment[] {
   const segments: Segment[] = [{ text: IDENTITY, color: "text" }];
 
   const stage = deriveStage(snapshot);
@@ -100,6 +92,17 @@ function buildSegments(snapshot: AiesSnapshot, minimal: boolean): Segment[] {
 
   if (stage !== "IDLE") segments.push({ text: stage, color: STAGE_COLOR[stage], drop: "stage" });
 
+  // Below the panel breakpoint this is the entire persistent status surface.
+  // Keep the compact technical identity together so model and provider never
+  // masquerade as two unrelated facts.
+  if (!minimal) {
+    const model = singleLine(snapshot.model?.id ?? "");
+    const provider = singleLine(snapshot.model?.provider ?? "");
+    if (model) {
+      segments.push({ text: provider ? `${model}/${provider}` : model, color: "dim", drop: "model" });
+    }
+  }
+
   const pressure = isContextPressure(snapshot);
   // Under pressure the segment IS the alarm, so it is never dropped; a very narrow
   // terminal clips the tail instead of losing the warning.
@@ -110,6 +113,18 @@ function buildSegments(snapshot: AiesSnapshot, minimal: boolean): Segment[] {
   });
 
   // Alarms: present only while true, never dropped, in this fixed order.
+  if (!minimal) {
+    segments.push({
+      text: formatDuration(Math.max(0, now - snapshot.startedAt)),
+      color: "dim",
+      drop: "elapsed",
+    });
+    const totalCost = snapshot.runUsage?.total.cost;
+    if (typeof totalCost === "number" && Number.isFinite(totalCost) && totalCost > 0) {
+      segments.push({ text: formatCost(totalCost), color: "dim", drop: "cost" });
+    }
+  }
+
   if (isCompacting(snapshot)) segments.push({ text: "compactando…", color: "warning" });
   const indicator = verificationIndicator(snapshot);
   if (indicator === "V:FAIL") segments.push({ text: "V:FAIL", color: "error" });
@@ -130,40 +145,30 @@ function buildSegments(snapshot: AiesSnapshot, minimal: boolean): Segment[] {
   return segments;
 }
 
-/** The opportunistic segments: shown only when the terminal has room for them. */
-function optionalSegments(snapshot: AiesSnapshot, cwd: string): Segment[] {
-  const segments: Segment[] = [];
-  if (snapshot.model?.id) segments.push({ text: snapshot.model.id, color: "dim", drop: "model" });
-  const location = compactPath(cwd);
-  if (location) segments.push({ text: location, color: "dim", drop: "cwd" });
-  return segments;
-}
-
 function joinPlain(segments: Segment[]): string {
   return segments.map((segment) => segment.text).join(SEPARATOR);
 }
 
 /**
- * Render the footer line. `now` is accepted for call-site symmetry but the
- * footer never shows elapsed time: that belongs to the activity card.
+ * Render the footer line. Below the panel breakpoint it is the rich fallback;
+ * while the fixed panel is visible it keeps only non-duplicated essentials.
  */
 export function renderFooter(snapshot: AiesSnapshot, now: number, options: FooterOptions = {}): string {
-  void now;
   const paint = options.paint ?? PLAIN_PAINT;
   const width = positiveWidth(options.width);
-  const cwd = typeof options.cwd === "string" ? options.cwd : "";
   const minimal = options.panelVisible === true;
 
-  let segments = buildSegments(snapshot, minimal);
-  // The optional segments are only ever considered when a width is known, which
-  // is what makes them "opportunistic": they never appear in a width-less render.
-  // The minimal footer omits them entirely, because the panel already shows them.
-  if (!minimal && width !== undefined) segments = [...segments, ...optionalSegments(snapshot, cwd)];
+  let segments = buildSegments(snapshot, now, minimal);
+  // Width-less pure renders keep the historical concise contract. The rich
+  // fallback is a terminal-width behavior, not an invitation to grow logs.
+  if (!minimal && width === undefined) {
+    segments = segments.filter((segment) => !["model", "elapsed", "cost"].includes(segment.drop ?? ""));
+  }
 
   let plain = joinPlain(segments);
 
   if (width !== undefined && plain.length > width) {
-    for (const tag of ["model", "cwd", "vpass", "auto", "ctx", "stage"] as const) {
+    for (const tag of ["model", "cost", "elapsed", "vpass", "auto", "ctx", "stage"] as const) {
       if (plain.length <= width) break;
       segments = segments.filter((segment) => segment.drop !== tag);
       plain = joinPlain(segments);

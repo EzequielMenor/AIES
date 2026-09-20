@@ -340,9 +340,9 @@ describe("observatory UI seam", () => {
     const wide = panel.text();
     assert.match(wide, /✧ AIES · EZE-422/u, wide);
     assert.match(wide, /IDLE/u);
-    assert.equal(wide.startsWith("╭"), false, wide);
-    assert.ok(panel.lines().length <= 4, `wide panel has ${panel.lines().length} lines:\n${wide}`);
-    assert.ok(panel.lines().every((line) => line.length <= 72), wide);
+    assert.ok(wide.startsWith("╭"), wide);
+    assert.ok(panel.lines().length <= 6, `wide panel has ${panel.lines().length} lines:\n${wide}`);
+    assert.ok(panel.lines().every((line) => line.length <= 96), wide);
 
     assert.deepEqual(host.mountHeader(120).lines(), [], "the panel replaces the header band");
 
@@ -379,34 +379,32 @@ describe("observatory UI seam", () => {
     await host.emit("tool_result", { toolName: "read", content: "x" });
     const minimal = host.mountFooter(200).text();
     assert.equal(minimal, "✧ AIES · listo · ctx 10k");
-    for (const hidden of ["model-a", "repo"]) {
+    for (const hidden of ["model-a", "anthropic", "00:00"]) {
       assert.equal(minimal.includes(hidden), false, minimal);
     }
 
-    timers.setColumns(60);
+    timers.setColumns(79);
     await host.emit("tool_result", { toolName: "read", content: "y" });
-    const rich = host.mountFooter(200).text();
-    assert.match(rich, /model-a/u, rich);
-    assert.match(rich, /repo/u, rich);
+    const rich = host.mountFooter(79).text();
+    assert.match(rich, /model-a\/anthropic/u, rich);
+    assert.match(rich, /00:00/u, rich);
+    assert.equal(rich.includes("repo"), false, rich);
   });
 
-  it("registers the aies-agents widget, renders records and clears when empty", async () => {
+  it("keeps the agents mini-overview inside the status panel without a duplicate widget", async () => {
     const host = createHost();
+    timers.setColumns(120);
     await host.start();
 
     observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", providerLabel: "openrouter", at: START_MS });
 
-    const widget = host.mountWidget("aies-agents");
-    assert.match(widget.text(), /Worker/u);
-    assert.match(widget.text(), /Qwen 3\.8 Flash|esperando/u, widget.text());
+    const panel = host.mountWidget("aies-panel", 120);
+    assert.match(panel.text(), /Agentes/u);
+    assert.match(panel.text(), /◆ Worker activo/u);
+    assert.equal(host.widgets.some((widget) => widget.key === "aies-agents"), false, "the panel is the one mini-overview");
 
     observatory.finish("worker-1", { status: "completed", at: START_MS + 20_000, result: "1 archivo modificado" });
-    assert.match(widget.text(), /✓ Worker/u, widget.text());
-
-    observatory.reset();
-    const last = host.widgets.at(-1);
-    assert.equal(last.key, "aies-agents");
-    assert.equal(last.cleared, true, "an empty registry must clear the widget");
+    assert.match(panel.text(), /✓ Worker completado/u, panel.text());
   });
 
   it("navigates /agents with the injected keybindings and closes on Escape", async () => {

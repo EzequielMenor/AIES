@@ -48,7 +48,6 @@ import { renderFooter, renderHeader } from "../aies-ui/footer.ts";
 import { PANEL_MIN_WIDTH, renderStatusPanel } from "../aies-ui/panel.ts";
 import { renderStatusReport } from "./status.ts";
 import {
-  renderAgentsMini,
   renderAgentsView,
   selectAgent,
   type AgentsSnapshot,
@@ -80,9 +79,6 @@ const ENTRY_TYPE = "aies-metrics";
 
 /** One widget per active child, above the editor. */
 const ACTIVITY_KEY = "aies-activity";
-
-/** The compact observatory widget: one row per session child. */
-const AGENTS_KEY = "aies-agents";
 
 /** The persistent status panel, rendered below the editor. */
 const PANEL_KEY = "aies-panel";
@@ -317,8 +313,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let footerTui: WidgetTui | undefined;
   let headerTui: WidgetTui | undefined;
   let widgetRegistered = false;
-  let agentsWidgetTui: WidgetTui | undefined;
-  let agentsWidgetRegistered = false;
   let panelWidgetTui: WidgetTui | undefined;
   let panelWidgetRegistered = false;
   let observatoryUnsubscribe: (() => void) | undefined;
@@ -415,7 +409,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       const unsubscribe = events.on(AGENTS_CHANNEL, (payload: unknown) => {
         guard(() => {
           state = applyAgents(state, asAgentSnapshot(payload));
-          syncAgentsWidget(ctx);
           requestRender();
         });
       });
@@ -857,63 +850,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   /**
-   * The compact observatory widget. It renders one row per session child through
-   * the same factory form as the activity card, appears only in the TUI and only
-   * while the registry has records, and clears itself when the registry empties.
-   * No timer of its own: the observatory subscription and the single runtime
-   * clock drive its repaints.
-   */
-  function syncAgentsWidget(ctx: ExtensionContext): void {
-    if (ctx.mode !== "tui") return;
-    const ui = uiOf(ctx);
-    if (!ui || typeof ui.setWidget !== "function") return;
-
-    const records = state.agents;
-    const wanted = Array.isArray(records) && records.length > 0;
-
-    if (wanted) {
-      if (agentsWidgetRegistered) return;
-      try {
-        ui.setWidget(AGENTS_KEY, (tui: unknown, theme: unknown) => {
-          agentsWidgetTui = tui as WidgetTui;
-          return {
-            render: (width: number): string[] =>
-              renderAgentsMini(uiSnapshot(), Date.now(), {
-                width,
-                paint: themePaint(theme as ThemeLike | undefined),
-              }),
-            invalidate() {},
-          };
-        });
-        agentsWidgetRegistered = true;
-      } catch {
-        agentsWidgetRegistered = false;
-        agentsWidgetTui = undefined;
-      }
-      return;
-    }
-
-    if (agentsWidgetRegistered) clearAgentsWidget(ui);
-  }
-
-  function clearAgentsWidget(ui: UiSurface): void {
-    try {
-      ui.setWidget?.(AGENTS_KEY, undefined);
-    } catch {
-      // Clearing a widget that cannot be cleared is not an error.
-    }
-    agentsWidgetRegistered = false;
-    agentsWidgetTui = undefined;
-  }
-
-  function clearAgents(ctx: ExtensionContext): void {
-    const ui = uiOf(ctx);
-    if (agentsWidgetRegistered && ui) clearAgentsWidget(ui);
-    agentsWidgetRegistered = false;
-    agentsWidgetTui = undefined;
-  }
-
-  /**
    * The persistent status panel, below the editor. It appears only while the
    * terminal is wide enough for `renderStatusPanel` to produce lines, is cleared
    * the moment it would render empty or the session ends, and re-renders in place
@@ -975,7 +911,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (typeof footerTui?.requestRender === "function") footerTui.requestRender();
     if (typeof headerTui?.requestRender === "function") headerTui.requestRender();
     if (widgetRegistered && typeof widgetTui?.requestRender === "function") widgetTui.requestRender();
-    if (agentsWidgetRegistered && typeof agentsWidgetTui?.requestRender === "function") agentsWidgetTui.requestRender();
     if (panelWidgetRegistered && typeof panelWidgetTui?.requestRender === "function") panelWidgetTui.requestRender();
   }
 
@@ -1078,9 +1013,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (widgetRegistered && typeof widgetTui?.requestRender === "function") {
       widgetTui.requestRender();
     }
-    if (agentsWidgetRegistered && typeof agentsWidgetTui?.requestRender === "function") {
-      agentsWidgetTui.requestRender();
-    }
     if (panelWidgetRegistered && typeof panelWidgetTui?.requestRender === "function") {
       panelWidgetTui.requestRender();
     }
@@ -1123,7 +1055,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
 
     syncActivity(ctx);
-    syncAgentsWidget(ctx);
     syncPanelWidget(ctx);
     armClock(ctx);
   }
@@ -1255,10 +1186,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       observatoryUnsubscribe?.();
       observatoryUnsubscribe = subscribeToAgentsBus(ctx);
 
-      // An ephemeral widget does not survive a session switch: drop the flag so
-      // the new session re-registers from its own (empty) registry.
-      agentsWidgetRegistered = false;
-      agentsWidgetTui = undefined;
       panelVisible = false;
 
       state = createState(now);
@@ -1385,7 +1312,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     guard(persist);
     guard(() => clearActivity(ctx));
-    guard(() => clearAgents(ctx));
     guard(() => clearPanel(ctx));
     guard(() => clearShell(ctx));
     stopClock();

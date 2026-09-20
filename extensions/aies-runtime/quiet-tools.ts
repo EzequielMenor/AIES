@@ -7,10 +7,11 @@
  * through the public `create*Tool(cwd)` factory, delegates `execute` to that
  * instance unchanged and adds only `renderCall`/`renderResult`.
  *
- * The native shell is kept on purpose (no `renderShell: "self"`), so Pi still
- * frames a failed result with its own error background. The projections live in
- * `extensions/aies-ui/tools.ts` and are pure; here they are adapted to Pi's
- * `Theme` and `Component` shapes.
+ * The tool owns its compact shell (`renderShell: "self"`), so successful calls do
+ * not inherit Pi's large colored result block. The projection itself paints
+ * failed rows with the semantic error color and preserves their real detail.
+ * Projections live in `extensions/aies-ui/tools.ts`; this file only adapts them
+ * to Pi's public `Theme` and `Component` shapes.
  *
  * Registration is idempotent per host: a reload or resume in the same working
  * directory registers nothing new and leaks no tool instance. Nothing here
@@ -108,6 +109,7 @@ export function registerQuietTools(
       label: name,
       description: original.description,
       parameters: original.parameters as never,
+      renderShell: "self",
 
       // Execution fidelity: the original instance runs, its result object is
       // returned untouched, and no content, details, usage or schema is edited.
