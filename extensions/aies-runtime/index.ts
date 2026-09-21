@@ -57,10 +57,12 @@ import {
 } from "../aies-ui/right-rail.ts";
 import { renderStatusReport } from "./status.ts";
 import {
+  AGENTS_MODAL_WIDTH,
   renderAgentsView,
   selectAgent,
   type AgentsSnapshot,
 } from "../aies-ui/agents.ts";
+import { MODAL_MIN_WIDTH } from "../aies-ui/modal.ts";
 import {
   isActivityVisible,
   renderActivityCard,
@@ -82,7 +84,7 @@ import { registerQuietTools } from "./quiet-tools.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
 import { getPermissionTelemetry } from "../aies-agents/permissions.ts";
 import { getContextGovernorTelemetry } from "../aies-agents/context-governor.ts";
-import { AGENTS_CHANNEL, type ObservatorySnapshot } from "../aies-agents/observatory.ts";
+import { AGENTS_CHANNEL, type AgentRecord, type ObservatorySnapshot } from "../aies-agents/observatory.ts";
 import { getActiveContinuationController } from "../aies-agents/autonomy/controller.ts";
 
 /** Custom entry type carrying the metrics snapshot across a resume. */
@@ -440,6 +442,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   // The host's git branch, read from the footer factory's public data provider.
   let branchReader: (() => string | null) | undefined;
   let observatoryUnsubscribe: (() => void) | undefined;
+  // The scoped repaint handle of the open `/agents` overlay. While it exists the
+  // `AGENTS_CHANNEL` subscriber repaints exactly that component; it is cleared on
+  // every close, cancel and failure path so no stale handle can be reused.
+  let activeAgentsOverlay: ActiveAgentsOverlay | undefined;
 
   // Whether this host accepted AIES's durable summary renderer. Only a host that
   // draws the card may skip the headline notify; everywhere else the notify is
@@ -546,6 +552,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       const unsubscribe = events.on(AGENTS_CHANNEL, (payload: unknown) => {
         guard(() => {
           state = applyAgents(state, asAgentSnapshot(payload));
+          // Repaint the open observatory through its own scoped handle, then the
+          // shell. A closed overlay has no handle and is never repainted.
+          activeAgentsOverlay?.requestRender();
           requestRender();
         });
       });
@@ -1434,6 +1443,8 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       // across sessions and a missing publisher degrades to an empty registry.
       observatoryUnsubscribe?.();
       observatoryUnsubscribe = subscribeToAgentsBus(ctx);
+      activeAgentsOverlay?.dispose();
+      activeAgentsOverlay = undefined;
 
       panelVisible = false;
       railHandle?.dispose();
@@ -1584,6 +1595,8 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     stopClock();
     observatoryUnsubscribe?.();
     observatoryUnsubscribe = undefined;
+    activeAgentsOverlay?.dispose();
+    activeAgentsOverlay = undefined;
   });
 
   pi.registerCommand("aies-status", {
@@ -1625,30 +1638,83 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
           return;
         }
 
-        let selected = 0;
-        await custom((tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => {
-          const keys = agentKeys(keybindings);
-          return {
-            render: (width: number): string[] =>
-              renderAgentsView(state.agents, selected, Date.now(), {
-                width,
-                paint: themePaint(theme as ThemeLike | undefined),
-              }),
-            handleInput: (data: string): void => {
-              if (keys.cancel(data)) {
-                done(null);
-                return;
+        // A reopen always starts on the first current record: no selection and no
+        // repaint handle survive a close.
+        let selectedId: string | undefined;
+        let disposed = false;
+        let handle: ActiveAgentsOverlay | undefined;
+
+        const pending = custom(
+          (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => {
+            const keys = agentKeys(keybindings);
+            const requestOverlay = (): void => {
+              try {
+                (tui as WidgetTui | undefined)?.requestRender?.();
+              } catch {
+                // A host without an explicit render request repaints on the next tick.
               }
-              const direction = keys.direction(data);
-              if (!direction) return;
-              selected = selectAgent(state.agents, selected, direction);
-              if (typeof (tui as WidgetTui)?.requestRender === "function") (tui as WidgetTui).requestRender?.();
+            };
+            const settle = (): void => {
+              if (disposed) return;
+              disposed = true;
+              if (handle && activeAgentsOverlay === handle) activeAgentsOverlay = undefined;
+              done(null);
+            };
+
+            // The scoped handle: while this overlay is open, the AGENTS_CHANNEL
+            // subscriber repaints exactly this component; a close clears it.
+            handle = { requestRender: requestOverlay, dispose: settle };
+            activeAgentsOverlay = handle;
+
+            return {
+              render: (width: number): string[] => {
+                const records = state.agents ?? [];
+                const index = selectedAgentIndex(records, selectedId);
+                const record = records[index];
+                if (record) selectedId = record.id;
+                return renderAgentsView(records, index, Date.now(), {
+                  width,
+                  paint: themePaint(theme as ThemeLike | undefined),
+                });
+              },
+              handleInput: (data: string): void => {
+                if (disposed) return;
+                if (keys.cancel(data) || keys.quit(data)) {
+                  settle();
+                  return;
+                }
+                const direction = keys.direction(data);
+                if (!direction) return;
+                const records = state.agents ?? [];
+                const next = selectAgent(records, selectedAgentIndex(records, selectedId), direction);
+                const record = records[next];
+                if (record) selectedId = record.id;
+                requestOverlay();
+              },
+              invalidate() {},
+            };
+          },
+          {
+            overlay: true,
+            overlayOptions: {
+              anchor: "center",
+              width: AGENTS_MODAL_WIDTH,
+              minWidth: MODAL_MIN_WIDTH,
+              maxHeight: "80%",
             },
-            invalidate() {},
-          };
-        });
+          },
+        );
+
+        try {
+          await pending;
+        } finally {
+          // Any close or failure path clears the scoped handle; `settle` already
+          // did it for Esc/q.
+          if (handle && activeAgentsOverlay === handle) activeAgentsOverlay = undefined;
+        }
       } catch {
         // A UI failure degrades to silence and never reaches the conversation.
+        activeAgentsOverlay = undefined;
       }
     },
   });
@@ -1691,11 +1757,27 @@ function singleLineText(value: unknown): string {
 interface AgentKeys {
   direction(data: string): "up" | "down" | "left" | "right" | undefined;
   cancel(data: string): boolean;
+  quit(data: string): boolean;
+}
+
+/** The scoped repaint handle of an open `/agents` overlay. */
+interface ActiveAgentsOverlay {
+  requestRender(): void;
+  dispose(): void;
+}
+
+/** The index of the selected record by id, or 0 when that record is gone. */
+function selectedAgentIndex(records: readonly AgentRecord[], selectedId: string | undefined): number {
+  if (!selectedId) return 0;
+  const index = records.findIndex((record) => record.id === selectedId);
+  return index >= 0 ? index : 0;
 }
 
 /**
  * Bind the `/agents` keys to the injected keybinding manager when the host
  * provides one, with raw arrow/escape fallbacks so a partial host still works.
+ * ↑/↓ (and j/k) move the selection; Esc and q close; the horizontal arrows stay
+ * compatible. There is no Enter action.
  */
 function agentKeys(keybindings: unknown): AgentKeys {
   const manager = keybindings as KeybindingsLike | undefined;
@@ -1712,12 +1794,13 @@ function agentKeys(keybindings: unknown): AgentKeys {
 
   return {
     direction: (data) => {
-      if (matches(data, "tui.select.up") || data === "\x1b[A") return "up";
-      if (matches(data, "tui.select.down") || data === "\x1b[B") return "down";
-      if (matches(data, "tui.editor.cursorLeft") || data === "\x1b[D") return "left";
-      if (matches(data, "tui.editor.cursorRight") || data === "\x1b[C") return "right";
+      if (matches(data, "tui.select.up") || data === "\x1b[A" || data === "k") return "up";
+      if (matches(data, "tui.select.down") || data === "\x1b[B" || data === "j") return "down";
+      if (matches(data, "tui.editor.cursorLeft") || data === "\x1b[D" || data === "h") return "left";
+      if (matches(data, "tui.editor.cursorRight") || data === "\x1b[C" || data === "l") return "right";
       return undefined;
     },
     cancel: (data) => matches(data, "tui.select.cancel") || data === "\x1b" || data === "escape",
+    quit: (data) => data === "q",
   };
 }

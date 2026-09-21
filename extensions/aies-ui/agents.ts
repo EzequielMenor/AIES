@@ -1,23 +1,28 @@
 /**
- * Agent Observatory renderers (AIES-010C / T4a).
+ * Agent Observatory renderers (AIES-010C / T4a, polished in the UI final pass / T3).
  *
  * One pure surface and one navigation helper:
  *
- * - `renderAgentsView` is the `/agents` screen: a selectable list plus the
- *   selected record's structured detail.
- * - `selectAgent` is the wrap-around index math T4b binds keys to.
+ * - `renderAgentsView` is the `/agents` modal: a responsive, framed observatory
+ *   with a selectable list and the selected record's structured detail.
+ * - `selectAgent` is the wrap-around index math the runtime binds keys to.
  *
  * Records are the observatory's immutable projection. A renderer never invents a
- * fact: a missing model, token count or cost is omitted. There is no transcript,
- * no reasoning and no child prose beyond the mechanical activity wording already
+ * fact: an unavailable model, token count, cost or file list renders as `—`, and
+ * a value is never estimated or recalculated. There is no transcript, no
+ * reasoning and no child prose beyond the mechanical activity wording already
  * carried by the record.
+ *
+ * The surface is pure and Pi-free. It composes content at the inner width the
+ * shared modal frame will give it and hands the result to `renderModalFrame`, so
+ * every line fits the host width and colors still come from the injected Paint.
  */
 
 import { shortPath, type AgentRecord } from "../aies-agents/observatory.ts";
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
+import { MODAL_FRAME_CHROME, MODAL_MAX_WIDTH, renderModalFrame, type ModalLine } from "./modal.ts";
 import { capitalize, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint } from "./paint.ts";
-import { sectionHeading } from "./panel.ts";
 import { GLYPH } from "./vocabulary.ts";
 
 /** Mechanical activity entries the detail block shows. */
@@ -27,6 +32,27 @@ const MAX_RECENT = 5;
 const MAX_DETAIL_PATHS = 3;
 
 const VIEW_LABEL_WIDTH = 13;
+
+/** The left column width of the wide, side-by-side layout. */
+const LIST_COLUMN_WIDTH = 30;
+
+/** The gutter between the list and the detail columns. */
+const COLUMN_GAP = 2;
+
+/** The deliberate frame width for the observatory: larger than the model picker. */
+export const AGENTS_MODAL_WIDTH = Math.min(MODAL_MAX_WIDTH, 88);
+
+/** The inner width at which the layout switches from stacked to side by side. */
+export const AGENTS_SPLIT_MIN_WIDTH = 68;
+
+/** How many list rows the bounded window shows before it scrolls around the selection. */
+export const AGENTS_VISIBLE_ROWS = 8;
+
+const AGENTS_TITLE = "AIES Agents";
+const AGENTS_HELP = "↑↓ j/k agente · esc/q cerrar";
+
+/** The one placeholder for telemetry the observatory did not measure. */
+const UNAVAILABLE = "—";
 
 export type AgentsSnapshot = AiesSnapshot & { readonly agents?: readonly AgentRecord[] };
 export type AgentDirection = "left" | "right" | "up" | "down" | (string & {});
@@ -82,7 +108,8 @@ function clampIndex(index: number, count: number): number {
 /**
  * Wrap-around navigation for the `/agents` list. `left`/`up` go back, `right`/`down`
  * go forward, an unknown direction keeps the current selection and an out-of-range
- * index is clamped first. Pure, so T4b can bind keys without logic in the component.
+ * index is clamped first. Pure, so the runtime can bind keys without logic in the
+ * component.
  */
 export function selectAgent(
   records: readonly AgentRecord[],
@@ -128,42 +155,143 @@ function changedPathsValue(paths: readonly unknown[]): string {
   return remaining > 0 ? `${shown}, … ${remaining} más` : shown;
 }
 
-function detailRows(record: AgentRecord, now: number, width: number): string[] {
+function textValue(value: unknown): string {
+  return typeof value === "string" ? singleLine(value) : "";
+}
+
+/** Tokens as measured, or empty when the observatory has no positive sample. */
+function tokensValue(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? formatTokens(value) : "";
+}
+
+/** Cost exactly as the observatory reported it; never recalculated. */
+function costValue(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? formatCost(value) : "";
+}
+
+function countValue(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? String(value) : "";
+}
+
+/**
+ * The selected record's structured detail. Every telemetry row is always
+ * present and an unmeasured value renders as `—`: a missing sample must not look
+ * like a fact the renderer omitted.
+ */
+function detailLines(record: AgentRecord, now: number, width: number): ModalLine[] {
   const rows: string[] = [];
-  const add = (label: string, value: string | null | undefined): void => {
-    const text = singleLine(String(value ?? ""));
-    if (text) rows.push(`  ${label.padEnd(VIEW_LABEL_WIDTH)}${text}`);
+  const add = (label: string, value: string): void => {
+    const text = singleLine(value);
+    rows.push(`  ${label.padEnd(VIEW_LABEL_WIDTH)}${text || UNAVAILABLE}`);
   };
 
-  add("modelo", record.modelLabel);
-  add("proveedor", record.providerLabel);
-  const elapsed = elapsedBetween(record, now);
-  if (elapsed) add("tiempo", elapsed);
-  if (typeof record.totalTokens === "number" && record.totalTokens > 0) add("tokens", formatTokens(record.totalTokens));
-  if (typeof record.cost === "number") add("coste", formatCost(record.cost));
-  if (typeof record.toolCount === "number" && record.toolCount > 0) add("herramientas", String(record.toolCount));
-
-  const paths = Array.isArray(record.changedPaths) ? record.changedPaths : [];
-  const changed = changedPathsValue(paths);
-  if (changed) add("archivos", changed);
+  add("modelo", textValue(record.modelLabel ?? record.modelId));
+  add("proveedor", textValue(record.providerLabel ?? record.providerId));
+  add("tiempo", elapsedBetween(record, now) ?? "");
+  add("tokens", tokensValue(record.totalTokens));
+  add("coste", costValue(record.cost));
+  add("herramientas", countValue(record.toolCount));
+  add("archivos", changedPathsValue(Array.isArray(record.changedPaths) ? record.changedPaths : []));
+  add("resultado", textValue(record.result));
 
   const activities = Array.isArray(record.activities) ? record.activities.slice(0, MAX_RECENT) : [];
-  if (activities.length) {
+  if (activities.length > 0) {
     rows.push("  actividad reciente");
     for (const activity of activities) {
-      const text = singleLine(activity?.text ?? "");
+      const text = textValue(activity?.text);
       if (text) rows.push(`    ${text}`);
     }
   }
 
-  add("resultado", record.result);
-  return rows.map((row) => hardClip(row, width));
+  return rows.map((text) => ({ text: hardClip(text, width), color: "text" as const }));
 }
 
 /**
- * The `/agents` screen: a selectable list of records followed by the selected
- * record's structured detail. Every line is clipped to the width. An empty run
- * still answers with the title and the key hint.
+ * The positions the bounded list window renders: a slice centred on the
+ * selection and never larger than `max`, so a long session still reads as a
+ * small, stable surface.
+ */
+function listWindow(count: number, index: number, max: number): number[] {
+  if (count <= 0) return [];
+  const size = Math.max(1, Math.min(max, count));
+  let start = index - Math.floor(size / 2);
+  if (start < 0) start = 0;
+  if (start + size > count) start = count - size;
+  const positions: number[] = [];
+  for (let position = start; position < start + size; position += 1) positions.push(position);
+  return positions;
+}
+
+/** The selectable list rows, each clipped to the column width. */
+function listLines(records: readonly AgentRecord[], index: number, width: number): ModalLine[] {
+  return listWindow(records.length, index, AGENTS_VISIBLE_ROWS).map((position) => {
+    const record = records[position];
+    const marker = position === index ? "▸" : " ";
+    const text = hardClip(`${marker} ${statusGlyph(record)} ${agentLabel(record, position)}  ${record.status}`, width);
+    return { text, color: position === index ? "selection" : "dim" };
+  });
+}
+
+/** Join two bounded columns row by row into single, width-safe rows. */
+function composeColumns(
+  left: readonly ModalLine[],
+  right: readonly ModalLine[],
+  leftWidth: number,
+  gap: number,
+  totalWidth: number,
+): ModalLine[] {
+  const rows: ModalLine[] = [];
+  const count = Math.max(left.length, right.length);
+  for (let index = 0; index < count; index += 1) {
+    const cell = hardClip(left[index]?.text ?? "", leftWidth);
+    const padded = cell.length >= leftWidth ? cell : `${cell}${" ".repeat(leftWidth - cell.length)}`;
+    rows.push({ text: hardClip(`${padded}${" ".repeat(gap)}${right[index]?.text ?? ""}`, totalWidth), color: "text" });
+  }
+  return rows;
+}
+
+/**
+ * The unframed `/agents` content. A wide inner width uses side-by-side columns
+ * (list plus detail); anything narrower stacks a bounded list above the detail.
+ * Every returned line is already clipped to `innerWidth`.
+ */
+function renderAgentsContent(
+  records: readonly AgentRecord[],
+  selectedIndex: number,
+  now: number,
+  innerWidth: number,
+): ModalLine[] {
+  const list = Array.isArray(records) ? records : [];
+  if (list.length === 0) {
+    return [{ text: hardClip("  sin agentes en esta sesión", innerWidth), color: "dim" }];
+  }
+
+  const index = clampIndex(selectedIndex, list.length);
+  const record = list[index];
+
+  if (innerWidth >= AGENTS_SPLIT_MIN_WIDTH) {
+    const listWidth = Math.min(LIST_COLUMN_WIDTH, Math.max(1, innerWidth - COLUMN_GAP - 1));
+    const detailWidth = Math.max(1, innerWidth - listWidth - COLUMN_GAP);
+    return composeColumns(
+      listLines(list, index, listWidth),
+      detailLines(record, now, detailWidth),
+      listWidth,
+      COLUMN_GAP,
+      innerWidth,
+    );
+  }
+
+  return [
+    ...listLines(list, index, innerWidth),
+    { text: "", color: "text" },
+    ...detailLines(record, now, innerWidth),
+  ];
+}
+
+/**
+ * The `/agents` modal: a centered, bounded frame around the responsive content.
+ * Every line fits the passed width; the frame degrades to clipped plain rows
+ * below the smallest drawable width instead of overdrawing.
  */
 export function renderAgentsView(
   records: readonly AgentRecord[],
@@ -172,26 +300,17 @@ export function renderAgentsView(
   options: AgentsOptions = {},
 ): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
-  const width = positiveWidth(options.width) ?? 80;
-  const list = Array.isArray(records) ? records : [];
+  const available = positiveWidth(options.width) ?? 80;
+  const frameWidth = Math.min(available, AGENTS_MODAL_WIDTH);
+  const innerWidth = Math.max(1, frameWidth - MODAL_FRAME_CHROME);
+  const lines = renderAgentsContent(records, selectedIndex, now, innerWidth);
 
-  const lines: string[] = [sectionHeading(hardClip("AIES Agents", width), paint, "accent")];
-  const hint = paint.fg("dim", hardClip("← → agente · esc cerrar", width));
-
-  if (list.length === 0) {
-    lines.push(paint.fg("dim", hardClip("  sin agentes en esta sesión", width)));
-    lines.push(hint);
-    return lines;
-  }
-
-  const index = clampIndex(selectedIndex, list.length);
-  list.forEach((record, position) => {
-    const row = hardClip(`${position === index ? "▸" : " "} ${statusGlyph(record)} ${agentLabel(record, position)}  ${record.status}`, width);
-    lines.push(paint.fg(position === index ? "selection" : "dim", row));
+  return renderModalFrame({
+    title: AGENTS_TITLE,
+    lines,
+    help: AGENTS_HELP,
+    width: available,
+    preferredWidth: AGENTS_MODAL_WIDTH,
+    paint,
   });
-
-  lines.push("");
-  lines.push(...detailRows(list[index], now, width).map((row) => paint.fg("text", row)));
-  lines.push(hint);
-  return lines;
 }

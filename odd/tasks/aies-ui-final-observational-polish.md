@@ -58,11 +58,11 @@ Do not change routing, autonomy, permissions, context governor, Linear, Verify p
   - GREEN: public `TUI.terminal.rows` is read on each widget render and feeds a pure bounded trailing flow spacer; short heights collapse to zero and preserve a 6-row editor-band reserve.
   - Checks: `node --test tests/empty-state.test.mjs tests/aies-ui-seam.test.mjs` → 38/38 pass; parent repeated the exact command → 38/38 pass.
 
-- [ ] **T3 — `/agents` observatory modal**
-  - Route: delegated writer; pure renderer + runtime adapter + focused tests.
-  - RED: tests cover modal open/close, ↑↓/j/k, Esc/q, correct and missing stats, selected-agent activity, live update without selection loss, completed final activity, responsive horizontal/vertical layouts, no reasoning/model call/sendMessage, and clean reopen.
-  - GREEN: larger centered overlay, event-driven repaint handle, real observatory-only data, bounded activity rows, and responsive list/detail composition.
-  - Checks: focused agent-view, observatory UI/bridge, runtime seam suites.
+- [x] **T3 — `/agents` observatory modal**
+  - Route: delegated writer `mubn6fgh-8-b7im`; pure renderer + runtime adapter + focused tests.
+  - RED observed: missing modal-width export plus 5 runtime failures covering overlay options, j/k, close/reopen cleanup, live repaint/selection, and no-message paths.
+  - GREEN: shared-frame 88-column centered overlay; wide list/detail and narrow stacked layouts; real stats with `—`; bounded retained mechanical activity; selected-id preservation; scoped `AGENTS_CHANNEL` repaint handle; ↑↓/j/k and Esc/q.
+  - Checks: focused agent-view + observatory UI → 34/34 pass; adjacent bridge/observability → 60/60 pass; parent repeated the focused suite → 34/34 pass.
 
 - [ ] **T4 — Repository validation and design detector**
   - Run focused tests, full test suite, isolation suite, shell syntax checks, and one Impeccable detector pass over changed UI targets.
@@ -89,8 +89,9 @@ Do not change routing, autonomy, permissions, context governor, Linear, Verify p
 - Mapping complete via `gentle-ai-explore`: current observatory/event bridge is sufficient; missing seams are modal framing, `/agents` overlay mode, active-view repaint, responsive layout, and height input for empty-state spacing.
 - Pi 0.87 docs confirm public overlays, `overlayOptions`, injected keybindings, `tui.requestRender()`, and component invalidation. Repository dependency compatibility must remain valid with locked Pi 0.85.1 APIs already used by `/aies-models`.
 - T1 complete and independently verified: new `extensions/aies-ui/modal.ts` shared frame; `/aies-models` uses a centered numeric preferred width and existing public overlay API. Focused tests pass 60/60. The temporary `node_modules` symlink used only for worktree test resolution was removed after the check. A cwd incident was diagnosed read-only: no T1 changes leaked into the dirty main worktree.
-- T2 complete: the Pi-free renderer computes a height-relative spacer, while the existing above-editor widget reads public `TUI.terminal.rows` per render. Focused tests pass 38/38, including heights 6–120 and live resize 48→14. Eligibility, transcript, context, persistence, and widget architecture remain unchanged.
+- T2 complete and independently verified: the Pi-free renderer computes a height-relative spacer, while the existing above-editor widget reads public `TUI.terminal.rows` per render. Focused tests pass 38/38, including heights 6–120 and live resize 48→14. Eligibility, transcript, context, persistence, and widget architecture remain unchanged.
+- T3 complete: `/agents` now uses the shared frame and public overlay API, adapts between side-by-side and stacked layouts, renders only existing Observatory fields/activity, and repaints through the existing event bus with no polling or model calls. Focused tests pass 34/34; adjacent observability tests pass 60/60.
 
 ## Next step
 
-Commit T2, then implement T3 with regression-first focused tests.
+Commit T3, independently verify it, then run the T4 repository gates and one Impeccable detector pass.

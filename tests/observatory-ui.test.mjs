@@ -207,11 +207,19 @@ function createHost(overrides = {}) {
       },
       select: async () => undefined,
       confirm: async () => false,
-      custom(factory) {
+      custom(factory, customOptions) {
         return new Promise((resolve) => {
-          const tui = { requestRender() { renderRequests.custom += 1; } };
+          // A per-overlay request counter, so a closed overlay can be proven to
+          // stop repainting even while the shared counter keeps moving.
+          const requests = { count: 0 };
+          const tui = {
+            requestRender() {
+              requests.count += 1;
+              renderRequests.custom += 1;
+            },
+          };
           const component = factory(tui, plainTheme, keybindings, (result) => resolve(result));
-          customComponents.push({ component, tui });
+          customComponents.push({ component, tui, options: customOptions, requests });
         });
       },
     },
@@ -408,31 +416,137 @@ describe("observatory UI seam", () => {
     assert.match(panel.text(), /✓ Worker completado/u, panel.text());
   });
 
-  it("navigates /agents with the injected keybindings and closes on Escape", async () => {
+  it("opens /agents as a centered, larger, bounded overlay", async () => {
+    const host = createHost();
+    await host.start();
+    observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
+
+    const pending = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+
+    const overlay = host.customComponents.at(-1);
+    assert.ok(overlay, "the /agents command must open a custom component");
+    assert.equal(overlay.options?.overlay, true, "the modal must be an overlay");
+    assert.equal(overlay.options?.overlayOptions?.anchor, "center", "the modal must be centered");
+    assert.equal(typeof overlay.options?.overlayOptions?.width, "number", "a bounded numeric width");
+    assert.ok(overlay.options.overlayOptions.width > 60, "larger than the tight /aies-models surface");
+    assert.equal(typeof overlay.options?.overlayOptions?.minWidth, "number", "a bounded numeric min width");
+    assert.ok(overlay.options.overlayOptions.maxHeight, "a bounded height Pi can clamp on a short terminal");
+
+    overlay.component.handleInput("\x1b");
+    await pending;
+  });
+
+  it("moves the /agents selection with ↑↓ and j/k and never acts on Enter", async () => {
     const host = createHost();
     await host.start();
     observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
     observatory.begin({ role: "verify", modelLabel: "Claude 4", at: START_MS + 1_000 });
 
-    assert.ok(host.commands.has("agents"), "/agents is not registered");
     const pending = host.commands.get("agents").handler("", host.ctx);
     await Promise.resolve();
-
     const { component } = host.customComponents.at(-1);
-    assert.match(component.render(80).join("\n"), /Qwen 3\.8 Flash/u);
 
-    component.handleInput("\x1b[A"); // up wraps to the last record
-    assert.match(component.render(80).join("\n"), /Claude 4/u);
-    assert.equal(component.render(80).join("\n").includes("Qwen 3.8 Flash"), false);
+    assert.match(component.render(100).join("\n"), /Qwen 3\.8 Flash/u);
 
-    component.handleInput("\x1b[B"); // down wraps back to the first record
-    assert.match(component.render(80).join("\n"), /Qwen 3\.8 Flash/u);
+    component.handleInput("\x1b[B"); // down arrow -> verify
+    assert.match(component.render(100).join("\n"), /Claude 4/u);
 
-    assert.ok(host.renderRequests.custom > 0, "navigation must request a render");
+    component.handleInput("k"); // vim up -> worker
+    assert.match(component.render(100).join("\n"), /Qwen 3\.8 Flash/u);
 
-    component.handleInput("\x1b"); // escape closes
+    component.handleInput("j"); // vim down -> verify
+    assert.match(component.render(100).join("\n"), /Claude 4/u);
+
+    component.handleInput("\x1b[A"); // up arrow -> worker
+    assert.match(component.render(100).join("\n"), /Qwen 3\.8 Flash/u);
+
+    component.handleInput("\r"); // Enter is not an action
+    assert.match(component.render(100).join("\n"), /Qwen 3\.8 Flash/u);
+    assert.equal(host.customComponents.length, 1, "Enter must not settle the modal");
+
+    component.handleInput("\x1b");
     await pending;
-    assert.equal(host.customComponents.length, 1);
+  });
+
+  it("closes /agents on Esc and q, clears the repaint handle and reopens cleanly", async () => {
+    const host = createHost();
+    await host.start();
+    observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
+    observatory.begin({ role: "verify", modelLabel: "Claude 4", at: START_MS + 1_000 });
+
+    const first = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const firstOverlay = host.customComponents.at(-1);
+    firstOverlay.component.handleInput("j"); // select verify
+    assert.match(firstOverlay.component.render(100).join("\n"), /Claude 4/u);
+    firstOverlay.component.handleInput("\x1b"); // Esc
+    await first;
+
+    const closedRequests = firstOverlay.requests.count;
+    observatory.observe("worker-1", "edit", { path: "src/app.ts" }, START_MS + 5);
+    assert.equal(firstOverlay.requests.count, closedRequests, "a closed overlay must not repaint");
+
+    const second = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const secondOverlay = host.customComponents.at(-1);
+    assert.notEqual(secondOverlay, firstOverlay, "a reopen is a fresh overlay, not the closed one");
+    assert.match(secondOverlay.component.render(100).join("\n"), /Qwen 3\.8 Flash/u, "reopen starts at the first record");
+    secondOverlay.component.handleInput("q"); // q closes too
+    await second;
+  });
+
+  it("repaints the open /agents overlay from the event flow without losing the selection", async () => {
+    const host = createHost();
+    await host.start();
+    observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
+    observatory.begin({ role: "verify", modelLabel: "Claude 4", at: START_MS + 1_000 });
+
+    const pending = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const overlay = host.customComponents.at(-1);
+    overlay.component.handleInput("j"); // select verify
+    assert.match(overlay.component.render(100).join("\n"), /Claude 4/u);
+
+    const before = overlay.requests.count;
+    observatory.observe("worker-1", "edit", { path: "src/app.ts" }, START_MS + 5);
+    assert.ok(overlay.requests.count > before, "the open overlay repaints on AGENTS_CHANNEL");
+
+    const view = overlay.component.render(100).join("\n");
+    assert.match(view, /Claude 4/u, "the selection survives the update");
+    assert.equal(view.includes("Qwen 3.8 Flash"), false, "the selected detail did not change");
+
+    overlay.component.handleInput("\x1b");
+    await pending;
+  });
+
+  it("shows the empty state inside the /agents modal", async () => {
+    const host = createHost();
+    await host.start();
+
+    const pending = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const overlay = host.customComponents.at(-1);
+    assert.match(overlay.component.render(100).join("\n"), /sin agentes en esta sesión/u);
+    overlay.component.handleInput("\x1b");
+    await pending;
+  });
+
+  it("keeps a completed agent's retained activity and result in /agents", async () => {
+    const host = createHost();
+    await host.start();
+    observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
+    observatory.observe("worker-1", "edit", { path: "src/app.ts" }, START_MS + 1);
+    observatory.finish("worker-1", { status: "completed", result: "1 archivo modificado", at: START_MS + 2 });
+
+    const pending = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const overlay = host.customComponents.at(-1);
+    const view = overlay.component.render(100).join("\n");
+    assert.match(view, /src\/app\.ts/u);
+    assert.match(view, /1 archivo modificado/u);
+    overlay.component.handleInput("\x1b");
+    await pending;
   });
 
   it("falls back to text for /agents outside the TUI without touching custom or widgets", async () => {
@@ -775,7 +889,10 @@ describe("observatory UI seam", () => {
     await host.commands.get("aies-status").handler("", host.ctx);
     const pendingAgents = host.commands.get("agents").handler("", host.ctx);
     await Promise.resolve();
-    host.customComponents.at(-1).component.handleInput("\x1b");
+    const overlay = host.customComponents.at(-1).component;
+    overlay.handleInput("j");
+    overlay.handleInput("k");
+    overlay.handleInput("q");
     await pendingAgents;
     await host.emit("session_shutdown", { reason: "quit" });
 

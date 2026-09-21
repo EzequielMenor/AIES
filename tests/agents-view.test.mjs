@@ -1,18 +1,24 @@
 /**
- * AIES-010C / T4a Agent Observatory renderer checks.
+ * AIES T3 Agent Observatory renderer checks.
  *
- * `renderAgentsView` is the `/agents` screen and `selectAgent` is the pure
- * navigation helper T4b binds keys to. Both are pure: records in, lines out,
- * no state, no Pi, `PLAIN_PAINT`.
+ * `renderAgentsView` is the `/agents` modal screen and `selectAgent` is the pure
+ * navigation helper the runtime binds keys to. Both are pure: records in, lines
+ * out, no state, no Pi, `PLAIN_PAINT`.
  *
- * Assertions are structural (selection, which facts appear, clipping) so copy
- * can evolve without breaking the suite.
+ * Assertions are structural (selection, which facts appear, clipping, responsive
+ * composition) so copy can evolve without giant snapshot tests.
  */
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { renderAgentsView, selectAgent } from "../extensions/aies-ui/agents.ts";
+import {
+  AGENTS_MODAL_WIDTH,
+  AGENTS_SPLIT_MIN_WIDTH,
+  AGENTS_VISIBLE_ROWS,
+  renderAgentsView,
+  selectAgent,
+} from "../extensions/aies-ui/agents.ts";
 
 const T0 = 1_700_000_000_000;
 
@@ -39,6 +45,11 @@ function record(overrides = {}) {
   };
 }
 
+/** One line per record, so a bounded list is easy to count. */
+function listRowCount(lines) {
+  return lines.filter((line) => /#\d+/u.test(line)).length;
+}
+
 describe("selectAgent", () => {
   const list = [record({ id: "a" }), record({ id: "b" }), record({ id: "c" })];
 
@@ -59,7 +70,7 @@ describe("selectAgent", () => {
 });
 
 describe("renderAgentsView", () => {
-  it("renders the title, the selectable list, the detail block and the hint", () => {
+  it("frames the list, detail and key hint as one bounded AIES modal", () => {
     const list = [
       record({
         id: "worker-1",
@@ -76,21 +87,168 @@ describe("renderAgentsView", () => {
       record({ id: "verify-1", role: "verify", status: "completed", startedAt: T0, finishedAt: T0 + 18_000, result: "PASS" }),
     ];
 
-    const lines = renderAgentsView(list, 0, T0 + 31_000, { width: 80 });
+    const lines = renderAgentsView(list, 0, T0 + 31_000, { width: 100 });
     const text = lines.join("\n");
 
-    assert.match(lines[0], /AIES Agents/u);
+    assert.match(text, /AIES Agents/u);
     assert.match(text, /Worker #1/u);
     assert.match(text, /Verify #1/u);
-    assert.match(text, /Qwen 3.8 Flash/u);
+    assert.match(text, /Qwen 3\.8 Flash/u);
     assert.match(text, /openrouter/u);
     assert.match(text, /34k/u);
     assert.match(text, /\$0\.03/u);
     assert.match(text, /calculator\.js/u);
     assert.match(text, /actividad reciente/u);
     assert.match(text, /Editando calculator\.js/u);
-    assert.match(text, /← → agente · esc cerrar/u);
-    for (const line of lines) assert.ok(line.length <= 80, line);
+    assert.match(text, /esc\/q cerrar/u);
+    // The frame is bounded by the shared modal width and stays centered.
+    assert.ok(lines[0].startsWith(" "), lines[0]);
+    assert.ok(lines[0].includes("╭"), lines[0]);
+    assert.ok(modalWidthOf(lines) <= AGENTS_MODAL_WIDTH, `frame too wide: ${modalWidthOf(lines)}`);
+    for (const line of lines) assert.ok(line.length <= 100, line);
+  });
+
+  it("renders the empty state inside the modal without inventing facts", () => {
+    const lines = renderAgentsView([], 0, T0, { width: 100 });
+    const text = lines.join("\n");
+    assert.match(text, /AIES Agents/u);
+    assert.match(text, /sin agentes en esta sesión/u);
+    assert.match(text, /esc\/q cerrar/u);
+    for (const line of lines) assert.ok(line.length <= 100, line);
+  });
+
+  it("shows real telemetry and an em dash for every unavailable field", () => {
+    const rich = renderAgentsView(
+      [
+        record({
+          id: "worker-1",
+          role: "worker",
+          status: "completed",
+          startedAt: T0,
+          finishedAt: T0 + 31_000,
+          modelLabel: "Qwen 3.8 Flash",
+          providerLabel: "openrouter",
+          totalTokens: 34_000,
+          cost: 0.03,
+          toolCount: 4,
+          changedPaths: ["src/calculator.js"],
+          result: "1 archivo modificado",
+        }),
+      ],
+      0,
+      T0 + 31_000,
+      { width: 100 },
+    ).join("\n");
+
+    assert.match(rich, /modelo\s+Qwen 3\.8 Flash/u);
+    assert.match(rich, /proveedor\s+openrouter/u);
+    assert.match(rich, /tiempo\s+00:31/u);
+    assert.match(rich, /tokens\s+34k/u);
+    assert.match(rich, /coste\s+\$0\.03/u);
+    assert.match(rich, /herramientas\s+4/u);
+    assert.match(rich, /archivos\s+src\/calculator\.js/u);
+    assert.match(rich, /resultado\s+1 archivo modificado/u);
+
+    const bare = renderAgentsView([record({ id: "worker-1", role: "worker", status: "running" })], 0, T0, {
+      width: 100,
+    }).join("\n");
+    for (const label of ["modelo", "proveedor", "tokens", "coste", "herramientas", "archivos", "resultado"]) {
+      const row = bare.split("\n").find((line) => line.includes(label));
+      assert.ok(row, `missing ${label} row:\n${bare}`);
+      assert.match(row, /—/u, `${label} must be — when unavailable: ${row}`);
+    }
+  });
+
+  it("keeps the completed agent's retained activity and result", () => {
+    const lines = renderAgentsView(
+      [
+        record({
+          id: "worker-1",
+          role: "worker",
+          status: "completed",
+          startedAt: T0,
+          finishedAt: T0 + 2_000,
+          activities: [{ tool: "edit", text: "Editando src/app.ts", at: T0 + 1 }],
+          result: "hecho",
+        }),
+      ],
+      0,
+      T0 + 3_000,
+      { width: 100 },
+    ).join("\n");
+
+    assert.match(lines, /Editando src\/app\.ts/u);
+    assert.match(lines, /resultado\s+hecho/u);
+  });
+
+  it("composes list and detail side by side on a wide terminal", () => {
+    const list = [
+      record({ id: "worker-1", role: "worker", status: "running", modelLabel: "Qwen 3.8 Flash" }),
+      record({ id: "verify-1", role: "verify", status: "completed", startedAt: T0, finishedAt: T0 + 1_000, modelLabel: "Claude 4" }),
+    ];
+    const lines = renderAgentsView(list, 0, T0 + 5_000, { width: 100 });
+    const text = lines.join("\n");
+
+    // One row carries both the selected list entry and the detail label.
+    assert.ok(
+      lines.some((line) => line.includes("Worker #1") && line.includes("modelo")),
+      `expected a side-by-side row:\n${text}`,
+    );
+    assert.ok(AGENTS_SPLIT_MIN_WIDTH <= 100 - 4, "the wide fixture must clear the split threshold");
+  });
+
+  it("stacks a bounded list above the detail on a narrow terminal", () => {
+    const list = [
+      record({ id: "worker-1", role: "worker", status: "running", modelLabel: "Qwen 3.8 Flash" }),
+      record({ id: "verify-1", role: "verify", status: "completed", startedAt: T0, finishedAt: T0 + 1_000, modelLabel: "Claude 4" }),
+    ];
+    const lines = renderAgentsView(list, 1, T0 + 5_000, { width: 50 });
+    const text = lines.join("\n");
+
+    assert.ok(lines.some((line) => line.includes("Verify #1")), text);
+    assert.ok(lines.some((line) => line.includes("modelo")), text);
+    assert.equal(
+      lines.some((line) => line.includes("Verify #1") && line.includes("modelo")),
+      false,
+      `narrow layout must not be side by side:\n${text}`,
+    );
+    assert.match(text, /Claude 4/u);
+  });
+
+  it("bounds the narrow list to a window that still contains the selection", () => {
+    const list = Array.from({ length: 14 }, (_, index) =>
+      record({ id: `worker-${index + 1}`, role: "worker", status: "running" }),
+    );
+    const lines = renderAgentsView(list, 13, T0, { width: 50 });
+    assert.ok(listRowCount(lines) <= AGENTS_VISIBLE_ROWS, `list not bounded: ${listRowCount(lines)}`);
+    assert.match(lines.join("\n"), /Worker #14/u, "the selected record must still be visible");
+  });
+
+  it("moves the detail block with the selection", () => {
+    const list = [
+      record({ id: "worker-1", role: "worker", status: "running", modelLabel: "Qwen 3.8 Flash" }),
+      record({ id: "verify-1", role: "verify", status: "completed", startedAt: T0, finishedAt: T0 + 1_000, modelLabel: "Claude 4" }),
+    ];
+
+    const first = renderAgentsView(list, 0, T0 + 5_000, { width: 100 }).join("\n");
+    const second = renderAgentsView(list, 1, T0 + 5_000, { width: 100 }).join("\n");
+    assert.match(first, /Qwen 3\.8 Flash/u);
+    assert.equal(first.includes("Claude 4"), false, first);
+    assert.match(second, /Claude 4/u);
+  });
+
+  it("clips every line and never renders a transcript or reasoning", () => {
+    const list = [record({ id: "worker-1", role: "worker", status: "running", currentActivity: "Ejecutando pnpm test" })];
+    for (const width of [18, 40, 80, 200]) {
+      for (const line of renderAgentsView(list, 0, T0, { width })) {
+        assert.ok(line.length <= width, `width ${width}: ${line}`);
+      }
+    }
+
+    const text = renderAgentsView(list, 0, T0, { width: 120 }).join("\n").toLowerCase();
+    for (const forbidden of ["reasoning", "transcript", "chain-of-thought", "prompt del hijo"]) {
+      assert.equal(text.includes(forbidden), false, text);
+    }
   });
 
   it("bounds the archivos row to short paths with a remainder count", () => {
@@ -111,52 +269,26 @@ describe("renderAgentsView", () => {
       }),
     ];
 
-    const text = renderAgentsView(list, 0, T0 + 6_000, { width: 200 }).join("\n");
+    const text = renderAgentsView(list, 0, T0 + 6_000, { width: 70 }).join("\n");
     const row = text.split("\n").find((line) => line.includes("archivos"));
     assert.ok(row, text);
 
-    // The detail row never leaks the absolute home prefix.
     assert.equal(row.includes("/Users/"), false, row);
     assert.equal(row.includes("/home/"), false, row);
-    // It keeps the same two-segment short form the rest of the UI uses.
     assert.match(row, /src\/round\.js/u);
     assert.match(row, /src\/app\.ts/u);
-    // Five paths collapse to a few plus the remainder count.
-    assert.match(row, /… 2 más$/u);
-    // And it stays a single clipped line at a narrow width.
+    assert.match(row, /… 2 más/u);
     for (const line of renderAgentsView(list, 0, T0 + 6_000, { width: 60 })) {
       assert.ok(line.length <= 60, line);
     }
   });
-
-  it("moves the detail block with the selection", () => {
-    const list = [
-      record({ id: "worker-1", role: "worker", status: "running", modelLabel: "Qwen 3.8 Flash" }),
-      record({ id: "verify-1", role: "verify", status: "completed", startedAt: T0, finishedAt: T0 + 1_000, modelLabel: "Claude 4" }),
-    ];
-
-    const first = renderAgentsView(list, 0, T0 + 5_000, { width: 80 }).join("\n");
-    const second = renderAgentsView(list, 1, T0 + 5_000, { width: 80 }).join("\n");
-    assert.match(first, /Qwen 3\.8 Flash/u);
-    assert.equal(first.includes("Claude 4"), false, first);
-    assert.match(second, /Claude 4/u);
-  });
-
-  it("clips every line and never renders a transcript or reasoning", () => {
-    const list = [record({ id: "worker-1", role: "worker", status: "running", currentActivity: "Ejecutando pnpm test" })];
-    const lines = renderAgentsView(list, 0, T0, { width: 20 });
-    for (const line of lines) assert.ok(line.length <= 20, line);
-
-    const text = lines.join("\n").toLowerCase();
-    assert.equal(text.includes("reasoning"), false, text);
-    assert.equal(text.includes("transcript"), false, text);
-    assert.equal(text.includes("chain-of-thought"), false, text);
-  });
-
-  it("handles an empty list", () => {
-    const lines = renderAgentsView([], 0, T0, { width: 80 });
-    const text = lines.join("\n");
-    assert.match(text, /AIES Agents/u);
-    assert.match(text, /← → agente · esc cerrar/u);
-  });
 });
+
+/** The visible width of the framed box: everything between the first `╭` and `╮`. */
+function modalWidthOf(lines) {
+  const top = lines.find((line) => line.includes("╭"));
+  if (!top) return 0;
+  const start = top.indexOf("╭");
+  const end = top.lastIndexOf("╮");
+  return end > start ? end - start + 1 : 0;
+}
