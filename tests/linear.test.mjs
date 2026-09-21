@@ -46,6 +46,8 @@ import {
   resolveTargetStatus,
 } from "../extensions/aies-agents/linear/policy.ts";
 import { createTicketTool } from "../extensions/aies-agents/linear/tool.ts";
+import { registerTicketCommand } from "../extensions/aies-agents/linear/command.ts";
+import { ticketLoadPrompt, ticketRunPrompt } from "../extensions/aies-agents/linear/prompt.ts";
 import {
   FakeLinearTransport,
   HostMediatedLinearTransport,
@@ -948,5 +950,74 @@ Ensure timeout is bounded
       assert.equal(retried.directive.tool, "get_issue");
       assert.deepEqual(retried.directive.args, { id: "EZE-423" });
     });
+  });
+});
+
+describe("10. Parent replay prompts stay compact", () => {
+  it("keeps the load prompt to one short, safe instruction", () => {
+    const prompt = ticketLoadPrompt("EZE-101");
+    assert.equal(prompt.includes("\n"), false, `the load prompt must be one instruction:\n${prompt}`);
+    assert.ok(prompt.length <= 320, `load prompt is ${prompt.length} chars:\n${prompt}`);
+    assert.match(prompt, /aies_ticket/u);
+    assert.match(prompt, /action: "load"/u);
+    assert.match(prompt, /mcp/u);
+    assert.match(prompt, /remote/u);
+    assert.match(prompt, /Do not edit files/u);
+  });
+
+  it("keeps the run prompt compact and preserves the workflow continuation", () => {
+    const prompt = ticketRunPrompt("EZE-101");
+    assert.equal(prompt.includes("\n"), false, `the run prompt must be one instruction:\n${prompt}`);
+    assert.ok(prompt.length <= 380, `run prompt is ${prompt.length} chars:\n${prompt}`);
+    assert.match(prompt, /action: "load"/u);
+    assert.match(prompt, /action: "start"/u);
+    assert.match(prompt, /mcp/u);
+    assert.match(prompt, /remote/u);
+    assert.match(prompt, /workflow/iu);
+
+    const active = ticketRunPrompt("EZE-101", { alreadyActive: true });
+    assert.match(active, /action: "start"/u);
+    assert.equal(active.includes('action: "load"'), false, active);
+  });
+});
+
+describe("11. Internal Linear instructions stay out of the transcript", () => {
+  it("hands /aies-ticket to the Parent through Pi's hidden custom-message path", async () => {
+    const hidden = [];
+    const visible = [];
+    const commands = new Map();
+    const pi = {
+      commands,
+      registerCommand(name, def) {
+        commands.set(name, def);
+      },
+      sendMessage(message, options) {
+        hidden.push({ message, options });
+      },
+      sendUserMessage(text, options) {
+        visible.push({ text, options });
+      },
+    };
+
+    // No transport: the load answers `remote_required` and hands the MCP work to
+    // the Parent instead of failing.
+    const manager = new TicketManager({ getVerification: () => createVerificationState() });
+    registerTicketCommand(pi, manager);
+
+    const notifications = [];
+    await commands.get("aies-ticket").handler("EZE-422", {
+      cwd: REPO_ROOT,
+      mode: "tui",
+      hasUI: true,
+      ui: { notify: (message, type) => notifications.push({ message, type }), confirm: async () => false },
+    });
+
+    assert.equal(hidden.length, 1, "the internal Linear prompt must use the hidden path");
+    assert.equal(hidden[0].message.display, false, "internal plumbing must not render as user input");
+    assert.equal(hidden[0].message.customType, "aies-instruction");
+    assert.equal(hidden[0].options.triggerTurn, true);
+    assert.equal(hidden[0].options.deliverAs, "followUp");
+    assert.match(hidden[0].message.content, /aies_ticket/u);
+    assert.deepEqual(visible, [], "AIES never fabricates visible user input");
   });
 });

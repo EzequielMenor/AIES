@@ -627,9 +627,9 @@ describe("summaries", () => {
     assert.match(text, /^  Worker ✓ 1 archivo · checks aprobados$/mu);
     assert.match(text, /^  Verify ✓ PASS · 5\/5$/mu);
     assert.match(text, /^  Linear ✓ Done$/mu);
-    assert.match(text, /^  Git abc1234$/mu);
-    assert.match(text, /^  Tokens 16k \(main 12k · agents 4000\)$/mu);
-    assert.match(text, /^  Coste \$0\.06$/mu);
+    assert.equal(text.includes("Git"), false, `detailed git facts stay out of DONE:\n${text}`);
+    assert.equal(text.includes("Tokens"), false, `detailed tokens stay out of DONE:\n${text}`);
+    assert.equal(text.includes("Coste"), false, `detailed cost stays out of DONE:\n${text}`);
     assert.equal(text.includes("Tiempo"), false, text);
   });
 
@@ -642,10 +642,25 @@ describe("summaries", () => {
     assert.deepEqual(renderDoneSummary({}), ["✓ Tarea completada"]);
 
     const unknown = renderDoneSummary({ ticket: "EZE-423", cost: null });
-    assert.equal(unknown.join("\n").includes("Coste —"), true, unknown.join("\n"));
-    assert.equal(unknown.join("\n").includes("$0.00"), false);
-    assert.equal(unknown.join("\n").includes("Git"), false);
-    assert.equal(unknown.join("\n").includes("NaN"), false);
+    const unknownText = unknown.join("\n");
+    assert.equal(unknownText.includes("Coste"), false, unknownText);
+    assert.equal(unknownText.includes("$0.00"), false);
+    assert.equal(unknownText.includes("Git"), false);
+    assert.equal(unknownText.includes("NaN"), false);
+  });
+
+  it("bounds arbitrary agent input so DONE cannot grow without limit", () => {
+    const agents = Array.from({ length: 12 }, (_, index) => ({
+      role: "Worker",
+      glyph: "✓",
+      text: `${index}: ${"x".repeat(400)}`,
+    }));
+    const lines = renderDoneSummary({ ticket: "EZE-423", agents });
+    const text = lines.join("\n");
+
+    assert.ok(lines.length <= 7, `unbounded DONE grew to ${lines.length} lines:\n${text}`);
+    assert.match(text, /más/u, text);
+    for (const line of lines) assert.ok(line.length <= 72, `line too long (${line.length}): ${line}`);
   });
 
   it("renders a real warning with a pointer to the full view", () => {

@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { VERSION } from "@earendil-works/pi-coding-agent";
 
 import {
   applyActiveToolCount,
@@ -40,12 +41,17 @@ import {
   applyVerificationStart,
   createState,
   fromSnapshot,
+  runStartedAt,
   toSnapshot,
-  type AiesSnapshot,
   type AiesState,
 } from "./state.ts";
 import { renderFooter, renderHeader } from "../aies-ui/footer.ts";
 import { PANEL_MIN_WIDTH, renderStatusPanel } from "../aies-ui/panel.ts";
+import {
+  installRightRail,
+  renderRightRail,
+  type RightRailHandle,
+} from "../aies-ui/right-rail.ts";
 import { renderStatusReport } from "./status.ts";
 import {
   renderAgentsView,
@@ -315,6 +321,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let widgetRegistered = false;
   let panelWidgetTui: WidgetTui | undefined;
   let panelWidgetRegistered = false;
+  // The isolated private right-rail shim, installed only when the host accepts the
+  // version-guarded fullscreen hook. When `active`, the below-editor dock yields.
+  let railHandle: RightRailHandle | undefined;
+  // The host's git branch, read from the footer factory's public data provider.
+  let branchReader: (() => string | null) | undefined;
   let observatoryUnsubscribe: (() => void) | undefined;
 
   // Whether this host accepted AIES's durable summary renderer. Only a host that
@@ -595,10 +606,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
     if (enabling) {
       // Autonomy just started a ticket run: the panel reports from here, not from
-      // the whole session's lifetime usage, and the DONE latch re-arms.
+      // the whole session's lifetime usage, and the DONE latch re-arms. The AUTO
+      // badge in the footer/rail is the signal; a duplicate notification would
+      // only repeat the command that started it.
       state = applyRunStart(state, Date.now());
       doneEmitted = false;
-      notify(ctx, `◆ AUTO · ${ticket ?? "sesión"}`, "info");
     }
     if (newStop && stopReason) handleStopReason(ctx, stopReason);
   }
@@ -621,9 +633,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       return;
     }
 
-    // `user_stopped`, the continuation limit and anything unrecognised: notify only.
-    if (stopReason === "user_stopped") notify(ctx, "Autonomía detenida.", "info");
-    else if (stopReason === "continuation_limit") notify(ctx, "Se alcanzó el límite de continuaciones automáticas.", "info");
+    // `user_stopped` is the user's own stop command, which already confirms it;
+    // the continuation limit is a real fact worth stating once. Anything else
+    // stays silent rather than narrating internal AIES steps.
+    if (stopReason === "continuation_limit") notify(ctx, "Se alcanzó el límite de continuaciones automáticas.", "info");
   }
 
   /**
@@ -691,8 +704,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       kind: "done",
       ticket,
       linear: snapshot.ticket?.status ?? "Done",
-      durationMs: Math.max(0, Date.now() - runStartedAt(snapshot)),
     };
+    // The run's own start, never the session's: a session that opened long before
+    // the ticket would otherwise report a meaningless duration.
+    const runStart = runStartedAt(snapshot);
+    if (runStart !== undefined) data.durationMs = Math.max(0, Date.now() - runStart);
     const verification = verificationText();
     if (verification) data.verification = verification;
 
@@ -718,12 +734,6 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (warnings.length) data.warnings = warnings;
 
     return { data, headline: ticket ? `✓ ${ticket} · completado` : "✓ Tarea completada" };
-  }
-
-  /** Run wall-clock start: the ticket run when one exists, the session otherwise. */
-  function runStartedAt(snapshot: AiesSnapshot): number {
-    const startedAt = snapshot.runUsage?.startedAt;
-    return typeof startedAt === "number" ? startedAt : snapshot.startedAt;
   }
 
   /** A genuine warning only: a failed child, a protocol fault or a Linear sync failure. */
@@ -867,12 +877,34 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
           PANEL_KEY,
           (tui: unknown, theme: unknown) => {
             panelWidgetTui = tui as WidgetTui;
-            return {
+            // The one isolated private hook: it self-guards on the Pi version and
+            // the host shape, and no-ops into the below-editor fallback otherwise.
+            railHandle?.dispose();
+            railHandle = installRightRail(tui, {
+              version: VERSION,
               render: (width: number): string[] =>
-                renderStatusPanel(uiSnapshot(), Date.now(), {
+                renderRightRail(uiSnapshot(), Date.now(), {
                   width,
+                  project: ctx.cwd,
+                  branch: branchReader?.() ?? null,
                   paint: themePaint(theme as ThemeLike | undefined),
                 }),
+            });
+            return {
+              render: (width: number): string[] => {
+                // While the physical rail owns the status the dock yields; it stays
+                // the responsive fallback wherever the rail is not showing. The
+                // rail's own guard already proves it is showing at the outer wide
+                // breakpoint, so the dock must not re-derive wideness from `width`:
+                // Pi hands this widget its post-layout width, which the rail has
+                // already reduced below the rail breakpoint, and re-testing it here
+                // is exactly what let the rail and the dock render together.
+                if (railHandle?.showing()) return [];
+                return renderStatusPanel(uiSnapshot(), Date.now(), {
+                  width,
+                  paint: themePaint(theme as ThemeLike | undefined),
+                });
+              },
               invalidate() {},
             };
           },
@@ -904,6 +936,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (panelWidgetRegistered && ui) clearPanelWidget(ui);
     panelWidgetRegistered = false;
     panelWidgetTui = undefined;
+    // Shutdown disposes the private hook and restores the host layout exactly.
+    railHandle?.dispose();
+    railHandle = undefined;
+    branchReader = undefined;
   }
 
   /** Ask Pi to repaint the shell and the widgets. Every surface is optional. */
@@ -923,8 +959,20 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     const ui = uiOf(ctx);
     if (!ui || typeof ui.setFooter !== "function") return;
     try {
-      ui.setFooter((tui: unknown, theme: unknown) => {
+      ui.setFooter((tui: unknown, theme: unknown, footerData: unknown) => {
         footerTui = tui as WidgetTui;
+        // Pi's public footer data provider is the only source of the git branch.
+        // A host without it simply leaves the rail's Rama row out.
+        const data = footerData as { getGitBranch?: () => string | null } | undefined;
+        if (data && typeof data.getGitBranch === "function") {
+          branchReader = () => {
+            try {
+              return data.getGitBranch?.() ?? null;
+            } catch {
+              return null;
+            }
+          };
+        }
         return {
           render: (width: number): string[] => [
             renderFooter(uiSnapshot(), Date.now(), {
@@ -1187,6 +1235,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       observatoryUnsubscribe = subscribeToAgentsBus(ctx);
 
       panelVisible = false;
+      railHandle?.dispose();
+      railHandle = undefined;
+      branchReader = undefined;
 
       state = createState(now);
       state = applyAgents(state, []);

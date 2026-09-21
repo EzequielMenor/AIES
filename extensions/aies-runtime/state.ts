@@ -911,6 +911,16 @@ export interface AiesSnapshot {
   activity?: ActivityState;
 }
 
+/**
+ * The active run's wall-clock start, or `undefined` when no run was recorded.
+ * The session start is intentionally never a fallback: elapsed time must measure
+ * the run in flight, not the whole session's lifetime.
+ */
+export function runStartedAt(snapshot: Pick<AiesSnapshot, "runUsage">): number | undefined {
+  const startedAt = snapshot.runUsage?.startedAt;
+  return typeof startedAt === "number" && Number.isFinite(startedAt) ? startedAt : undefined;
+}
+
 
 export function toSnapshot(state: AiesState): AiesSnapshot {
   return {

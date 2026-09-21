@@ -11,7 +11,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { TicketManager } from "../linear/manager.ts";
-import { ticketRunPrompt } from "../linear/prompt.ts";
+import { ticketRunPrompt, deliverAgentInstruction } from "../linear/prompt.ts";
 import { describeMcpDiagnostic } from "../mcp/integration.ts";
 import type { ContinuationController } from "./controller.ts";
 import { AIES_CONTINUATION_PROMPT } from "./policy.ts";
@@ -109,10 +109,7 @@ export function registerAutonomyCommand(
         }
 
         controller.enable(active.identifier);
-        ctx.ui.notify(`Autonomía activada para ${active.identifier}. Ejecutando workflow...`, "info");
-        try {
-          pi.sendUserMessage(AIES_CONTINUATION_PROMPT, { deliverAs: "followUp" });
-        } catch {}
+        deliverAgentInstruction(pi, AIES_CONTINUATION_PROMPT);
         return;
       }
 
@@ -145,10 +142,7 @@ export function registerAutonomyCommand(
         const startRes = await ticketManager.startWork();
         if (startRes.ok) {
           controller.enable(ticketId);
-          ctx.ui.notify(`Autonomía activada para ${ticketId}. Ejecutando workflow...`, "info");
-          try {
-            pi.sendUserMessage(AIES_CONTINUATION_PROMPT, { deliverAs: "followUp" });
-          } catch {}
+          deliverAgentInstruction(pi, AIES_CONTINUATION_PROMPT);
           return;
         }
         if (startRes.error !== "remote_required") {
@@ -158,12 +152,10 @@ export function registerAutonomyCommand(
       }
 
       // A Linear call needs the Parent: hand it the load + start sequence and let
-      // the autonomy workflow continue once the ticket is active.
+      // the autonomy workflow continue once the ticket is active. The instruction
+      // travels hidden, so the transcript never shows internal plumbing as input.
       controller.enable(ticketId);
-      ctx.ui.notify(`Autonomía activada para ${ticketId}. Ejecutando workflow...`, "info");
-      try {
-        pi.sendUserMessage(ticketRunPrompt(ticketId, { alreadyActive: loaded }), { deliverAs: "followUp" });
-      } catch {}
+      deliverAgentInstruction(pi, ticketRunPrompt(ticketId, { alreadyActive: loaded }));
     },
   });
 }

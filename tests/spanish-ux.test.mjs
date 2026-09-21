@@ -35,6 +35,8 @@ const RULE_LINES = [
   "Responde siempre al usuario en castellano.",
   "Mantén comandos, código, nombres técnicos e identificadores en su idioma original.",
   "No narres pasos internos si la UI ya los representa.",
+  "No repitas ni resumas el trabajo que AIES ya mostró como DONE o BLOCKED.",
+  "Responde solo las preguntas reales del usuario y señala decisiones o errores que necesiten su intervención.",
 ];
 
 /** A fake ExtensionAPI that records what the extension registers. */
@@ -58,7 +60,7 @@ function ticketState(identifier, status, title) {
 }
 
 describe("resident Parent Spanish rule", () => {
-  it("is exactly the three required instructions", () => {
+  it("is exactly the required instructions", () => {
     assert.deepEqual(RESIDENT_SYSTEM_RULE.split("\n"), RULE_LINES);
   });
 
@@ -84,6 +86,18 @@ describe("resident Parent Spanish rule", () => {
 
     const occurrences = twice.systemPrompt.split(RULE_LINES[0]).length - 1;
     assert.equal(occurrences, 1, twice.systemPrompt);
+  });
+
+  it("forbids narrating UI-owned transitions and a second prose DONE/BLOCKED, and stays short", () => {
+    // One short resident rule: this cap is what keeps it from becoming a prompt book.
+    assert.ok(RULE_LINES.length <= 6, `the resident rule grew to ${RULE_LINES.length} lines`);
+    assert.ok(RESIDENT_SYSTEM_RULE.length <= 420, `the resident rule grew to ${RESIDENT_SYSTEM_RULE.length} chars`);
+    // UI ownership of internal transitions: do not narrate what the shell already shows.
+    assert.match(RESIDENT_SYSTEM_RULE, /No narres pasos internos si la UI ya los representa/u);
+    // The runtime owns the DONE/BLOCKED visual; the Parent must not print a second one.
+    assert.match(RESIDENT_SYSTEM_RULE, /No repitas ni resumas el trabajo que AIES ya mostró como DONE o BLOCKED/u);
+    // The Parent only speaks for user input, blockers, warnings or decisions.
+    assert.match(RESIDENT_SYSTEM_RULE, /Responde solo las preguntas reales del usuario y señala decisiones o errores/u);
   });
 });
 

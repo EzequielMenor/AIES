@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import aiesRuntime from "../extensions/aies-runtime/index.ts";
+import { RIGHT_RAIL_MIN_WIDTH } from "../extensions/aies-ui/right-rail.ts";
 import {
   ContinuationController,
   setActiveContinuationController,
@@ -19,6 +20,7 @@ import {
 
 const ROOT = "/repo";
 const START_MS = 1_700_000_000_000;
+const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 
 /** Fake timers and a frozen clock: the runtime uses the globals, so we swap them. */
 function installFakes() {
@@ -155,11 +157,11 @@ function createHost(overrides = {}) {
   };
 
   /** Mount the installed footer/header factory and expose a rendered snapshot. */
-  function mountFooter(width = 200) {
+  function mountFooter(width = 200, footerData = {}) {
     const factory = footers.at(-1);
     assert.ok(typeof factory === "function", "no custom footer installed");
     const tui = { requestRender() { renderRequests.footer += 1; } };
-    const component = factory(tui, plainTheme, {});
+    const component = factory(tui, plainTheme, footerData);
     return { component, text: () => component.render(width).join("\n") };
   }
 
@@ -171,10 +173,11 @@ function createHost(overrides = {}) {
     return { component, lines: () => component.render(width) };
   }
 
-  function mountWidget(key, width = 120) {
+  function mountWidget(key, width = 120, tuiOverride = undefined) {
     const entry = [...widgets].reverse().find((widget) => widget.key === key && widget.factory);
     assert.ok(entry, `no ${key} widget mounted`);
-    const component = entry.factory({ requestRender() {} }, plainTheme);
+    const tui = tuiOverride ?? { requestRender() {} };
+    const component = entry.factory(tui, plainTheme);
     return { component, lines: () => component.render(width), text: () => component.render(width).join("\n") };
   }
 
@@ -334,7 +337,94 @@ describe("AIES UI seam", () => {
     assert.equal(host.widgets.at(-1).cleared, true, "shutdown clears the persistent panel");
   });
 
-  it("renders an idle persistent panel with model, context and time only", async () => {
+  it("mounts the private fullscreen rail when available and keeps the below-editor fallback", async () => {
+    const original = () => ({ type: "vstack", entries: [] });
+    const root = { [LAYOUT_NODE]: original };
+    const tui = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+    const host = createHost();
+    timers.setColumns(160);
+    await host.start();
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: { ticket: { identifier: "EZE-424", title: "Rail", status: "In Progress" } },
+    });
+
+    // The footer factory is what hands AIES the host's git branch.
+    host.mountFooter(160, {
+      getGitBranch: () => "feat/aies-010d-fullscreen-shell",
+      getExtensionStatuses: () => new Map(),
+      getAvailableProviderCount: () => 0,
+      onBranchChange: () => () => {},
+    });
+
+    const panel = host.mountWidget("aies-panel", 160, tui);
+    assert.notEqual(root[LAYOUT_NODE], original, "the rail must wrap the private layout node");
+
+    const node = root[LAYOUT_NODE]();
+    assert.equal(node.type, "hstack");
+    const railText = node.entries.at(-1).component.render(60).join("\n");
+    assert.match(railText, /Proyecto/u, railText);
+    assert.match(railText, /Rama\s+feat\/aies-010d-fullscreen-shell/u, railText);
+    assert.match(railText, /✧ AIES · EZE-424/u, railText);
+    assert.match(railText, /Status/u, railText);
+    assert.match(railText, /Agents/u, railText);
+
+    // While the physical rail owns the status, the below-editor widget yields.
+    assert.deepEqual(panel.lines(), []);
+
+    await host.emit("session_shutdown", { reason: "quit" });
+    assert.equal(root[LAYOUT_NODE], original, "shutdown restores the host layout");
+  });
+
+  it("yields the below-editor dock to a showing wide rail at any post-layout widget width", async () => {
+    const original = () => ({ type: "vstack", entries: [] });
+    const root = { [LAYOUT_NODE]: original };
+    const tui = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+    const host = createHost();
+    timers.setColumns(160);
+    await host.start();
+
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: { ticket: { identifier: "EZE-424", title: "Rail", status: "In Progress" } },
+    });
+
+    // Pi hands the below-editor widget its post-layout width, already reduced by
+    // the physical rail. It is well below the rail breakpoint even though the
+    // outer terminal is wide, which is exactly the overlap this test pins.
+    const RENDERED_WIDGET_WIDTH = 112;
+    const panel = host.mountWidget("aies-panel", RENDERED_WIDGET_WIDTH, tui);
+
+    // The host layout pass evaluates the rail wrapper before the dock renders.
+    const node = root[LAYOUT_NODE]();
+    assert.equal(node.type, "hstack", "the supported rail presents at the wide outer terminal");
+    assert.deepEqual(
+      panel.lines(),
+      [],
+      "a showing wide rail must make the dock yield regardless of the widget's own width",
+    );
+
+    // Below the outer rail breakpoint the physical rail steps aside and the dock
+    // is the fallback again, at the very same reduced widget width.
+    tui.terminal.columns = RIGHT_RAIL_MIN_WIDTH - 1;
+    assert.deepEqual(root[LAYOUT_NODE](), original(), "below the breakpoint the host layout is untouched");
+    assert.ok(panel.lines().length > 0, "the dock returns as the fallback below the rail breakpoint");
+    assert.match(panel.text(), /╭─/u, "the fallback still reads as the status dock");
+  });
+
+  it("keeps the below-editor panel when the host has no private layout node", async () => {
+    const host = createHost();
+    timers.setColumns(140);
+    await host.start();
+    const panel = host.mountWidget("aies-panel", 140, { requestRender() {} });
+    assert.ok(panel.lines().length > 0, "without the private hook the panel still renders");
+    assert.match(panel.text(), /╭─/u);
+  });
+
+  it("renders an idle persistent panel with model and context only", async () => {
     const host = createHost();
     timers.setColumns(140);
     await host.start();
@@ -367,6 +457,45 @@ describe("AIES UI seam", () => {
     await controller.stop("completed");
     await host.emit("tool_result", { toolName: "read", content: "y" });
     assert.equal(host.appended.filter((entry) => entry.type === "aies-summary").length, 1);
+  });
+
+  it("keeps durable DONE telemetry while the compact card and the notify stay quiet", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+
+    // Parent usage comes only from real session entries. The first sample after the
+    // run starts fixes the baseline; the second, after the run spends tokens,
+    // yields the run's own delta.
+    const entries = [];
+    const host = createHost({ entries });
+    await host.start();
+    await controller.enable("EZE-424");
+    await host.emit("tool_result", { toolName: "read", content: "baseline" });
+
+    entries.push({ type: "message", message: { role: "assistant", usage: { totalTokens: 16_000, cost: { total: 0.06 } } } });
+    await host.emit("tool_result", { toolName: "read", content: "spent" });
+
+    await controller.stop("completed");
+    await host.emit("tool_result", { toolName: "read", content: "done" });
+
+    const done = host.appended.filter((entry) => entry.type === "aies-summary");
+    assert.equal(done.length, 1);
+
+    // The durable entry preserves the run telemetry even though the card omits it.
+    assert.deepEqual(done[0].data.tokens, { total: 16_000, main: 16_000, agents: 0 });
+    assert.equal(done[0].data.cost, 0.06);
+
+    const card = host.renderers.get("aies-summary")(done[0], { expanded: false }, plainTheme).render(80).join("\n");
+    for (const omitted of ["Tokens", "Coste", "16k", "0.06"]) {
+      assert.equal(card.includes(omitted), false, `compact DONE leaked telemetry ${omitted}:\n${card}`);
+    }
+
+    // The renderer owns the visual, so the headline never also travels through notify.
+    assert.equal(
+      host.notifications.some((item) => item.message.includes("completado")),
+      false,
+      `a drawn DONE card must not also notify: ${JSON.stringify(host.notifications)}`,
+    );
   });
 
   it("registers the aies-activity widget and renders the role and task", async () => {
@@ -455,7 +584,11 @@ describe("AIES UI seam", () => {
 
     await controller.enable("EZE-417");
     await host.emit("tool_result", { toolName: "read", content: "x" });
-    assert.equal(host.notifications.some((item) => item.message === "◆ AUTO · EZE-417"), true);
+    assert.equal(
+      host.notifications.some((item) => item.message.includes("◆ AUTO")),
+      false,
+      `autonomy activation is carried by the AUTO badge, not a duplicated notification: ${JSON.stringify(host.notifications)}`,
+    );
 
     await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement it" } });
     await host.emit("tool_result", {

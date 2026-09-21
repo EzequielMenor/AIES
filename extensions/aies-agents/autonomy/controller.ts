@@ -9,6 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import type { ContextGovernor } from "../context-governor.ts";
 import type { TicketManager } from "../linear/manager.ts";
+import { deliverAgentInstruction } from "../linear/prompt.ts";
 import type { RoutingState } from "../routing.ts";
 import type { VerificationState } from "../verification.ts";
 import {
@@ -27,7 +28,7 @@ import type {
 } from "./types.ts";
 
 export interface ContinuationControllerOptions {
-  pi?: Pick<ExtensionAPI, "sendUserMessage">;
+  pi?: Pick<ExtensionAPI, "sendUserMessage" | "sendMessage">;
   getRouting?: () => RoutingState;
   getVerification?: () => VerificationState;
   getGovernor?: () => ContextGovernor;
@@ -35,7 +36,7 @@ export interface ContinuationControllerOptions {
 }
 
 export class ContinuationController {
-  private pi?: Pick<ExtensionAPI, "sendUserMessage">;
+  private pi?: Pick<ExtensionAPI, "sendUserMessage" | "sendMessage">;
   private getRouting?: () => RoutingState;
   private getVerification?: () => VerificationState;
   private getGovernor?: () => ContextGovernor;
@@ -81,7 +82,7 @@ export class ContinuationController {
     this.getTicketManager = options?.getTicketManager;
   }
 
-  setPi(pi: Pick<ExtensionAPI, "sendUserMessage">): void {
+  setPi(pi: Pick<ExtensionAPI, "sendUserMessage" | "sendMessage">): void {
     this.pi = pi;
   }
 
@@ -265,11 +266,9 @@ export class ContinuationController {
       this.continuationTurnExecuted = false;
 
       const prompt = decision.followUpPrompt ?? AIES_CONTINUATION_PROMPT;
-      try {
-        this.pi?.sendUserMessage(prompt, { deliverAs: "followUp" });
-      } catch {
-        // Safe degradation if pi sender fails
-      }
+      // Hidden custom message: the model still gets the instruction and the turn
+      // still runs, but the human transcript never shows it as typed input.
+      deliverAgentInstruction(this.pi, prompt);
       return decision;
     }
 

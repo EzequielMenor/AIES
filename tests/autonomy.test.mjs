@@ -6,7 +6,7 @@
  * 1. Sin ticket activo: handleSettled no dispara continuación ni emite follow-up; estado permanece idle.
  * 2. Autonomía desactivada: ticket activo con trabajo pendiente pero enabled = false -> no dispara continuación.
  * 3. Activación explícita: /aies-run <ticket> o API activa autonomía, inicia workflow y registra telemetría.
- * 4. Exactamente un follow-up por settle: handleSettled genera a lo sumo una llamada a pi.sendUserMessage; nunca duplica.
+ * 4. Exactamente un follow-up por settle: handleSettled genera a lo sumo una llamada de instrucción oculta; nunca duplica.
  * 5. Explore -> continuación: Explorer finaliza handoff -> controller detecta siguiente paso natural y continúa.
  * 6. Worker -> Verify: Worker finaliza mutación -> controller detecta Verify mandatorio y continúa.
  * 7. FAIL -> repair: Verify retorna FAIL con budget disponible -> controller continúa hacia Worker repair.
@@ -68,10 +68,18 @@ import { registerAutonomyCommand } from "../extensions/aies-agents/autonomy/comm
 
 function createMockPi() {
   const messages = [];
+  const hidden = [];
   const commands = new Map();
   return {
     messages,
+    hidden,
     commands,
+    // Pi 0.86.1 public hidden custom-message path. Records both the raw call and a
+    // normalized message so existing length/text assertions keep working.
+    sendMessage(message, options) {
+      hidden.push({ message, options });
+      messages.push({ text: message?.content, options, display: message?.display });
+    },
     sendUserMessage(text, options) {
       messages.push({ text, options });
     },
@@ -173,7 +181,11 @@ describe("AIES-009 Bounded Task Autonomy & Continuation Controller", () => {
       assert.equal(controller.isEnabled(), true);
       assert.equal(controller.getState().ticketId, "EZE-101");
       assert.equal(controller.getTelemetry().activations, 1);
-      assert.ok(uiNotifications.some((n) => n.msg.includes("Autonomía activada")));
+      assert.equal(
+        uiNotifications.some((n) => n.msg.includes("Autonomía activada")),
+        false,
+        "activation is carried by the AUTO badge, not a duplicated notification",
+      );
     });
 
     it("Caso 4 — Exactamente un follow-up por settle: deduplica si no ha corrido nuevo turno", async () => {
@@ -745,6 +757,44 @@ describe("AIES-009 Bounded Task Autonomy & Continuation Controller", () => {
       });
 
       assert.notEqual(fp1, fp2);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Category 8: Transcript ownership (AIES-010D T10)
+  // --------------------------------------------------------------------------
+  describe("Category 8: Transcript ownership", () => {
+    it("Caso 30 — handleSettled entrega la continuación como mensaje oculto, no como input visible", async () => {
+      await ticketManager.loadTicket("EZE-101");
+      await ticketManager.startWork();
+      controller.activate("EZE-101");
+
+      const decision = await controller.handleSettled();
+      assert.equal(decision.decision, "continue");
+
+      assert.equal(pi.hidden.length, 1, "la continuación debe usar el camino oculto de Pi");
+      const { message, options } = pi.hidden[0];
+      assert.equal(message.customType, "aies-instruction");
+      assert.equal(message.display, false, "una instrucción interna nunca se dibuja como input del usuario");
+      assert.equal(typeof message.content, "string");
+      assert.ok(message.content.length > 0, "el modelo sigue recibiendo la instrucción");
+      assert.equal(options.triggerTurn, true, "la continuación debe seguir disparando un turno real");
+      assert.equal(options.deliverAs, "followUp");
+    });
+
+    it("Caso 31 — /aies-run entrega su instrucción interna por el camino oculto", async () => {
+      registerAutonomyCommand(pi, controller, ticketManager);
+      const runCommand = pi.commands.get("aies-run");
+      assert.ok(runCommand);
+
+      const fakeCtx = { ui: { notify: () => {} } };
+      await runCommand.handler("EZE-101", fakeCtx);
+
+      assert.equal(controller.isEnabled(), true);
+      assert.equal(pi.hidden.length, 1);
+      assert.equal(pi.hidden[0].message.display, false);
+      assert.equal(pi.hidden[0].options.triggerTurn, true);
+      assert.equal(pi.hidden[0].options.deliverAs, "followUp");
     });
   });
 });

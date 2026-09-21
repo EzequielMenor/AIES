@@ -18,13 +18,16 @@ const EXTENSION_PATH = fileURLToPath(import.meta.url);
 
 /**
  * The single resident Parent instruction: answer in Spanish, keep technical
- * identifiers in their original language, and do not narrate steps the UI already
- * shows. Appended once per agent start, never duplicated.
+ * identifiers in their original language, do not narrate steps the UI already
+ * shows, and do not append a second completion report after AIES has already
+ * rendered DONE/BLOCKED. Appended once per agent start, never duplicated.
  */
 export const RESIDENT_SYSTEM_RULE = [
   "Responde siempre al usuario en castellano.",
   "Mantén comandos, código, nombres técnicos e identificadores en su idioma original.",
   "No narres pasos internos si la UI ya los representa.",
+  "No repitas ni resumas el trabajo que AIES ya mostró como DONE o BLOCKED.",
+  "Responde solo las preguntas reales del usuario y señala decisiones o errores que necesiten su intervención.",
 ].join("\n");
 
 /** First line of the rule, used to detect an already-amended prompt. */

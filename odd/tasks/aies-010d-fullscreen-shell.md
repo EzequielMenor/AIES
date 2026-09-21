@@ -1,9 +1,12 @@
 # AIES-010D — Full-Screen Product Shell & Transcript Polish
 
-Status: complete
+Status: active — final product-polish pass before UI v1 freeze
 Branch: `feat/aies-010d-fullscreen-shell`
 Baseline: AIES-010C, 630/630 tests
-Scope: presentation-only final UX iteration before AIES-011
+Scope: final presentation shell, profile theme, role model configuration and UI freeze before AIES-011
+TDD: user-required regression-first; runner `node --test` for focused tests, then `npm test`
+Delivery: Conventional Commits by work unit; no push and no pull request; finish with a clean working tree
+Delivery strategy: current feature branch only, explicitly requested by the user; forecast exceeds 400 authored lines because it closes several already-authorized UX surfaces, so commits stay independently reviewable and no PR is created
 
 ## Goal
 
@@ -15,8 +18,11 @@ DONE, responsive degradation and clean terminal restoration.
 ## Product invariants
 
 - Pi remains the runtime; AIES uses only documented public extension/TUI APIs and profile settings.
-- This phase changes presentation only. Agent Observatory semantics, routing, autonomy, Verify, repair, permissions, sandbox, Linear/MCP and telemetry sources are locked.
-- No terminal renderer, persistence layer, history, new metrics, roles or framework.
+- This phase changes presentation and profile-local role model preferences only. Agent Observatory semantics, routing, autonomy, Verify, repair, permissions, sandbox, Linear/MCP mediation and telemetry sources are locked.
+- No terminal renderer, database, agent history, new metrics, roles or framework.
+- The run-local Todos checklist is a derived ephemeral projection of existing workflow state; it has no persistence and no authority.
+- `/aies-models` uses Pi's available model registry and capability metadata; it never hardcodes model/provider catalogues or silently stores invalid effort combinations.
+- Parent model persistence uses Pi's isolated profile settings semantics. Child-role preferences live only under the isolated AIES profile and apply to future delegations, never active children.
 - Raw tool output remains available through Pi's native expansion; failures remain prominent.
 - Thinking visibility changes only through a supported Pi profile setting, never interception or chain-of-thought capture.
 - All AIES user-facing copy remains Spanish; technical identifiers remain unchanged.
@@ -29,9 +35,14 @@ DONE, responsive degradation and clean terminal restoration.
 
 - `bin/aies`
 - `profile/settings.json`
+- `profile/aies.json`
+- `themes/**`
+- `scripts/bootstrap-profile.sh`
 - `extensions/aies-identity.ts`
 - `extensions/aies-runtime/**`
 - `extensions/aies-ui/**`
+- `extensions/aies-agents/autonomy/**`
+- `extensions/aies-agents/linear/**`
 - `tests/**`
 - `docs/UX.md`
 - `docs/DECISIONS.md`
@@ -45,7 +56,16 @@ DONE, responsive degradation and clean terminal restoration.
 | T2 Clean launch, idle state and teardown | complete | Enabled Pi-owned fullscreen, resume-hint teardown, quiet startup and public thinking-block hiding; removed the redundant startup notification and preserved `/aies-info`. | `7b12933` |
 | T3 Product shell, responsive status and quiet transcript | complete | Added the 120+/80–119 status-dock tiers and <80 rich footer fallback, integrated the agents overview, removed its duplicate widget and gave six generic tools compact self-owned shells with raw expansion and visible failures. | `bf9e9a2` |
 | T4 Documentation and automated verification | complete | Documented the public/private boundary and D23, reconciled historical presentation contracts, preserved the activity card's independent cap and passed all automated gates. | `c21d3ee` |
-| T5 Real visual and E2E acceptance | complete | Inspected tmux at 120/90/70, cmux, `/agents`, compact/expanded/error tools and clean alternate-screen restoration; EZE-426 completed Explore → Worker → Verify PASS → Linear Done. Production diff is net -161 lines. | pending commit |
+| T5 Real visual and E2E acceptance | invalidated | The prior captures proved only a below-editor dock, which fails the corrected requirement for a physical right rail. | — |
+| T6 Pi 0.86.1 public API re-audit | complete | Confirmed installed Pi 0.86.1 still exposes only above/below editor widgets; its fullscreen layout root remains private. User authorized one isolated compatibility shim. | — |
+| T7 Isolated right-rail shim and corrected projections | complete | Corrected the real visual overlap: a showing rail is now the sole dock-yield signal, independent of reduced widget width. RED/GREEN 42/42, independent verification PASS, and rerun 160-column capture proves rail-only status. | included in next UI work-unit commit |
+| T8 Clean startup and contract documentation | complete | Documented D24: the single user-authorized, 0.85/0.86-guarded private compatibility shim, its fallback/debt/removal conditions, and pending T9 visual authority. Focused checks 41/41; independent documentation verification PASS. | included in next UI work-unit commit |
+| T9 Real cmux correction and visual acceptance | superseded by final pass | EZE-427 demonstrated that the physical rail architecture exists and the 120-column correction works, but also exposed transcript noise, missing Todos/models surfaces and unfinished product coherence. Preserve its verified rail/fallback work; final acceptance moves to T14. | — |
+| T10 Transcript ownership and deterministic outcomes | complete | Pi 0.86.1 public hidden custom messages now carry autonomy and Linear instructions to the model without transcript rendering; compact Linear rows, the short resident anti-chatter rule and single durable runtime DONE/BLOCKED are regression-locked. Focused 190/190, adjacent 101/101, independent verification PASS. | pending commit |
+| T11 Unified shell, rail and run-local Todos | in progress | Consolidate semantic design tokens; polish Status, Agents, `/agents` and `/aies-status`; add derived ephemeral Todos with Status > active Agents > Todos priority; fix context, elapsed and branch projection; enforce rail-first live activity and responsive fallback without duplication. | — |
+| T12 AIES theme and `/aies-models` | pending | Add a sober profile-local Pi theme; implement a keyboard-first overlay backed by `ctx.modelRegistry.getAvailable()` and real thinking capability metadata; persist Parent through Pi's isolated settings and child roles through isolated AIES config; wire future delegations to those validated choices. | — |
+| T13 Automated verification and consolidation | pending | Run focused RED/GREEN suites, full tests, isolation, shell syntax, headless/fullscreen regressions, design detector and diff checks; delete obsolete duplication; document supported APIs and remaining limitations; commit each complete work unit conventionally. | — |
+| T14 Final real cmux smoke and UI freeze | pending | Use a disposable issue for one last real IDLE → WORKER → VERIFY → Linear Done run; capture IDLE, WORKER, VERIFY, `/agents`, `/aies-models`, DONE, narrow fallback and exit; record LOC, screenshots and acceptance. Mark `AIES UI v1 FROZEN` only if every gate passes. | — |
 
 ## Required evidence
 
@@ -54,27 +74,66 @@ DONE, responsive degradation and clean terminal restoration.
 - Strict RED/GREEN focused tests for behavior-bearing presentation changes.
 - Clean launch with no prior shell history in the normal interactive path.
 - Idle identity without bootstrap/debug dominance.
-- Full/compact/hidden responsive status bands and non-duplicating footer.
-- One prominent live agent surface and one durable completion entry.
-- Compact success tools, byte-identical expanded output and visible errors.
+- At >=120 useful columns, the physical layout is `transcript | right rail`; any below-editor dock at that width is a failure. The 80–119 dock and <80 rich-footer fallback remain mutually exclusive with the rail.
+- Temporary diagnostic evidence records the real terminal columns, left-pane width, selected breakpoint and selected mode, then the diagnostic code is removed before acceptance.
+- The right rail contains coherent `Status` and `Agents` sections, with one prominent live agent surface and one durable completion entry.
+- A single theme-backed AIES visual primitive supplies Status, Agents, DONE and BLOCKED hierarchy.
+- AIES/Linear/replay plumbing is humanized or collapsed, generic successful tools occupy one line, expanded output remains byte-identical, and failures remain prominent.
 - `/agents` remains functional over the existing registry.
 - Headless path unaffected.
 - `npm test`, `npm run check:isolation`, `bash -n bin/aies scripts/*.sh`, `git diff --check`.
-- Real cmux and 80-column inspection plus clean `/exit`/Ctrl+C restoration.
+- Real cmux and 80-column inspection plus clean Ctrl+D/Ctrl+C restoration.
 - Safe real `/aies-run EZE-XXX` ending Worker → Verify PASS → Linear Done.
+- Same-surface real cmux captures for IDLE, WORKER, VERIFY and compact DONE; synthetic terminals and automated tests cannot close T9.
 - Before/after visual comparison and net LOC report.
+
+## Final-pass acceptance additions
+
+- Internal continuation instructions remain model-visible but are never rendered as ordinary user input.
+- Thinking is hidden by the supported profile setting and remains user-toggleable through Pi's native `Ctrl+T` action.
+- Linear actions project as short human states; raw MCP payloads and replay directives stay under expansion/debug.
+- DONE and BLOCKED each have exactly one runtime-owned durable visual; the Parent produces no second summary.
+- When the rail is visible, live child activity appears there and not in a simultaneous transcript card; the completed child leaves one compact durable line. Inline activity remains the fallback without a rail.
+- Status shows non-empty Project, Branch, Ticket, Stage, Model, Provider, Context and active-run Time rows plus vertical Main/Agents/Total token and cost groups.
+- Branch preference is active ticket change branch, then workspace branch, then `detached @ <short-sha>`, then `—`, using already available state and no aggressive polling.
+- Todos are derived from real run state, bounded, ephemeral and lower priority than Status and active agents.
+- `/agents`, `/aies-models`, permissions, summaries and AIES tool projections share one semantic theme vocabulary without hardcoded ANSI.
+- The AIES theme is profile-local and loaded through Pi's supported theme mechanism.
+- `/aies-models` lists only available configured models, validates supported effort levels, saves only valid selections and never interrupts active children.
+- `/aies-status` defaults to a human product view while `detalle` retains technical telemetry.
+- Fullscreen, alternate-screen restoration, headless behavior and generic tool execution remain unchanged.
 
 ## Scope exclusions
 
-No AIES-011 work; no Planner, Reviewer, new agents, parallelism, memory, web UI,
-history, database, task browser, GitHub, new MCP, notifications, remote dashboard,
-config editor, pricing database, analytics backend or agent architecture changes.
+No AIES-011 work; no Planner, Reviewer, new agents, parallelism, memory product,
+web UI, persistent Todos, persistent agent history, database, task browser, GitHub,
+new MCP, notifications, remote dashboard, pricing database, analytics backend or
+agent architecture changes.
+
+## Current progress
+
+- In progress: T11 unified shell, rail and run-local Todos.
+- Completed baseline retained: T1–T10, including the verified rail correction and hidden internal-message channel.
+- Next step: establish focused RED tests for derived Todos, rail-first activity ownership, Status hierarchy, compact context, run time and branch projection.
+- Current authored diff before the final pass: 797 additions / 128 deletions across tracked files, plus the new right-rail module; this work will be committed as reviewable units rather than expanded into another architecture layer.
 
 ## Evidence log
 
+- 2026-09-21 T10: `deliverAgentInstruction()` consolidates the autonomy continuation, `/aies-run` and `/aies-ticket` handoffs onto Pi 0.86.1's public `sendMessage({ display:false }, { triggerTurn:true, deliverAs:"followUp" })` path. Pi still converts the custom message to a user-role LLM message while the TUI omits it. The previous visible path remains only as a compatibility fallback for older hosts. Focused regression-first evidence observed 3 intended RED failures, then 190/190 GREEN; adjacent imports and runtime consumers passed 101/101; parent spot check repeated 190/190; independent verifier PASS; `git diff --check` clean. Linear/MCP mediation, replay, Done Gate, Verify, routing, permissions and sandbox were untouched.
+
+- 2026-09-20 T9 visual rejection: the user made real cmux captures the sole acceptance authority. The target is the existing `workspace:7` / `surface:7` pane on `/dev/ttys015`, measured at 237×58; the non-interactive harness reports 80×24 and is not representative. The live pane currently resolves the repository extension symlink and profile-local Pi 0.86.1 settings (`fullscreen`, `hideThinkingBlock`, `quietStartup`) plus compact one-line MCP result rendering. Acceptance still requires the corrected rail composition and real IDLE/WORKER/VERIFY/DONE captures from this same surface.
+- 2026-09-20 T9 diagnosis/correction: a temporary opt-in probe on that exact pane recorded `{columns:237,leftWidth:189,breakpoint:140,mode:"rail"}`. The probe and its environment contract were then fully removed. Regression-first implementation observed 15 intended RED failures, changed the rail threshold to 120, added explicit Status/Agents hierarchy through one shared theme-backed heading primitive, bounded/compacted DONE and BLOCKED, removed duplicate progress notifications, shortened visible Linear replay prompts, and strengthened the Parent anti-narration rule while preserving durable telemetry and workflow semantics. Focused/adjacent checks passed 339/339; full independent verification and real same-surface captures remain pending.
 - Branch created from the clean AIES-010C tip.
 - The package-owned `gentle-ai-explore` subprocess is currently unavailable in this host: both read-only scouts exited before their first turn with Node `MODULE_NOT_FOUND`. Investigation therefore falls back to direct read-only inspection; this is a tooling incident, not product evidence.
-- The active installed Gentle package is 3.3.0, not the requested 3.2.1. The exact 3.2.1 package was inspected from its immutable npm tarball rather than treating 3.3.0 as equivalent.
+- The active installed Gentle package is newer than the requested 3.2.1. The exact 3.2.1 package was inspected from its immutable npm tarball rather than treating the installed version as equivalent.
+- 2026-09-20 correction: the real installed runtime is Pi 0.86.1. Its public `ExtensionWidgetOptions.placement` remains limited to `aboveEditor | belowEditor`; `ExtensionUIContext` exposes no persistent sidebar or root-composition API, while the host keeps `fullscreenLayoutRoot` private. The user explicitly authorized one isolated, version-guarded private compatibility shim for the optional right rail, with the existing below-editor/footer UI as fail-safe fallback.
+- 2026-09-20 remediation block: the mandatory `gentle-ai-worker` launch for T7 exited before `agent_settled` with Node `MODULE_NOT_FOUND`, before its first turn and before any edit. The runtime exposes no native Agent fallback or alternate writer definition, so implementation stopped at the delegation boundary rather than proceeding monolithically.
+- 2026-09-20 resume: a read-only `gentle-ai-worker` readiness probe completed normally, read the feature document, and made no edits or command invocations. T7 is unblocked and resumes through one scoped writer with regression-first evidence.
+- 2026-09-20 T7: regression-first writer observed RED (26/31 passing; the missing shim and session-timer expectations failed), then GREEN with `node --test tests/fullscreen-shell.test.mjs tests/aies-panel.test.mjs tests/aies-ui-seam.test.mjs` (41/41). An independent read-only verifier returned PASS and the parent spot check repeated the same 41/41 result plus `git diff --check`; the new untracked shim also passed `git diff --no-index --check /dev/null extensions/aies-ui/right-rail.ts`. The shim accepts only Pi 0.85/0.86, restores the original layout-node descriptor on dispose, and all unavailable/throwing cases retain the prior dock/footer fallback. Native risk assessment was unavailable (`native command returned empty output`), so the independent verifier was required and completed.
+- 2026-09-20 T8: `docs/UX.md` and append-only `docs/DECISIONS.md` D24 now document the exact private exception, Pi-owned alternate-screen lifecycle, no-global-install boundary, fallback, re-audit/removal condition, and that T9 remains unaccepted. Focused checks passed 41/41; independent documentation verification PASS; parent spot check repeated 41/41 and clean diff checks.
+- 2026-09-20 T9 first real-runtime attempt: `npm test` and isolation passed 645/645; shell syntax and diff checks passed. Isolated 160-column tmux captures proved IDLE rail, run-only idle timer, 76-column fallback, alternate-screen scrollback isolation (zero pre-launch markers while open), resize, Ctrl+C survival and Ctrl+D restoration. `/exit` is not a Pi 0.86.1 command; it becomes a model prompt, so Ctrl+D is the verified graceful exit. T9 remains blocked: no safe non-mutating route could create real WORKER/VERIFY/DONE from an existing Done Linear fixture; cmux supplied lifecycle escape evidence but no post-extension visual frame. Critically, at 150/160 the physical rail and compact below-editor dock appeared together because the dock yield predicate sees the rail-reduced widget width, reopening T7 for a bounded presentation correction.
+- 2026-09-20 T7 correction/T9 rerun: regression-first test reproduced the overlap (15/16 focused seam tests), then passed after making `railHandle.showing()` the dock's sole yield signal; focused suite is 42/42 and independent verification PASS. A disposable isolated Pi 0.86.1 tmux run at 160 proves exactly one physical rail box with Project/Branch and no idle run timer; the below-editor dock is absent. 120 and 90 restore full/compact docks; 76 has no dock/rail and retains the rich footer. While alternate screen was active, `capture-pane -S -300` found zero pre-launch markers; Ctrl+D restored all markers and a usable shell. The parent spot check repeated focused 42/42 and `git diff --check`. This resolves the rail/dock visual defect but does not resolve the real WORKER/VERIFY/DONE or cmux visual-evidence blockers.
+- 2026-09-20 T9 safe Linear attempt: created disposable Linear issue `EZE-427` (Todo) and a clean detached fixture worktree at `49dedcf` under `/tmp/aies-010d-eze427/aies-smoke`; the intentional `truncate` fixture was RED before launch. A real cmux workspace loaded the final extension at 160 columns and visually showed the physical right rail (Proyecto `aies-smoke`, Rama `detached`, model/provider/context); no below-editor dock appeared. `/aies-run EZE-427` could not enter real routing because the isolated AIES profile's Linear call returned `401 API key is invalid`; `/mcp-auth linear` reported reconnection but did not repair it. `EZE-427` remained Todo and the fixture remained clean. Thus WORKER, VERIFY, DONE, `/agents` during active work, final Linear Done, and clean cmux exit could not be captured. Do not close T9 or alter global/profile authentication from this repository.
 - Pi 0.85.1 publicly supports `tuiMode: "fullscreen"`, backed by its alternate-screen renderer, plus `fullscreenExitOutput: "resume-hint"`, `quietStartup: true` and `hideThinkingBlock: true`. These are profile-local settings and require no launcher ANSI or global Pi mutation.
 - Fullscreen keeps transcript scrolling inside the viewport while editor, widgets and footer remain fixed. Pi owns resize, mouse scroll, SIGINT/exit teardown and cursor restoration.
 - Gentle's actual right rail is not a public extension primitive. `lib/shell-sidebar-layout.ts` patches `Symbol.for("@earendil-works/pi-tui/layout-node")`, activates only in fullscreen at 140 columns, creates a 50-column `ScrollView`, memoizes frames and restores the original layout node on dispose. Importing that is forbidden by AIES's public-API boundary.

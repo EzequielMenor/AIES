@@ -9,8 +9,9 @@
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import type { AgentsSnapshot } from "./agents.ts";
-import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
+import { sectionHeading } from "./panel.ts";
 import { deriveStage, verificationStatusLabel } from "./vocabulary.ts";
 
 /** Width of the label column in the `/aies-status` overview. */
@@ -53,25 +54,39 @@ export interface DoneSummaryTokens {
 
 export interface DoneSummaryInput {
   ticket?: string;
+  /** Legacy detail input kept in the durable entry; never drawn in the card. */
   changes?: string[];
   verification?: string;
   linear?: string;
   durationMs?: number;
+  /** Legacy detail input kept in the durable entry; never drawn in the card. */
   commit?: string;
   /** One indented row per finished child: `<role> <glyph> <text>`. */
   agents?: DoneSummaryAgent[];
-  /** Run token telemetry, printed only when supplied. */
+  /** Run token telemetry kept in the durable entry; never drawn in the card. */
   tokens?: DoneSummaryTokens;
-  /** Run cost; `null` renders as an em dash, `undefined` omits the row. */
+  /** Run cost kept in the durable entry; never drawn in the card. */
   cost?: number | null;
   /** Real warnings to surface, each with a pointer to the full view. */
   warnings?: string[];
 }
 
+/** Rows the DONE card shows before collapsing the rest. */
+const MAX_DONE_AGENT_ROWS = 4;
+
+/** Characters of arbitrary child text allowed on one DONE row. */
+const MAX_DONE_AGENT_TEXT = 60;
+
+/** The child roles the compact DONE card treats as essential. */
+const DONE_ESSENTIAL_ROLES: ReadonlySet<string> = new Set(["worker", "verify"]);
+
 /**
- * The compact DONE projection: a headline plus one indented row per fact, and
- * only the rows that carry a value. When the width allows, the duration rides
- * the headline; otherwise it becomes a `Tiempo` row.
+ * The compact DONE projection: a headline, a bounded set of essential child
+ * outcomes and the Linear result, plus real warnings. Tokens, cost and git stay
+ * in the durable entry and the `/aies-status` detail surfaces instead of
+ * lengthening the card, and arbitrary child text is clipped so the card can
+ * never grow without limit. When the width allows, the duration rides the
+ * headline; otherwise it becomes a `Tiempo` row.
  */
 export function renderDoneSummary(
   input: DoneSummaryInput = {},
@@ -100,46 +115,39 @@ export function renderDoneSummary(
       durationOnHeadline = true;
     }
   }
-  lines.push(paint.fg("success", headlineLine));
+  lines.push(sectionHeading(headlineLine, paint, "success"));
 
+  // Bound arbitrary child input: essential roles first, a fixed row cap and a
+  // clipped text so a verbose child summary cannot turn the card into a report.
   const agents = Array.isArray(input.agents) ? input.agents : [];
-  for (const agent of agents) {
-    const row = [singleLine(agent?.role ?? ""), singleLine(agent?.glyph ?? ""), singleLine(agent?.text ?? "")]
+  const essential = agents.filter((agent) =>
+    DONE_ESSENTIAL_ROLES.has(singleLine(agent?.role ?? "").toLowerCase()),
+  );
+  const considered = essential.length > 0 ? essential : agents;
+  const shown = considered.slice(0, MAX_DONE_AGENT_ROWS);
+  for (const agent of shown) {
+    const row = [
+      singleLine(agent?.role ?? ""),
+      singleLine(agent?.glyph ?? ""),
+      clip(singleLine(agent?.text ?? ""), MAX_DONE_AGENT_TEXT),
+    ]
       .filter(Boolean)
       .join(" ");
     if (row) lines.push(`  ${row}`);
   }
+  if (considered.length > shown.length) lines.push(`  … ${considered.length - shown.length} más`);
 
-  // The legacy structured inputs still render, but as flat rows: the verbose
-  // `Cambios` / `Verificación` blocks are gone.
-  if (agents.length === 0) {
-    for (const change of (input.changes ?? []).map((entry) => singleLine(String(entry))).filter(Boolean)) {
-      lines.push(`  ${change}`);
-    }
-  }
   const verification = singleLine(input.verification ?? "");
   if (verification && !agents.some((agent) => singleLine(agent?.role ?? "").toLowerCase() === "verify")) {
-    lines.push(`  Verify ✓ ${verification}`);
+    lines.push(`  Verify ✓ ${clip(verification, MAX_DONE_AGENT_TEXT)}`);
   }
 
   const linear = singleLine(input.linear ?? "");
   if (linear) lines.push(`  Linear ✓ ${linear}`);
 
-  const commit = singleLine(input.commit ?? "");
-  if (commit) lines.push(`  Git ${commit}`);
-
-  const tokens = input.tokens;
-  if (tokens && typeof tokens.total === "number" && Number.isFinite(tokens.total)) {
-    const main = Number.isFinite(tokens.main) ? formatTokens(tokens.main) : "—";
-    const agentsText = Number.isFinite(tokens.agents) ? formatTokens(tokens.agents) : "—";
-    lines.push(`  Tokens ${formatTokens(tokens.total)} (main ${main} · agents ${agentsText})`);
-  }
-
-  if (input.cost !== undefined) lines.push(`  Coste ${formatCost(input.cost)}`);
-
   const warnings = (input.warnings ?? []).map((entry) => singleLine(String(entry))).filter(Boolean);
   if (warnings.length) {
-    for (const warning of warnings) lines.push(`! ${warning}`);
+    for (const warning of warnings) lines.push(`! ${clip(warning, MAX_DONE_AGENT_TEXT)}`);
     lines.push("  /aies-status detalle");
   }
 
@@ -182,19 +190,19 @@ function normalizeVerification(value: string | undefined): string | undefined {
 export function renderBlockedSummary(input: BlockedSummaryInput, options: { paint?: Paint } = {}): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
   const ticket = singleLine(input.ticket ?? "");
-  const blocks: string[] = [paint.fg("error", ticket ? `! ${ticket} bloqueado` : "! Bloqueado")];
+  const blocks: string[] = [sectionHeading(ticket ? `! ${ticket} bloqueado` : "! Bloqueado", paint, "error")];
 
   const happened = singleLine(input.happened ?? "");
   if (happened) blocks.push(happened);
 
   const needs = singleLine(input.needs ?? "");
-  if (needs) blocks.push([paint.fg("muted", "Necesita"), `  ${needs}`].join("\n"));
+  if (needs) blocks.push([sectionHeading("Necesita", paint, "muted"), `  ${needs}`].join("\n"));
 
   const done = (input.done ?? []).map((item) => singleLine(String(item))).filter(Boolean);
   const pending = singleLine(input.pending ?? "");
   const estado: string[] = [...done.map((item) => `  ${item}`)];
   if (pending) estado.push(`  ${pending}`);
-  if (estado.length) blocks.push([paint.fg("muted", "Estado"), ...estado].join("\n"));
+  if (estado.length) blocks.push([sectionHeading("Estado", paint, "muted"), ...estado].join("\n"));
 
   const verification = normalizeVerification(input.verification);
   if (verification) {

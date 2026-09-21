@@ -123,6 +123,25 @@ describe("aies_ticket presentation", () => {
     }
   });
 
+  it("never collapses a raw directive or replay payload into a successful Linear row", () => {
+    const result = {
+      content: [{ type: "text", text: "Ticket EZE-500 loaded." }],
+      details: {
+        ticket: { identifier: "EZE-500" },
+        workState: "loaded",
+        // A success path can still carry the transport's own replay bookkeeping.
+        result: { ok: true, directive: { tool: "get_issue", args: { id: "EZE-500" }, key: "linear:get_issue" } },
+      },
+    };
+    const row = text(
+      tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, context({ action: "load", ticketId: "EZE-500" })),
+    );
+    assert.equal(row, "✓ EZE-500 · cargado");
+    for (const raw of ["directive", "get_issue", "linear:get_issue", "{"]) {
+      assert.equal(row.includes(raw), false, `raw plumbing ${raw} leaked into: ${row}`);
+    }
+  });
+
   it("treats remote_required as a compact Linear handoff, not an error dump", () => {
     const theme = recordingTheme();
     const result = {

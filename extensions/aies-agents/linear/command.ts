@@ -14,7 +14,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describeMcpDiagnostic } from "../mcp/integration.ts";
 import { formatCompactContract } from "./contract.ts";
 import type { TicketManager } from "./manager.ts";
-import { ticketLoadPrompt } from "./prompt.ts";
+import { ticketLoadPrompt, deliverAgentInstruction } from "./prompt.ts";
 
 /** A missing transport is an error; missing authentication is a warning. */
 function diagnosticLevel(code: string): "warning" | "error" {
@@ -72,7 +72,6 @@ export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager):
         }
       }
 
-      ctx.ui.notify(`Loading Linear ticket ${ticketId}...`, "info");
       const result = await manager.loadTicket(ticketId, { force });
 
       if (result.ok) {
@@ -82,9 +81,10 @@ export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager):
 
       if (result.error === "remote_required") {
         // AIES cannot fetch Linear on its own: the Parent does it with the `mcp`
-        // proxy tool, following the directive the tool returns.
+        // proxy tool, following the directive the tool returns. The instruction is
+        // internal plumbing, so it travels hidden and never renders as user input.
         ctx.ui.notify(`Cargando ${ticketId} con el agente (llamada MCP de Linear)...`, "info");
-        pi.sendUserMessage(ticketLoadPrompt(ticketId), { deliverAs: "followUp" });
+        deliverAgentInstruction(pi, ticketLoadPrompt(ticketId));
         return;
       }
 

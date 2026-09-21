@@ -705,6 +705,72 @@ and no private Pi import or renderer was added. Detailed reference:
 
 ---
 
+## D24 - One user-authorized, version-guarded private shim for the optional right rail (AIES-010D)
+
+**Decision.**
+1. The Pi 0.86.1 re-audit confirmed result B: Pi still exposes no public passive
+   side-rail primitive. `ExtensionWidgetOptions.placement` is limited to
+   `aboveEditor | belowEditor`, `ExtensionUIContext` has no root-composition or
+   sidebar API, and the host keeps its fullscreen layout tree behind the private
+   symbol `Symbol.for("@earendil-works/pi-tui/layout-node")`. The below-editor
+   status dock therefore remains the supported status surface.
+2. With explicit user authorization, AIES adds exactly one isolated private
+   compatibility module, `extensions/aies-ui/right-rail.ts`, to present an
+   optional physical right rail at `140` columns or more on a fullscreen host. It
+   is the only place in AIES that reads the private layout symbol. It wraps the
+   layout node the host already exposes on its own TUI instance, delegates the
+   transcript side to the original node, and restores the exact descriptor on
+   dispose. It never patches Pi, gentle-pi or `node_modules`.
+3. The shim is version-guarded to the Pi minor families actually audited (`0.85`
+   and `0.86`) and activates only in fullscreen. Every other version, mode,
+   missing hook, throwing render or empty render is a fail-safe no-op that
+   delegates to the host, so the below-editor dock and the rich narrow footer stay
+   the fallback and no failure can leave the human with no status surface.
+4. The rail reuses the dock's labelled facts and adds project and git branch,
+   capped at 46 columns of content. While the rail is showing at or above the
+   breakpoint the dock yields; everywhere else the dock renders as before.
+5. Pi keeps sole ownership of the fullscreen lifecycle: alternate-screen entry,
+   transcript scrolling, resize, Ctrl+C/exit teardown and terminal restoration.
+   AIES emits no ANSI and performs no manual clear. No global installation
+   changes: nothing outside the AIES profile and repository is written, and
+   `~/.pi`, `~/.agents` and `node_modules` are untouched.
+
+**Why.** The requested right rail is a real product improvement, but it is not a
+supported Pi integration: it depends on a private, experimental symbol that can
+change without notice. Refusing it entirely would leave a visual gap the user
+explicitly authorized closing; copying Gentle's rail as if it were public would be
+dishonest about the boundary. One isolated shim, guarded by version, bounded in
+scope, with the current dock as an unconditional fallback, is the narrowest way to
+gain the rail without pretending the internal is stable or scattering the
+dependency across the codebase.
+
+**Consequence.** AIES gains an optional physical rail without a public API it
+does not have and without a global modification. This is deliberate technical
+debt: it must be re-audited before trusting on every Pi minor or major bump and
+removed as soon as Pi exposes a public passive side-rail primitive, or sooner if
+the private hook can no longer be maintained safely. Until removal, the
+below-editor dock is the contract and the rail is a bounded enhancement. This
+supersedes D23 item 2 and refines D23's consequence that "no private Pi import or
+renderer was added": one private read now exists, in one module, under the guard
+above. Pi remains the runtime and every surface remains a projection. No visual
+acceptance is claimed here: the real wide `IDLE`/`WORKER`/`VERIFY`/`DONE` states,
+the narrow layout, scrollback isolation and `/exit`/Ctrl+C restoration remain
+T9's to validate.
+
+**T9 correction (120, not 140).** The original breakpoint above is corrected:
+the physical rail presents from `120` real terminal columns, not `140`. The
+product contract is one breakpoint per tier — `>=120` rail, `80`–`119` compact
+below-editor dock, `<80` rich footer — and a supported host that cannot install
+the rail keeps the full dock from `120` as the fallback. The rail's own `46`
+content columns plus the `2`-column gap are unchanged, so `237` terminal columns
+still leave `189` for the transcript. This correction is appended rather than
+rewriting the entry above, per the append-only decision history. The T9 visual
+acceptance remains open and is not claimed here.
+
+Detailed reference: `docs/UX.md` §2, §3, §5, §6, §17, §18 and §19.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

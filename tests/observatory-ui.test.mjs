@@ -506,8 +506,8 @@ describe("observatory UI seam", () => {
     const renderer = host.renderers.get("aies-summary");
     const text = renderer(done, {}, plainTheme).render(120).join("\n");
     assert.match(text, /Worker ✓ 1 archivo modificado/u);
-    assert.match(text, /Tokens 9000 \(main 5000 · agents 4000\)/u);
-    assert.match(text, /Coste \$0\.03/u);
+    assert.equal(text.includes("Tokens"), false, `detailed tokens stay out of the compact DONE card:\n${text}`);
+    assert.equal(text.includes("Coste"), false, `detailed cost stays out of the compact DONE card:\n${text}`);
     assert.match(text, /Tiempo/u);
   });
 

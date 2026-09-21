@@ -1,6 +1,7 @@
 import type { AgentRecord } from "../aies-agents/observatory.ts";
+import { runStartedAt } from "../aies-runtime/state.ts";
 import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { PLAIN_PAINT, type Paint } from "./paint.ts";
+import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, isCompacting, isContextPressure } from "./vocabulary.ts";
 import type { AgentsSnapshot } from "./agents.ts";
 
@@ -64,7 +65,11 @@ function roleLabel(role: string): string {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Agente";
 }
 
-function agentFact(record: AgentRecord): string {
+/**
+ * One child's one-line fact: role plus status glyph and label. Exported because
+ * both the compact dock and the physical rail describe a child the same way.
+ */
+export function agentFact(record: AgentRecord): string {
   const look = {
     running: ["◆", "activo"],
     completed: ["✓", "completado"],
@@ -91,7 +96,61 @@ function title(snapshot: AgentsSnapshot): string {
   return `✧ AIES · ${ticket} · ${deriveStage(snapshot)}`;
 }
 
-function box(titleText: string, rows: string[], width: number, paint: Paint): string[] {
+/**
+ * Elapsed time of the run in flight. It reads only the recorded run start so an
+ * idle dock never turns the whole session into a run clock; with no run there is
+ * no timer at all.
+ */
+export function activeRunElapsed(snapshot: AgentsSnapshot, now: number): string | undefined {
+  const startedAt = runStartedAt(snapshot);
+  return startedAt === undefined ? undefined : formatDuration(Math.max(0, now - startedAt));
+}
+
+/**
+ * The single shared hierarchy primitive. Every AIES card draws its section
+ * headings through it: the rail's `Status` and `Agents` sections and the
+ * DONE/BLOCKED headlines. It only names a semantic color through the existing
+ * `Paint`; the host theme decides the actual appearance. This is the smallest
+ * abstraction that gives the rail and the summaries one hierarchy.
+ */
+export function sectionHeading(label: string, paint: Paint, tone: SemanticColor = "muted"): string {
+  return paint.fg(tone, singleLine(label));
+}
+
+/**
+ * The labelled facts shared by the compact below-editor dock and the right rail,
+ * without the agent row. Exactly one implementation, so both surfaces time and
+ * describe the run the same way; the rail gives the agents their own section.
+ */
+export function compactStatusRows(snapshot: AgentsSnapshot, now: number): string[] {
+  const model = modelText(snapshot);
+  const elapsed = activeRunElapsed(snapshot, now);
+  const context = `Contexto  ${contextText(snapshot)}${elapsed ? ` · Tiempo ${elapsed}` : ""}`;
+  return [
+    model ? `Modelo    ${model}` : undefined,
+    context,
+    ...usageRows(snapshot),
+  ].filter((row): row is string => Boolean(row));
+}
+
+/**
+ * The labelled facts shared by the compact below-editor dock and the right rail.
+ * Exactly one implementation, so both surfaces time and describe the run the same
+ * way.
+ */
+export function compactPanelRows(snapshot: AgentsSnapshot, now: number): string[] {
+  return [...compactStatusRows(snapshot, now), agentsRow(snapshot)].filter(
+    (row): row is string => Boolean(row),
+  );
+}
+
+/** The title line of the dock and the rail; exported so both read it identically. */
+export function statusTitle(snapshot: AgentsSnapshot): string {
+  return title(snapshot);
+}
+
+/** Box a title and its bounded rows; exported for the rail's reused framing. */
+export function statusBox(titleText: string, rows: string[], width: number, paint: Paint): string[] {
   const inner = width - 4;
   const label = ` ${clip(titleText, Math.max(1, width - 6))} `;
   const top = `╭─${label}${"─".repeat(Math.max(0, width - 3 - label.length))}╮`;
@@ -116,21 +175,15 @@ export function renderStatusPanel(
 
   const paint = options.paint ?? PLAIN_PAINT;
   const width = Math.min(available, available >= PANEL_WIDE_WIDTH ? PANEL_MAX_WIDTH : 72);
-  const elapsed = formatDuration(Math.max(0, now - snapshot.startedAt));
+  const elapsed = activeRunElapsed(snapshot, now);
   const model = modelText(snapshot);
   const agents = agentsRow(snapshot);
   const usage = usageRows(snapshot);
 
   if (available >= PANEL_WIDE_WIDTH) {
     const primary = [model, `ctx ${contextText(snapshot)}`, elapsed].filter(Boolean).join("  ·  ");
-    return box(title(snapshot), [primary, ...usage, agents].filter((row): row is string => Boolean(row)), width, paint);
+    return statusBox(title(snapshot), [primary, ...usage, agents].filter((row): row is string => Boolean(row)), width, paint);
   }
 
-  const rows = [
-    model ? `Modelo    ${model}` : undefined,
-    `Contexto  ${contextText(snapshot)} · Tiempo ${elapsed}`,
-    ...usage,
-    agents,
-  ].filter((row): row is string => Boolean(row));
-  return box(title(snapshot), rows, width, paint);
+  return statusBox(title(snapshot), compactPanelRows(snapshot, now), width, paint);
 }

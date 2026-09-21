@@ -143,7 +143,7 @@ ${lines.join("\n")}`);
     const text = lines.join("\n");
     assert.match(text, /Qwen 3\.8 Flash · openrouter/u);
     assert.match(text, /ctx 31k/u);
-    assert.match(text, /00:00/u);
+    assert.equal(text.includes("00:00"), false, `an idle panel must not time the session:\n${text}`);
     assert.equal(text.includes("Agentes"), false, text);
     assert.equal(text.includes("Tokens"), false, text);
     assert.equal(text.includes("Coste"), false, text);
@@ -159,7 +159,22 @@ ${lines.join("\n")}`);
     assert.equal(text.includes("Agentes"), false, text);
     assert.equal(text.includes("$0.00"), false, text);
     assert.match(text, /ctx 31k/u);
-    assert.match(text, /00:00/u);
+    assert.equal(text.includes("00:00"), false, `no run, no clock:\n${text}`);
+  });
+
+  it("times the active run and never the session", () => {
+    let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
+
+    const idle = renderStatusPanel(snapOf(state), T0 + 90_000, { width: 140 }).join("\n");
+    assert.equal(idle.includes("01:30"), false, `the session elapsed leaked into the panel:\n${idle}`);
+
+    state = applyRunStart(state, T0 + 60_000);
+    const running = renderStatusPanel(snapOf(state), T0 + 90_000, { width: 140 }).join("\n");
+    assert.match(running, /00:30/u);
+    assert.equal(running.includes("01:30"), false, running);
+
+    const compact = renderStatusPanel(snapOf(state), T0 + 90_000, { width: 90 }).join("\n");
+    assert.match(compact, /Tiempo 00:30/u);
   });
 
   it("omits the Agentes row when the registry is empty, even while a role is active", () => {
