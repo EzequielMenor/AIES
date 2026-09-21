@@ -36,6 +36,7 @@ import {
   decodeOverlayKey,
   reduceOverlayKey,
   renderOverlayState,
+  type OverlayAction,
   type OverlayContext,
 } from "./overlay.ts";
 
@@ -95,6 +96,44 @@ function sessionThinkingSetter(pi: ExtensionAPI, ctx: ExtensionContext): (level:
   return () => {};
 }
 
+/** The slice of the injected keybinding manager `/aies-models` uses, when present. */
+interface KeybindingsLike {
+  matches?(data: string, action: string): boolean;
+}
+
+/**
+ * Bind the overlay keys to the injected keybinding manager when the host
+ * provides one, with raw fallbacks so a partial host still works. The manager
+ * is authoritative because Pi may deliver arrows and Esc as CSI-u sequences
+ * under the Kitty keyboard protocol; the raw decoder is the safety net.
+ */
+function overlayKeys(keybindings: unknown): { decode(data: string): OverlayAction | undefined } {
+  const manager = keybindings as KeybindingsLike | undefined;
+  const matches = (data: string, action: string): boolean => {
+    if (manager && typeof manager.matches === "function") {
+      try {
+        if (manager.matches(data, action) === true) return true;
+      } catch {
+        // An unusable manager falls back to the raw decoder below.
+      }
+    }
+    return false;
+  };
+
+  return {
+    decode: (data) => {
+      if (matches(data, "tui.select.up")) return "up";
+      if (matches(data, "tui.select.down")) return "down";
+      if (matches(data, "tui.editor.cursorLeft")) return "left";
+      if (matches(data, "tui.editor.cursorRight")) return "right";
+      if (matches(data, "tui.select.confirm")) return "confirm";
+      if (matches(data, "app.models.save")) return "confirm";
+      if (matches(data, "tui.select.cancel")) return "escape";
+      return decodeOverlayKey(data);
+    },
+  };
+}
+
 /** A theme surface read structurally so a partial host still renders text. */
 interface OverlayTheme {
   fg?(color: string, text: string): string;
@@ -140,30 +179,39 @@ async function openOverlay(ctx: ExtensionContext, models: ModelOption[]): Promis
   if (typeof custom !== "function") return null;
 
   const result = await custom(
-    (tui, theme, _keybindings, done) => ({
-      render: (width: number) => renderOverlayLines(state, context, theme as OverlayTheme | undefined, width),
-      handleInput: (data: string): void => {
-        state = reduceOverlayKey(state, decodeOverlayKey(data), context);
-        if (state.cancelled) {
-          done(null);
-          return;
-        }
-        if (state.step === "done" && state.model) {
-          done({
-            role: state.role ?? "parent",
-            option: state.model,
-            ...(state.thinking ? { thinkingLevel: state.thinking } : {}),
-          } satisfies ModelsSelection);
-          return;
-        }
-        try {
-          (tui as { requestRender?: () => void })?.requestRender?.();
-        } catch {
-          // A host without an explicit render request repaints on the next tick.
-        }
-      },
-      invalidate(): void {},
-    }),
+    (tui, theme, keybindings, done) => {
+      const keys = overlayKeys(keybindings);
+      let settled = false;
+      return {
+        render: (width: number) => renderOverlayLines(state, context, theme as OverlayTheme | undefined, width),
+        handleInput: (data: string): void => {
+          if (settled) return;
+          const action = keys.decode(data);
+          if (!action) return;
+          state = reduceOverlayKey(state, action, context);
+          if (state.cancelled) {
+            settled = true;
+            done(null);
+            return;
+          }
+          if (state.step === "done" && state.model) {
+            settled = true;
+            done({
+              role: state.role ?? "parent",
+              option: state.model,
+              ...(state.thinking ? { thinkingLevel: state.thinking } : {}),
+            } satisfies ModelsSelection);
+            return;
+          }
+          try {
+            (tui as { requestRender?: () => void })?.requestRender?.();
+          } catch {
+            // A host without an explicit render request repaints on the next tick.
+          }
+        },
+        invalidate(): void {},
+      };
+    },
     {
       overlay: true,
       overlayOptions: { anchor: "center", width: "70%", minWidth: 40, maxHeight: "80%" },

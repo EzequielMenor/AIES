@@ -4,8 +4,10 @@
  * The TUI component in `index.ts` is only a thin adapter over this module: it
  * forwards input, calls `tui.requestRender()` and renders whatever
  * `renderOverlayState` returns. The flow is keyboard-first (arrows or j/k,
- * Enter to confirm, Esc to go back or cancel) and every step is a bounded,
- * deterministic projection, so it can be exercised without a terminal.
+ * ←→ or h/l for effort, Enter or Ctrl+S to confirm, Esc back, q quit) and
+ * every step is a bounded, deterministic projection, so it can be exercised
+ * without a terminal. Keys are decoded by the host keybindings manager with
+ * the raw fallbacks in `decodeOverlayKey` underneath.
  */
 
 import type { AiesThinkingLevel, ModelOption } from "./capabilities.ts";
@@ -24,6 +26,11 @@ export const ROLE_LABELS: Record<AiesRole, string> = {
 
 /** The three steps of the picker. */
 export type OverlayStep = "role" | "model" | "thinking" | "done";
+
+/** The overlay's small input alphabet after decoding. */
+export type OverlayAction = "up" | "down" | "left" | "right" | "confirm" | "escape" | "quit";
+
+const OVERLAY_ACTIONS: readonly OverlayAction[] = ["up", "down", "left", "right", "confirm", "escape", "quit"];
 
 export interface OverlayState {
   step: OverlayStep;
@@ -48,12 +55,21 @@ export function createOverlayState(): OverlayState {
   return { step: "role", roleIndex: 0, modelIndex: 0, thinkingIndex: 0, cancelled: false };
 }
 
-/** Normalize a raw terminal key into the overlay's small input alphabet. */
-export function decodeOverlayKey(data: string): "up" | "down" | "enter" | "escape" | undefined {
+/**
+ * Normalize a raw terminal key into the overlay's small input alphabet. This
+ * is the fallback decoder used when the host keybindings manager cannot classify
+ * the payload; it is deterministic and never guesses an ANSI sequence.
+ */
+export function decodeOverlayKey(data: string): OverlayAction | undefined {
   if (data === "\x1b[A" || data === "k") return "up";
   if (data === "\x1b[B" || data === "j") return "down";
-  if (data === "\r" || data === "\n" || data === "enter" || data === "return") return "enter";
+  if (data === "\x1b[D" || data === "h") return "left";
+  if (data === "\x1b[C" || data === "l") return "right";
+  if (data === "\r" || data === "\n" || data === "enter" || data === "return" || data === "\x13") {
+    return "confirm";
+  }
   if (data === "\x1b" || data === "escape" || data === "esc") return "escape";
+  if (data === "q") return "quit";
   return undefined;
 }
 
@@ -77,14 +93,24 @@ export function reduceOverlayKey(
   context: OverlayContext,
 ): OverlayState {
   const action =
-    key === "up" || key === "down" || key === "enter" || key === "escape" ? key : decodeOverlayKey(key ?? "");
+    key !== undefined && (OVERLAY_ACTIONS as readonly string[]).includes(key)
+      ? (key as OverlayAction)
+      : decodeOverlayKey(key ?? "");
   if (!action || state.cancelled || state.step === "done") return state;
+
+  if (action === "quit") return { ...state, cancelled: true };
 
   if (action === "escape") {
     if (state.step === "role") return { ...state, cancelled: true };
     if (state.step === "model") return { ...state, step: "role", modelIndex: 0 };
     if (state.step === "thinking") return { ...state, step: "model", thinkingIndex: 0 };
     return state;
+  }
+
+  if (action === "left" || action === "right") {
+    if (state.step !== "thinking") return state;
+    const delta = action === "left" ? -1 : 1;
+    return { ...state, thinkingIndex: clamp(state.thinkingIndex + delta, levelsOf(state.model).length) };
   }
 
   if (action === "up" || action === "down") {
@@ -101,7 +127,7 @@ export function reduceOverlayKey(
     return state;
   }
 
-  // Enter.
+  // Confirm.
   if (state.step === "role") {
     return {
       ...state,
@@ -136,7 +162,7 @@ export interface OverlayView {
   help: string;
 }
 
-const DEFAULT_HELP = "↑↓ o j/k · Enter elegir · Esc atrás";
+const DEFAULT_HELP = "↑↓ j/k elegir · ←→ h/l esfuerzo · Enter elegir · Esc atrás · q salir · Ctrl+S guardar";
 
 function windowOf<T>(items: readonly T[], selected: number): { rows: T[]; offset: number } {
   if (items.length <= OVERLAY_VISIBLE_ROWS) return { rows: [...items], offset: 0 };

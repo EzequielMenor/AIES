@@ -184,13 +184,19 @@ describe("overlay keyboard flow", () => {
     ],
   };
 
-  it("decodes arrows, j/k and enter/esc", () => {
+  it("decodes arrows, j/k, h/l, confirm, quit and esc", () => {
     assert.equal(decodeOverlayKey("\x1b[A"), "up");
     assert.equal(decodeOverlayKey("\x1b[B"), "down");
     assert.equal(decodeOverlayKey("k"), "up");
     assert.equal(decodeOverlayKey("j"), "down");
-    assert.equal(decodeOverlayKey("\r"), "enter");
-    assert.equal(decodeOverlayKey("\n"), "enter");
+    assert.equal(decodeOverlayKey("\x1b[D"), "left");
+    assert.equal(decodeOverlayKey("\x1b[C"), "right");
+    assert.equal(decodeOverlayKey("h"), "left");
+    assert.equal(decodeOverlayKey("l"), "right");
+    assert.equal(decodeOverlayKey("\r"), "confirm");
+    assert.equal(decodeOverlayKey("\n"), "confirm");
+    assert.equal(decodeOverlayKey("\x13"), "confirm");
+    assert.equal(decodeOverlayKey("q"), "quit");
     assert.equal(decodeOverlayKey("\x1b"), "escape");
     assert.equal(decodeOverlayKey("x"), undefined);
   });
