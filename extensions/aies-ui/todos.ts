@@ -34,6 +34,11 @@ export interface TodoProjection {
   items: TodoItem[];
   done: number;
   total: number;
+  /**
+   * True only while the workflow has started nothing: the checklist is hidden
+   * and the surface shows `— sin tarea activa` instead of inventing five steps.
+   */
+  idle: boolean;
 }
 
 /** Glyph and tone for a derived step. */
@@ -72,6 +77,28 @@ function roleStep(snapshot: AgentsSnapshot, role: string): TodoState {
   return "pending";
 }
 
+/**
+ * Whether the workflow has actually started something. IDLE shows no checklist
+ * at all; the projection returns the moment any real run signal exists. A
+ * default, untouched verification and empty delegation map are not signals.
+ */
+function hasRunSignals(snapshot: AgentsSnapshot): boolean {
+  if (ticketLoaded(snapshot)) return true;
+  if (exploreUsed(snapshot)) return true;
+  if (Array.isArray(snapshot.agents) && snapshot.agents.length > 0) return true;
+
+  const byRole = snapshot.delegations?.byRole;
+  if (byRole && Object.values(byRole).some((count) => typeof count === "number" && count > 0)) return true;
+  if (snapshot.delegations?.activeRole) return true;
+
+  const verification = snapshot.verification;
+  if (verification && (verification.status !== "none" || verification.attempts > 0)) return true;
+
+  if (snapshot.autonomy?.ticketId) return true;
+  if (snapshot.autonomy?.stopReason) return true;
+  return false;
+}
+
 function verificationStep(snapshot: AgentsSnapshot): TodoState {
   const verification = snapshot.verification;
   if (!verification) return "pending";
@@ -94,6 +121,10 @@ function verificationStep(snapshot: AgentsSnapshot): TodoState {
  * normal flow only when the workflow has actually started something.
  */
 export function deriveTodos(snapshot: AgentsSnapshot): TodoProjection {
+  if (!hasRunSignals(snapshot)) {
+    return { items: [], done: 0, total: 0, idle: true };
+  }
+
   const items: TodoItem[] = [];
 
   const loaded = ticketLoaded(snapshot);
@@ -118,7 +149,7 @@ export function deriveTodos(snapshot: AgentsSnapshot): TodoProjection {
   items.push({ key: "done", label: "Finalizar", state: complete ? "done" : "pending" });
 
   const done = items.filter((item) => item.state === "done").length;
-  return { items, done, total: items.length };
+  return { items, done, total: items.length, idle: false };
 }
 
 export interface TodoRenderOptions {
@@ -138,7 +169,18 @@ export interface TodoRenderOptions {
  */
 export function renderTodos(projection: TodoProjection, options: TodoRenderOptions = {}): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
-  const { items, done, total } = projection;
+  const { items, done, total, idle } = projection;
+
+  // IDLE: no fake workflow. With room, the heading plus one muted row; without
+  // it, the same collapse to a single line the running checklist uses.
+  if (idle) {
+    const idleBudget = options.maxRows;
+    if (typeof idleBudget === "number" && idleBudget < 2) {
+      return idleBudget >= 1 ? [paint.fg("muted", "Todos · sin tarea activa")] : [];
+    }
+    return [paint.fg("accent", "Todos"), `  ${paint.fg("muted", "— sin tarea activa")}`];
+  }
+
   if (items.length === 0) return [];
 
   const budget = options.maxRows;

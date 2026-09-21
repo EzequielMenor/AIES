@@ -673,6 +673,7 @@ describe("observability extension", () => {
       [...host.handlers.keys()].sort(),
       [
         "agent_settled",
+        "input",
         "model_select",
         "session_compact",
         "session_shutdown",

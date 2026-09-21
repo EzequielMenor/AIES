@@ -67,6 +67,7 @@ import {
   renderActivityEntry,
   type ActivityRecord,
 } from "../aies-ui/activity.ts";
+import { emptyStateWanted, hasHumanTranscript, renderEmptyState } from "../aies-ui/empty-state.ts";
 import {
   renderBlockedSummary,
   renderDoneSummary,
@@ -89,6 +90,9 @@ const ENTRY_TYPE = "aies-metrics";
 
 /** One widget per active child, above the editor. */
 const ACTIVITY_KEY = "aies-activity";
+
+/** The idle empty state, shown only in a fresh, unstarted session. */
+const EMPTY_STATE_KEY = "aies-empty-state";
 
 /** The persistent status panel, rendered below the editor. */
 const PANEL_KEY = "aies-panel";
@@ -408,6 +412,10 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   let footerTui: WidgetTui | undefined;
   let headerTui: WidgetTui | undefined;
   let widgetRegistered = false;
+  let emptyStateRegistered = false;
+  // Whether the transcript already carries a user message. Computed once per
+  // session signal, never on the render path, so a repaint never reads entries.
+  let emptyStateTranscriptSeen = false;
   let panelWidgetTui: WidgetTui | undefined;
   let panelWidgetRegistered = false;
   // The isolated private right-rail shim, installed only when the host accepts the
@@ -968,6 +976,59 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   /**
+   * Register the idle empty-state widget through the factory form. It is a pure
+   * projection of the transcript and the live run signals, so it clears itself
+   * the moment the session stops being fresh.
+   */
+  function syncEmptyState(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    if (!ui || typeof ui.setWidget !== "function") return;
+    if (ctx.mode !== "tui") return;
+
+    const snapshot = uiSnapshot();
+    const wanted = emptyStateWanted({
+      userTranscriptSeen: emptyStateTranscriptSeen,
+      isIdle: typeof ctx.isIdle === "function" ? ctx.isIdle() === true : true,
+      hasActivity: Boolean(state.activity),
+      ticketActive: snapshot.ticket?.active === true,
+      activeRole: snapshot.delegations?.activeRole ?? undefined,
+    });
+
+    if (wanted) {
+      if (emptyStateRegistered) return;
+      try {
+        ui.setWidget(EMPTY_STATE_KEY, (_tui: unknown, theme: unknown) => ({
+          render: (width: number): string[] =>
+            renderEmptyState({ width, paint: themePaint(theme as ThemeLike | undefined) }),
+          invalidate() {},
+        }));
+        emptyStateRegistered = true;
+      } catch {
+        emptyStateRegistered = false;
+      }
+      return;
+    }
+
+    if (emptyStateRegistered) clearEmptyStateWidget(ui);
+  }
+
+  function clearEmptyStateWidget(ui: UiSurface): void {
+    try {
+      ui.setWidget?.(EMPTY_STATE_KEY, undefined);
+    } catch {
+      // Clearing a widget that cannot be cleared is not an error.
+    }
+    emptyStateRegistered = false;
+  }
+
+  function clearEmptyState(ctx: ExtensionContext): void {
+    const ui = uiOf(ctx);
+    if (emptyStateRegistered && ui) clearEmptyStateWidget(ui);
+    emptyStateRegistered = false;
+    emptyStateTranscriptSeen = false;
+  }
+
+  /**
    * The persistent status panel, below the editor. It appears only while the
    * terminal is wide enough for `renderStatusPanel` to produce lines, is cleared
    * the moment it would render empty or the session ends, and re-renders in place
@@ -1219,6 +1280,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     }
 
     syncActivity(ctx);
+    syncEmptyState(ctx);
     syncPanelWidget(ctx);
     armClock(ctx);
   }
@@ -1328,6 +1390,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       footer = "";
       header = "";
       panel = "";
+      emptyStateTranscriptSeen = false;
       footerTui = undefined;
       headerTui = undefined;
       persisted = "";
@@ -1365,6 +1428,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       });
       state = applyModel(state, ctx.model);
       if (event.reason !== "new") restore(ctx, now);
+      // A resumed or reloaded session may already carry user messages. Read the
+      // transcript once here, never on the render path.
+      if (event.reason !== "new") emptyStateTranscriptSeen = hasHumanTranscript(sessionEntriesOf(ctx));
 
       // Quiet rendering for the six generic Pi tools, with the real session cwd.
       // Idempotent per host: a reload or resume in the same directory registers
@@ -1376,6 +1442,16 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         installFooter(ctx);
         installHeader(ctx);
       }
+      render(ctx);
+    });
+  });
+
+  // The moment the user submits input the session is no longer fresh: repaint so
+  // the idle empty state yields to the real transcript.
+  pi.on("input", async (_event, ctx) => {
+    guard(() => {
+      // Any submitted input means the transcript now has real content.
+      emptyStateTranscriptSeen = true;
       render(ctx);
     });
   });
@@ -1481,6 +1557,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     guard(persist);
     guard(() => clearActivity(ctx));
+    guard(() => clearEmptyState(ctx));
     guard(() => clearPanel(ctx));
     guard(() => clearShell(ctx));
     stopClock();
@@ -1554,6 +1631,20 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       }
     },
   });
+}
+
+/**
+ * Read this session's transcript entries structurally, or an empty list when Pi
+ * cannot answer. The empty state only needs to know whether a user message
+ * exists; it never keeps or rewrites an entry.
+ */
+function sessionEntriesOf(ctx: ExtensionContext): readonly unknown[] {
+  try {
+    const entries = ctx.sessionManager.getEntries();
+    return Array.isArray(entries) ? entries : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Read an activity record back out of a durable entry, defensively. */

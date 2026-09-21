@@ -314,9 +314,9 @@ describe("AIES UI seam", () => {
       details: { ticket: { identifier: "EZE-424", title: "Fix clamp", status: "In Progress" } },
     });
 
-    assert.equal(host.widgets.at(-1).key, "aies-panel");
-    assert.equal(typeof host.widgets.at(-1).factory, "function");
-    assert.equal(host.widgets.at(-1).options?.placement, "belowEditor", "the panel lives below the editor");
+    const panelWidget = [...host.widgets].reverse().find((entry) => entry.key === "aies-panel" && entry.factory);
+    assert.ok(panelWidget, "the persistent panel must be registered");
+    assert.equal(panelWidget.options?.placement, "belowEditor", "the panel lives below the editor");
 
     const panel = host.mountWidget("aies-panel", 140);
     const lines = panel.lines();
@@ -501,13 +501,18 @@ describe("AIES UI seam", () => {
   it("registers the aies-activity widget and renders the role and task", async () => {
     const host = createHost();
     await host.start();
-    assert.deepEqual(host.widgets, []);
+    assert.deepEqual(host.widgets.map((entry) => entry.key), ["aies-empty-state"]);
 
     await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement the seam" } });
 
-    const widget = host.widgets.at(-1);
-    assert.equal(widget.key, "aies-activity");
+    const widget = [...host.widgets].reverse().find((entry) => entry.key === "aies-activity" && entry.factory);
+    assert.ok(widget, "the activity widget must be registered");
     assert.equal(typeof widget.factory, "function");
+    assert.equal(
+      host.widgets.some((entry) => entry.key === "aies-empty-state" && entry.cleared === true),
+      true,
+      "a started run must clear the idle empty state",
+    );
 
     const component = widget.factory({ requestRender() {} }, plainTheme);
     const lines = component.render(80);
