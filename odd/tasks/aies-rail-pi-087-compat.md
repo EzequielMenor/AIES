@@ -137,3 +137,12 @@ Automated:
 - `npm run check:isolation` → 760/760;
 - `bash -n bin/aies scripts/*.sh` → clean;
 - `git diff --check` → clean.
+
+R6 follow-up (same session): `isSupportedPiVersion()` and `AUDITED_PI_MINORS`
+were deleted outright. After the fix they were public and tested but consulted
+by nothing — the audited minors are a strict subset of what the 0.85 floor
+already admits — and a predicate named "is supported" that is not the
+installation gate is the same trap that hid this regression. The hand-audited
+coverage now lives only where it is read: the shim's header comment, `docs/UX.md`
+§5 and D24's correction. `README.md` was also corrected: it promised the rail
+only on audited minors, which the shipped probe-based gate does not do.
