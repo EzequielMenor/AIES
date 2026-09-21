@@ -67,6 +67,17 @@ function emptyTicketManager() {
   return { getActiveTicket: () => undefined, getWorkState: () => "idle" };
 }
 
+/** A manager whose terminal actions succeed, so `execute` reaches the success path. */
+function terminalTicketManager(overrides = {}) {
+  return {
+    getActiveTicket: () => ({ identifier: "EZE-428" }),
+    getWorkState: () => "complete",
+    completeTicket: async () => ({ ok: true, message: "Ticket EZE-428 marked Done in Linear." }),
+    blockTicket: async () => ({ ok: true, message: "Ticket EZE-428 marked blocked: waiting on design." }),
+    ...overrides,
+  };
+}
+
 describe("aies_ticket presentation", () => {
   const tool = createTicketTool(emptyTicketManager());
 
@@ -99,10 +110,11 @@ describe("aies_ticket presentation", () => {
     );
   });
 
-  it("settles start/complete/show into compact rows without the contract", () => {
+  it("settles the non-terminal actions into compact rows without the contract", () => {
     const cases = [
       ["start", "iniciado"],
-      ["complete", "completado"],
+      ["refresh", "actualizado"],
+      ["comment", "comentado"],
       ["show", "mostrado"],
     ];
     for (const [action, done] of cases) {
@@ -280,6 +292,119 @@ describe("aies_ticket presentation", () => {
       tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, context({ action: "show" })),
     );
     assert.equal(row, "Linear · sin ticket activo");
+  });
+});
+
+describe("aies_ticket terminal ownership", () => {
+  it("hides the collapsed success row for complete and block (the runtime card owns the surface)", () => {
+    const tool = createTicketTool(emptyTicketManager());
+    for (const action of ["complete", "block"]) {
+      const result = {
+        content: [{ type: "text", text: "raw success text" }],
+        details: { ticket: { identifier: "EZE-428" }, workState: "complete", result: { ok: true } },
+      };
+      assert.deepEqual(
+        mount(tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, context({ action, ticketId: "EZE-428" }))),
+        [],
+        `${action} must not render a second success row`,
+      );
+    }
+  });
+
+  it("never hides a complete/block error row", () => {
+    const tool = createTicketTool(emptyTicketManager());
+    for (const action of ["complete", "block"]) {
+      const result = {
+        content: [{ type: "text", text: "raw failure" }],
+        details: { error: "verify_gate_denied", ticket: { identifier: "EZE-428" } },
+      };
+      const row = text(
+        tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, context({ action, ticketId: "EZE-428" })),
+      );
+      assert.match(row, /✗/u);
+      assert.ok(row.includes("verificación denegada"), row);
+    }
+  });
+
+  it("never hides the expanded complete/block output", () => {
+    const tool = createTicketTool(emptyTicketManager());
+    for (const action of ["complete", "block"]) {
+      const full = `Ticket EZE-428 ${action} full output`;
+      const result = { content: [{ type: "text", text: full }], details: { result: { ok: true } } };
+      const expanded = text(
+        tool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, context({ action, ticketId: "EZE-428" })),
+      );
+      assert.equal(expanded, full);
+    }
+  });
+
+  it("keeps an unexpected host error visible for complete and block", () => {
+    const tool = createTicketTool(emptyTicketManager());
+    for (const action of ["complete", "block"]) {
+      // Pi wraps a thrown tool error as `details: {}` with render context `isError: true`.
+      const result = { content: [{ type: "text", text: "host error" }], details: {} };
+      const theme = recordingTheme();
+      const row = text(
+        tool.renderResult(
+          result,
+          { expanded: false, isPartial: false },
+          theme,
+          context({ action, ticketId: "EZE-428" }, { isError: true }),
+        ),
+      );
+      assert.match(row, /✗/u);
+      assert.ok(row.includes("EZE-428"), row);
+      assert.deepEqual(theme.colors, ["error"]);
+      assert.equal(row.includes("host error"), false, `the collapsed error must stay bounded: ${row}`);
+    }
+  });
+
+  it("tells the Parent to end the turn after a successful complete", async () => {
+    const tool = createTicketTool(terminalTicketManager());
+    const res = await tool.execute("1", { action: "complete", evidence: "verified" }, undefined, undefined, {
+      cwd: "/repo",
+      mode: "print",
+    });
+    assert.equal(res.isError, false);
+    const message = res.content[0].text;
+    // The original model-visible message is preserved.
+    assert.ok(message.includes("Ticket EZE-428 marked Done in Linear."), message);
+    // The stop instruction is explicit about same-turn prose ownership.
+    assert.match(message, /end the turn/i);
+    assert.match(message, /no user-facing/i);
+    assert.match(message, /prose/i);
+    assert.match(message, /DONE\/BLOCKED/);
+    // Structured semantics are untouched.
+    assert.equal(res.details.result.ok, true);
+    assert.equal(res.details.result.message, "Ticket EZE-428 marked Done in Linear.");
+  });
+
+  it("tells the Parent to end the turn after a successful block", async () => {
+    const tool = createTicketTool(terminalTicketManager());
+    const res = await tool.execute("1", { action: "block", evidence: "waiting" }, undefined, undefined, {
+      cwd: "/repo",
+      mode: "print",
+    });
+    assert.equal(res.isError, false);
+    const message = res.content[0].text;
+    assert.match(message, /end the turn/i);
+    assert.match(message, /prose/i);
+    assert.equal(res.details.result.ok, true);
+  });
+
+  it("never appends the stop instruction to a failed complete/block", async () => {
+    const tool = createTicketTool({
+      getActiveTicket: () => ({ identifier: "EZE-428" }),
+      getWorkState: () => "working",
+      completeTicket: async () => ({
+        ok: false,
+        error: "verify_gate_denied",
+        message: "Done Gate DENIED: no verification run.",
+      }),
+    });
+    const res = await tool.execute("1", { action: "complete" }, undefined, undefined, { cwd: "/repo", mode: "print" });
+    assert.equal(res.isError, true);
+    assert.equal(/end the turn/i.test(res.content[0].text), false, res.content[0].text);
   });
 });
 

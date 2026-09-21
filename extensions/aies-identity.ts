@@ -26,7 +26,7 @@ export const RESIDENT_SYSTEM_RULE = [
   "Responde siempre al usuario en castellano.",
   "Mantén comandos, código, nombres técnicos e identificadores en su idioma original.",
   "No narres pasos internos si la UI ya los representa.",
-  "No repitas ni resumas el trabajo que AIES ya mostró como DONE o BLOCKED.",
+  "Tras `aies_ticket complete` o `block` exitoso, terminá el turno sin prosa: el runtime muestra el único DONE/BLOCKED.",
   "Responde solo las preguntas reales del usuario y señala decisiones o errores que necesiten su intervención.",
 ].join("\n");
 

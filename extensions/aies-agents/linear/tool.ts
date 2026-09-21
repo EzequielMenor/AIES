@@ -143,6 +143,15 @@ const TICKET_ERROR_MESSAGE: Record<string, string> = {
 /** Safe fallback: an unknown or future code never becomes the visible row. */
 const TICKET_ERROR_FALLBACK = "falló la operación";
 
+/**
+ * The runtime owns the single DONE/BLOCKED summary card, so a successful terminal
+ * action must not make the Parent write a second human-facing report. This concise
+ * model-visible instruction is appended only to a successful `complete`/`block`
+ * result; it never alters the structured details or the manager's own semantics.
+ */
+const TICKET_TERMINAL_STOP_INSTRUCTION =
+  "AIES runtime owns the only DONE/BLOCKED summary. End the turn now with no user-facing completion or blocker prose.";
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
@@ -257,6 +266,15 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
           error === "remote_required" ? ticketHandoffRow(details!, paint) : ticketErrorRow(args, details!, paint),
         );
       }
+      // A host-level thrown error arrives as `details: {}` with the render context
+      // flag set. It must stay visible: only a proven non-error terminal result may
+      // collapse, or an unexpected fault would disappear behind the runtime card.
+      if (context?.isError === true) return textRow(ticketErrorRow(args, details ?? {}, paint));
+      // A successful terminal action collapses to nothing: the runtime DONE/BLOCKED
+      // summary card is the sole normal owner of that headline. Errors above and the
+      // expanded raw output stay visible and unchanged.
+      const action = ticketAction(args);
+      if (action === "complete" || action === "block") return EMPTY_ROW;
       return textRow(ticketDoneRow(args, details ?? {}, paint));
     },
     parameters: TicketParamsSchema,
@@ -378,6 +396,9 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
       let responseText = result.message ?? `Ticket operation '${action}' succeeded.`;
       if (result.contract) {
         responseText += `\n\n${result.contract}`;
+      }
+      if (action === "complete" || action === "block") {
+        responseText += `\n\n${TICKET_TERMINAL_STOP_INSTRUCTION}`;
       }
 
       return {

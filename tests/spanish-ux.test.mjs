@@ -35,7 +35,7 @@ const RULE_LINES = [
   "Responde siempre al usuario en castellano.",
   "Mantén comandos, código, nombres técnicos e identificadores en su idioma original.",
   "No narres pasos internos si la UI ya los representa.",
-  "No repitas ni resumas el trabajo que AIES ya mostró como DONE o BLOCKED.",
+  "Tras `aies_ticket complete` o `block` exitoso, terminá el turno sin prosa: el runtime muestra el único DONE/BLOCKED.",
   "Responde solo las preguntas reales del usuario y señala decisiones o errores que necesiten su intervención.",
 ];
 
@@ -88,14 +88,16 @@ describe("resident Parent Spanish rule", () => {
     assert.equal(occurrences, 1, twice.systemPrompt);
   });
 
-  it("forbids narrating UI-owned transitions and a second prose DONE/BLOCKED, and stays short", () => {
+  it("states the same-turn DONE/BLOCKED prose rule explicitly and stays short", () => {
     // One short resident rule: this cap is what keeps it from becoming a prompt book.
     assert.ok(RULE_LINES.length <= 6, `the resident rule grew to ${RULE_LINES.length} lines`);
     assert.ok(RESIDENT_SYSTEM_RULE.length <= 420, `the resident rule grew to ${RESIDENT_SYSTEM_RULE.length} chars`);
     // UI ownership of internal transitions: do not narrate what the shell already shows.
     assert.match(RESIDENT_SYSTEM_RULE, /No narres pasos internos si la UI ya los representa/u);
-    // The runtime owns the DONE/BLOCKED visual; the Parent must not print a second one.
-    assert.match(RESIDENT_SYSTEM_RULE, /No repitas ni resumas el trabajo que AIES ya mostró como DONE o BLOCKED/u);
+    // The same-turn rule must be explicit, not the ambiguous "already showed" temporal phrasing.
+    assert.equal(RESIDENT_SYSTEM_RULE.includes("ya mostró"), false, RESIDENT_SYSTEM_RULE);
+    assert.match(RESIDENT_SYSTEM_RULE, /terminá el turno sin prosa/u);
+    assert.match(RESIDENT_SYSTEM_RULE, /DONE\/BLOCKED/u);
     // The Parent only speaks for user input, blockers, warnings or decisions.
     assert.match(RESIDENT_SYSTEM_RULE, /Responde solo las preguntas reales del usuario y señala decisiones o errores/u);
   });
