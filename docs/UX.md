@@ -274,8 +274,9 @@ Pi's private fullscreen layout symbol,
   host's own layout node, not on a version allow-list. Pi `0.85`, `0.86` and
   `0.87` are the minors that were hand-audited; `piVersionMayAttemptRail()` lets
   any parseable Pi minor at or above `0.85` attempt the rail and refuses anything
-  older or unparseable, and it activates only in a fullscreen host. Any other
-  version or mode is a no-op.
+  older or unparseable, and it activates only in a fullscreen host. A below-floor
+  or unparseable version, and any non-fullscreen host, is a no-op; a newer minor
+  is attempted and decided by the probe.
 - Every failure path is fail-safe: a version below the floor, a missing private
   hook, a non-fullscreen host, an unrecognized node shape, a throwing render or
   an empty render delegates to the host layout, so the below-editor dock and the

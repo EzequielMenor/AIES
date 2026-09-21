@@ -778,7 +778,7 @@ found Pi's private layout shape effectively identical across `0.85.1` → `0.87.
 `pi-tui`'s `dist/layout-node.js` and `dist/layout-node.d.ts` are identical
 (`StackLayoutNode { type: "vstack" | "hstack", entries, gap, align }`),
 `dist/layout.js` is byte-identical (MD5 `624eed4a0131380c109222c24abce831`),
-`layoutRoot` keeps the same seven occurrences and the same
+`layoutRoot` is referenced identically in both versions and keeps the same
 `this.layoutRoot ?? this.implicitScrollView` semantics, and the only real
 `tui-alt-screen.js` diffs are clipboard-error flash text, scroll-to-end label
 centering and WezTerm Kitty row clearing. The fullscreen sticky dock arrived in
