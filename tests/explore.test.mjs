@@ -390,6 +390,27 @@ describe("AIES-003 Isolated Explore (Hardened Read-Only)", () => {
       const resolved = await resolveExploreModel(null, parentModel, "/dummy", {});
       assert.equal(resolved, parentModel);
     });
+
+    it("resolves a configured model through a ModelRegistry-like resolver", async () => {
+      const registry = {
+        find: (provider, id) =>
+          provider === "faux" && id === "faux-1" ? { provider: "faux", id: "faux-1" } : undefined,
+        getAvailable: () => [{ provider: "faux", id: "faux-1" }],
+      };
+      const parentModel = { id: "parent-model", provider: "mock" };
+
+      const tempDir = mkdtempSync(join(tmpdir(), "aies-model-registry-"));
+      try {
+        writeFileSync(
+          join(tempDir, "aies.json"),
+          JSON.stringify({ agents: { explore: { model: "faux/faux-1" } } }),
+        );
+        const resolved = await resolveExploreModel(registry, parentModel, tempDir, {});
+        assert.equal(resolved?.id, "faux-1");
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("Observability delegation metrics", () => {

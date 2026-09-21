@@ -15,6 +15,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { normalizeThinkingLevel, type AiesThinkingLevel } from "../aies-models/capabilities.ts";
+
 export type AgentRole = "explore" | "worker" | "verify";
 
 const ROLE_ENV_VAR: Record<AgentRole, string> = {
@@ -23,35 +25,79 @@ const ROLE_ENV_VAR: Record<AgentRole, string> = {
   verify: "AIES_VERIFY_MODEL",
 };
 
+/**
+ * Resolve a `provider/model` (or bare model id) through either Pi's extension
+ * `ModelRegistry` facade (`find` / `getAvailable` / `getAll`) or a session
+ * `ModelRuntime` (`getModel` / `getModels`). Both public shapes are supported so
+ * the delegating parent can pass `ctx.modelRegistry`.
+ */
 function findModel(modelRuntime: any, spec: string): any {
   if (!modelRuntime || !spec) return undefined;
   const trimmed = spec.trim();
   if (!trimmed) return undefined;
 
   const slash = trimmed.indexOf("/");
-  if (slash > 0) {
-    const provider = trimmed.slice(0, slash);
-    const modelId = trimmed.slice(slash + 1);
-    const model = modelRuntime.getModel?.(provider, modelId);
+  const provider = slash > 0 ? trimmed.slice(0, slash) : undefined;
+  const modelId = slash > 0 ? trimmed.slice(slash + 1) : trimmed;
+
+  // ModelRegistry facade.
+  if (provider && typeof modelRuntime.find === "function") {
+    const model = modelRuntime.find(provider, modelId);
+    if (model) return model;
+  }
+  for (const method of ["getAvailable", "getAll"]) {
+    if (typeof modelRuntime[method] !== "function") continue;
+    let models: any[] = [];
+    try {
+      const value = modelRuntime[method]();
+      // A session ModelRuntime exposes an async getAvailable(); skip it here and
+      // let the getModel/getModels branch below handle that shape.
+      if (Array.isArray(value)) models = value;
+      else continue;
+    } catch {
+      continue;
+    }
+    const model = models.find((m: any) => m.id === modelId || `${m.provider}/${m.id}` === trimmed);
     if (model) return model;
   }
 
-  const models = modelRuntime.getModels ? modelRuntime.getModels() : [];
-  return models.find((m: any) => m.id === trimmed || `${m.provider}/${m.id}` === trimmed);
+  // Session ModelRuntime.
+  if (provider && typeof modelRuntime.getModel === "function") {
+    const model = modelRuntime.getModel(provider, modelId);
+    if (model) return model;
+  }
+  if (typeof modelRuntime.getModels === "function") {
+    const models = modelRuntime.getModels() ?? [];
+    return models.find((m: any) => m.id === modelId || `${m.provider}/${m.id}` === trimmed);
+  }
+  return undefined;
 }
 
-function readConfigModel(agentDir: string, role: AgentRole): string | undefined {
+interface AgentConfig {
+  model?: string;
+  thinkingLevel?: string;
+}
+
+/**
+ * Read one role's stored preference. `agents.<role>` is the current shape;
+ * `delegate.<role>` is kept as a compatibility fallback.
+ */
+function readConfig(agentDir: string, role: AgentRole): AgentConfig {
   const configPath = join(agentDir, "aies.json");
-  if (!existsSync(configPath)) return undefined;
+  if (!existsSync(configPath)) return {};
 
   try {
     const content = JSON.parse(readFileSync(configPath, "utf8"));
-    const modelSpec =
-      content.agents?.[role]?.model ??
-      content.delegate?.[role]?.model;
-    return typeof modelSpec === "string" && modelSpec.trim() ? modelSpec.trim() : undefined;
+    const agents = content.agents?.[role];
+    const delegate = content.delegate?.[role];
+    const modelSpec = agents?.model ?? delegate?.model;
+    const thinking = agents?.thinkingLevel ?? delegate?.thinkingLevel;
+    return {
+      model: typeof modelSpec === "string" && modelSpec.trim() ? modelSpec.trim() : undefined,
+      thinkingLevel: typeof thinking === "string" && thinking.trim() ? thinking.trim() : undefined,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -73,7 +119,7 @@ export async function resolveAgentModel(
   }
 
   // 2. Profile configuration: aies.json
-  const configModel = readConfigModel(agentDir, role);
+  const configModel = readConfig(agentDir, role).model;
   if (configModel && modelRuntime) {
     const model = findModel(modelRuntime, configModel);
     if (model) return model;
@@ -81,6 +127,21 @@ export async function resolveAgentModel(
 
   // 3. Fallback to parent session model
   return parentModel;
+}
+
+/**
+ * Resolve the configured thinking level for a role, validated against the
+ * resolved model's capabilities. A configured level the model cannot run is
+ * never returned: the child then falls back to Pi's own default.
+ */
+export function resolveAgentThinkingLevel(
+  role: AgentRole,
+  model: any,
+  agentDir: string,
+): AiesThinkingLevel | undefined {
+  const configured = readConfig(agentDir, role).thinkingLevel;
+  if (!configured) return undefined;
+  return normalizeThinkingLevel(model, configured);
 }
 
 /**

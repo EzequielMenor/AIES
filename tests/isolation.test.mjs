@@ -162,6 +162,11 @@ describe("AIES isolation", () => {
     assert.ok(lstatSync(extensions).isSymbolicLink(), "extensions should be a symlink into the repo");
     assert.equal(readlinkSync(extensions), join(REPO, "extensions"));
 
+    const themes = join(agentDir, "themes");
+    assert.ok(lstatSync(themes).isSymbolicLink(), "themes should be a symlink into the repo");
+    assert.equal(readlinkSync(themes), join(REPO, "themes"));
+    assert.ok(existsSync(join(themes, "aies.json")), "the aies theme must be discoverable from the profile");
+
     const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
     assert.deepEqual(
       [...(settings.packages ?? [])].sort(),
@@ -171,6 +176,27 @@ describe("AIES isolation", () => {
     assert.ok(
       DECLARED_PACKAGES.includes("npm:pi-mcp-adapter"),
       "the AIES profile loads exactly the MCP adapter it needs, and inherits nothing from the ambient profile",
+    );
+  });
+
+  it("does not seed a child config into a fresh profile", () => {
+    const fresh = mkdtempSync(join(tmpdir(), "aies-fresh-profile-"));
+    try {
+      runAies(isolatedEnv(fresh), ["--aies-info"]);
+      assert.equal(
+        existsSync(join(fresh, "agent", "aies.json")),
+        false,
+        "bootstrap must not seed aies.json; the profile creates it only after a user saves a child preference",
+      );
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the repository aies.json as a defaults fixture", () => {
+    assert.ok(
+      existsSync(join(REPO, "profile", "aies.json")),
+      "profile/aies.json stays as the documented defaults fixture",
     );
   });
 
@@ -192,6 +218,15 @@ describe("AIES isolation", () => {
     const identity = commands.find((command) => command.name === "aies-info");
     assert.ok(identity, "the AIES identity extension is not loaded");
     assert.equal(identity.sourceInfo.baseDir, agentDir);
+
+    const models = commands.find((command) => command.name === "aies-models");
+    assert.ok(models, "the /aies-models extension is not loaded from the profile");
+    assert.equal(models.sourceInfo.baseDir, agentDir);
+    assert.equal(
+      models.sourceInfo.origin,
+      "top-level",
+      "the model picker is a top-level profile extension, not a package",
+    );
 
     const leaked = commands.filter((command) => command.sourceInfo?.path?.startsWith(PI_PROFILE));
     assert.deepEqual(leaked, [], `commands leaked from the ambient Pi profile: ${JSON.stringify(leaked)}`);

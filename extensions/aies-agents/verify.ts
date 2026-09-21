@@ -23,7 +23,8 @@ import {
   type VerifyRunResult,
   type VerifyVerdict,
 } from "./handoff.ts";
-import { resolveVerifyModel } from "./model.ts";
+import { resolveAgentThinkingLevel, resolveVerifyModel } from "./model.ts";
+import type { AiesThinkingLevel } from "../aies-models/capabilities.ts";
 import type { AgentObservatory, AgentStatus } from "./observatory.ts";
 import type { SandboxConfigOptions } from "./sandbox.ts";
 import {
@@ -210,6 +211,8 @@ export interface RunVerifyOptions {
   modelRuntime?: any;
   parentModel?: any;
   model?: any;
+  /** Explicit thinking level override; otherwise the validated stored preference is used. */
+  thinkingLevel?: AiesThinkingLevel;
   systemPrompt?: string;
   signal?: AbortSignal;
   sessionManager?: any;
@@ -246,6 +249,7 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
 
   const systemPrompt = resolveRoleSystemPrompt("verify", agentDir, options.systemPrompt);
   const model = options.model ?? (await resolveVerifyModel(modelRuntime, parentModel, agentDir));
+  const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("verify", model, agentDir);
   const identity = projectModelIdentity(model);
 
   // The child prompt is the structured verification input, nothing else.
@@ -289,6 +293,7 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
       systemPrompt,
       model,
       modelRuntime,
+      thinkingLevel,
       tools: [...VERIFY_TOOLS, VERIFY_COMPLETE_TOOL],
       customTools: [customTgrep, guardedBash, completeTool],
       signal,

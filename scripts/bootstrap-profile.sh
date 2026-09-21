@@ -43,13 +43,11 @@ for resource in agents extensions prompts themes; do
 done
 
 # Seed settings.json once. From then on pi owns it (aies install, /settings).
+# profile/aies.json is intentionally NOT copied: repository policy permits only
+# profile/settings.json to be seeded, and a fresh profile starts with built-in
+# defaults, creating its own aies.json only after a user saves a child role.
 if [ ! -e "$AIES_AGENT_DIR/settings.json" ]; then
   cp "$AIES_REPO/profile/settings.json" "$AIES_AGENT_DIR/settings.json"
-fi
-
-# Seed aies.json once if present in profile.
-if [ ! -e "$AIES_AGENT_DIR/aies.json" ] && [ -e "$AIES_REPO/profile/aies.json" ]; then
-  cp "$AIES_REPO/profile/aies.json" "$AIES_AGENT_DIR/aies.json"
 fi
 
 # Reconcile the declared package list and the declared MCP servers. Pi installs

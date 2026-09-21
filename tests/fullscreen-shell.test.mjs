@@ -52,6 +52,9 @@ import { formatTokens } from "../extensions/aies-ui/format.ts";
 const SETTINGS = fileURLToPath(new URL("../profile/settings.json", import.meta.url));
 const profile = JSON.parse(readFileSync(SETTINGS, "utf8"));
 
+const THEME = fileURLToPath(new URL("../themes/aies.json", import.meta.url));
+const theme = JSON.parse(readFileSync(THEME, "utf8"));
+
 const T0 = 1_700_000_000_000;
 
 function record(overrides = {}) {
@@ -134,6 +137,94 @@ describe("fullscreen shell profile", () => {
   it("keeps launch and thinking presentation quiet through public settings", () => {
     assert.equal(profile.quietStartup, true);
     assert.equal(profile.hideThinkingBlock, true);
+  });
+
+  it("loads the profile-local aies theme through Pi's supported mechanism", () => {
+    assert.equal(profile.theme, "aies");
+  });
+});
+
+/** Every color token Pi documents as required, plus the optional ones AIES sets. */
+const REQUIRED_THEME_TOKENS = [
+  "accent",
+  "border",
+  "borderAccent",
+  "borderMuted",
+  "success",
+  "error",
+  "warning",
+  "muted",
+  "dim",
+  "text",
+  "thinkingText",
+  "scrollbarTrack",
+  "scrollbarThumb",
+  "selectedBg",
+  "searchMatchBg",
+  "searchMatchText",
+  "userMessageBg",
+  "userMessageText",
+  "customMessageBg",
+  "customMessageText",
+  "customMessageLabel",
+  "toolPendingBg",
+  "toolSuccessBg",
+  "toolErrorBg",
+  "toolTitle",
+  "toolOutput",
+  "mdHeading",
+  "mdLink",
+  "mdLinkUrl",
+  "mdCode",
+  "mdCodeBlock",
+  "mdCodeBlockBorder",
+  "mdQuote",
+  "mdQuoteBorder",
+  "mdHr",
+  "mdListBullet",
+  "toolDiffAdded",
+  "toolDiffRemoved",
+  "toolDiffContext",
+  "syntaxComment",
+  "syntaxKeyword",
+  "syntaxFunction",
+  "syntaxVariable",
+  "syntaxString",
+  "syntaxNumber",
+  "syntaxType",
+  "syntaxOperator",
+  "syntaxPunctuation",
+  "thinkingOff",
+  "thinkingMinimal",
+  "thinkingLow",
+  "thinkingMedium",
+  "thinkingHigh",
+  "thinkingXhigh",
+  "thinkingMax",
+  "bashMode",
+];
+
+describe("AIES theme", () => {
+  it("defines the complete supported color schema", () => {
+    assert.equal(theme.name, "aies");
+    for (const token of REQUIRED_THEME_TOKENS) {
+      assert.ok(Object.hasOwn(theme.colors, token), `missing theme color: ${token}`);
+    }
+    assert.ok(theme.vars && typeof theme.vars === "object", "vars must be present");
+  });
+
+  it("uses only supported color values and no hardcoded ANSI", () => {
+    const raw = readFileSync(THEME, "utf8");
+    assert.equal(raw.includes("\u001b"), false, "theme must not embed ANSI escapes");
+
+    for (const [token, value] of Object.entries(theme.colors)) {
+      const valid =
+        value === "" ||
+        (typeof value === "number" && value >= 0 && value <= 255) ||
+        (typeof value === "string" && /^#[0-9a-fA-F]{6}$/u.test(value)) ||
+        (typeof value === "string" && Object.hasOwn(theme.vars, value));
+      assert.ok(valid, `unsupported color value for ${token}: ${JSON.stringify(value)}`);
+    }
   });
 });
 

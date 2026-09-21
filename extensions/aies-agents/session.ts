@@ -18,6 +18,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import type { AiesThinkingLevel } from "../aies-models/capabilities.ts";
 import type {
   AgentObservatory,
   BeginAgentInput,
@@ -33,6 +34,8 @@ export interface ChildSessionOptions {
   systemPrompt: string;
   model: any;
   modelRuntime?: any;
+  /** Capability-valid thinking level for the child session, when one is configured. */
+  thinkingLevel?: AiesThinkingLevel;
   tools: string[];
   customTools?: ToolDefinition[];
   signal?: AbortSignal;
@@ -186,6 +189,15 @@ export function resolveRoleSystemPrompt(
 }
 
 /**
+ * Whether a value is a real session `ModelRuntime` rather than the extension's
+ * synchronous `ModelRegistry` facade. Only a genuine runtime may be handed to
+ * `createAgentSession`; a registry is a resolution source only.
+ */
+export function isSessionModelRuntime(value: any): boolean {
+  return Boolean(value) && typeof value.getAuth === "function" && typeof value.streamSimple === "function";
+}
+
+/**
  * Execute an isolated child AgentSession turn and return the assistant's final text.
  */
 export async function executeChildSession(options: ChildSessionOptions): Promise<string> {
@@ -197,6 +209,7 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
     systemPrompt,
     model,
     modelRuntime,
+    thinkingLevel,
     tools,
     customTools = [],
     signal,
@@ -222,7 +235,8 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
     cwd,
     agentDir,
     model,
-    modelRuntime,
+    modelRuntime: isSessionModelRuntime(modelRuntime) ? modelRuntime : undefined,
+    thinkingLevel,
     resourceLoader,
     sessionManager,
     customTools,

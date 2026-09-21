@@ -9,7 +9,8 @@
  */
 
 import { parseExploreHandoff, type ExploreHandoff, type ExploreStatus } from "./handoff.ts";
-import { resolveExploreModel } from "./model.ts";
+import { resolveAgentThinkingLevel, resolveExploreModel } from "./model.ts";
+import type { AiesThinkingLevel } from "../aies-models/capabilities.ts";
 import type { AgentObservatory, AgentStatus } from "./observatory.ts";
 import {
   beginChildObservation,
@@ -31,6 +32,8 @@ export interface RunExploreOptions {
   modelRuntime?: any;
   parentModel?: any;
   model?: any;
+  /** Explicit thinking level override; otherwise the validated stored preference is used. */
+  thinkingLevel?: AiesThinkingLevel;
   systemPrompt?: string;
   signal?: AbortSignal;
   sessionManager?: any;
@@ -74,6 +77,7 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
 
   const systemPrompt = resolveRoleSystemPrompt("explore", agentDir, options.systemPrompt);
   const model = options.model ?? (await resolveExploreModel(modelRuntime, parentModel, agentDir));
+  const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("explore", model, agentDir);
   const identity = projectModelIdentity(model);
 
   const customTgrep = createTgrepToolDefinition(cwd, {
@@ -101,6 +105,7 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
       systemPrompt,
       model,
       modelRuntime,
+      thinkingLevel,
       tools: [...EXPLORE_TOOLS],
       customTools: [customTgrep],
       signal,

@@ -14,7 +14,8 @@ import {
   createContainedWriteToolDefinition,
 } from "./contained-tools.ts";
 import { parseWorkerHandoff, type WorkerHandoff, type WorkerStatus } from "./handoff.ts";
-import { resolveWorkerModel } from "./model.ts";
+import { resolveAgentThinkingLevel, resolveWorkerModel } from "./model.ts";
+import type { AiesThinkingLevel } from "../aies-models/capabilities.ts";
 import type { AgentObservatory, AgentStatus } from "./observatory.ts";
 import type { SandboxConfigOptions } from "./sandbox.ts";
 import {
@@ -47,6 +48,8 @@ export interface RunWorkerOptions {
   modelRuntime?: any;
   parentModel?: any;
   model?: any;
+  /** Explicit thinking level override; otherwise the validated stored preference is used. */
+  thinkingLevel?: AiesThinkingLevel;
   systemPrompt?: string;
   signal?: AbortSignal;
   sessionManager?: any;
@@ -92,6 +95,7 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
 
   const systemPrompt = resolveRoleSystemPrompt("worker", agentDir, options.systemPrompt);
   const model = options.model ?? (await resolveWorkerModel(modelRuntime, parentModel, agentDir));
+  const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("worker", model, agentDir);
   const identity = projectModelIdentity(model);
 
   const customTgrep = createTgrepToolDefinition(cwd, {
@@ -127,6 +131,7 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
       systemPrompt,
       model,
       modelRuntime,
+      thinkingLevel,
       tools: [...WORKER_TOOLS],
       customTools: [customTgrep, guardedBash, containedWrite, containedEdit],
       signal,

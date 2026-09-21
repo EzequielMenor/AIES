@@ -16,7 +16,9 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +27,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import * as delegateModule from "../extensions/aies-agents/delegate.ts";
 import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
+import { resolveAgentThinkingLevel } from "../extensions/aies-agents/model.ts";
 import { AgentObservatory, observatory } from "../extensions/aies-agents/observatory.ts";
 import * as sessionModule from "../extensions/aies-agents/session.ts";
 import { runVerifyAgent, VERIFY_COMPLETE_TOOL } from "../extensions/aies-agents/verify.ts";
@@ -399,5 +402,75 @@ describe("AIES-010C delegate provider label resolution", () => {
       (text.match(/\bobservatory,/gu) ?? []).length >= 3,
       "each child runner receives the observatory singleton",
     );
+  });
+});
+
+describe("AIES-010D T12 model and thinking wiring", () => {
+  it("distinguishes a real session runtime from a resolution registry", () => {
+    assert.equal(sessionModule.isSessionModelRuntime({ getAuth() {}, streamSimple() {} }), true);
+    assert.equal(sessionModule.isSessionModelRuntime({ find() {}, getAvailable() {} }), false);
+    assert.equal(sessionModule.isSessionModelRuntime(undefined), false);
+    assert.equal(sessionModule.isSessionModelRuntime({ getAuth() {} }), false);
+  });
+
+  it("forwards the delegating registry as the modelRuntime resolution source", () => {
+    const text = readFileSync(new URL("../extensions/aies-agents/delegate.ts", import.meta.url), "utf8");
+    assert.ok(
+      (text.match(/modelRuntime: ctx\.modelRegistry/gu) ?? []).length === 3,
+      "explore, worker and verify each receive ctx.modelRegistry as modelRuntime",
+    );
+  });
+
+  it("validates a configured thinking level against model capabilities", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-thinking-"));
+    try {
+      const reasoning = { provider: "faux", id: "faux-1", reasoning: true };
+      writeFileSync(join(dir, "aies.json"), JSON.stringify({ agents: { explore: { thinkingLevel: "high" } } }));
+      assert.equal(resolveAgentThinkingLevel("explore", reasoning, dir), "high");
+
+      // An unsupported configured level is dropped, never clamped to a neighbour.
+      writeFileSync(join(dir, "aies.json"), JSON.stringify({ agents: { explore: { thinkingLevel: "max" } } }));
+      assert.equal(resolveAgentThinkingLevel("explore", reasoning, dir), undefined);
+
+      // A non-reasoning model can only ever run with off, so a stored level is invalid.
+      assert.equal(
+        resolveAgentThinkingLevel("explore", { provider: "faux", id: "plain", reasoning: false }, dir),
+        undefined,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the configured thinking level to the real child session", async () => {
+    const faux = fauxProvider({ models: [{ id: "faux-1", name: "Faux Model", reasoning: true }] });
+    const runtime = await ModelRuntime.create();
+    runtime.registerNativeProvider(faux.provider);
+    const model = faux.models[0];
+
+    const dir = mkdtempSync(join(tmpdir(), "aies-thinking-run-"));
+    let observedReasoning;
+    try {
+      writeFileSync(join(dir, "aies.json"), JSON.stringify({ agents: { explore: { thinkingLevel: "high" } } }));
+      faux.setResponses([
+        (_context, options) => {
+          observedReasoning = options?.reasoning;
+          return fauxAssistantMessage([{ type: "text", text: exploreJson() }]);
+        },
+      ]);
+
+      const handoff = await runExploreAgent({
+        task: "Apply the configured thinking level",
+        cwd: REPO_ROOT,
+        agentDir: dir,
+        modelRuntime: runtime,
+        model,
+      });
+
+      assert.equal(handoff.status, "done");
+      assert.equal(observedReasoning, "high", "the child session must run with the configured level");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -4,6 +4,7 @@
   "fullscreenScrollbar": "auto",
   "quietStartup": true,
   "hideThinkingBlock": true,
+  "theme": "aies",
   "packages": [
     "npm:pi-mcp-adapter"
   ]
