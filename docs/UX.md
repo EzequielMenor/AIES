@@ -271,11 +271,11 @@ Pi's private fullscreen layout symbol,
   gentle-pi or `node_modules`, and it changes nothing outside the AIES profile
   and repository: no global installation is touched.
 - It gates on a fail-closed version floor plus a lazy structural probe of the
-  host's own layout node, not on a version allow-list. `AUDITED_PI_MINORS
-  {0.85, 0.86, 0.87}` only documents the Pi minors that were hand-audited;
-  `piVersionMayAttemptRail()` lets any parseable Pi minor at or above `0.85`
-  attempt the rail and refuses anything older or unparseable, and it activates
-  only in a fullscreen host. Any other version or mode is a no-op.
+  host's own layout node, not on a version allow-list. Pi `0.85`, `0.86` and
+  `0.87` are the minors that were hand-audited; `piVersionMayAttemptRail()` lets
+  any parseable Pi minor at or above `0.85` attempt the rail and refuses anything
+  older or unparseable, and it activates only in a fullscreen host. Any other
+  version or mode is a no-op.
 - Every failure path is fail-safe: a version below the floor, a missing private
   hook, a non-fullscreen host, an unrecognized node shape, a throwing render or
   an empty render delegates to the host layout, so the below-editor dock and the

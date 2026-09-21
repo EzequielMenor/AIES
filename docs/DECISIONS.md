@@ -812,6 +812,12 @@ D24 item 3 and the guard detail in D25 item 8, both of which state the retired
 correction is appended rather than rewriting the entry above, per the append-only
 decision history.
 
+**Dead-code correction (2026-09-21).** The audited-minor set was subsequently
+reduced to prose in the shim's header comment and the `isSupportedPiVersion()` /
+`AUDITED_PI_MINORS` symbols were deleted as dead code — the floor already admits
+every minor they listed — so D25 item 8's retired guard wording is now superseded
+by that prose as well.
+
 Detailed reference: `docs/UX.md` §2, §3, §5, §6, §17, §18 and §19.
 
 ---

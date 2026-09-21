@@ -9,10 +9,12 @@
  *
  * - It never patches Pi, Gentle or `node_modules`; it only wraps the layout node
  *   the host already exposes on its own TUI instance and restores it on dispose.
- * - The gate is feature detection, not a version allow-list. The version only
- *   documents the minors that were hand-audited (`AUDITED_PI_MINORS`) and provides
- *   a fail-closed floor (`piVersionMayAttemptRail`): anything older than 0.85 or
- *   unparseable never attempts the hook.
+ * - The gate is feature detection, not a version allow-list. 0.85, 0.86 and 0.87
+ *   are the Pi minors that were hand-audited; the version only provides a
+ *   fail-closed floor (`piVersionMayAttemptRail`): anything older than 0.85 or
+ *   unparseable never attempts the hook, while a newer minor is attempted on the
+ *   strength of the structural probe below, failing closed when the shape does not
+ *   match.
  * - Before wrapping, the shim lazily probes the host's own layout node and only
  *   proceeds when it speaks the audited `StackLayoutNode` vocabulary
  *   (`isRecognizedStackLayoutNode`). A rejection — wrong shape or a throw — latches
@@ -46,17 +48,6 @@ const MIN_CONTENT_WIDTH = 30;
 
 /** The host's private fullscreen layout symbol, read by name, never patched. */
 export const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
-
-/** The Pi minor families whose private layout shape was hand-audited for AIES. */
-const AUDITED_PI_MINORS: ReadonlySet<string> = new Set(["0.85", "0.86", "0.87"]);
-
-/** True only for a version whose private layout shape AIES actually audited. */
-export function isSupportedPiVersion(version: string | undefined): boolean {
-  if (typeof version !== "string") return false;
-  const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(version.trim());
-  if (!match) return false;
-  return AUDITED_PI_MINORS.has(`${match[1]}.${match[2]}`);
-}
 
 /** The audited major/minor floor below which the shim refuses to even attempt the hook. */
 const RAIL_FLOOR_MAJOR = 0;

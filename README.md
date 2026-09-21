@@ -22,9 +22,13 @@ The command is `aies`; underneath it is `pi`.
 
 ## Requirements
 
-- `pi` on `PATH` (any version providing `PI_CODING_AGENT_DIR`; verified against 0.85.1, with the optional right rail verified against 0.87.0 and never promised beyond the audited Pi minors)
+- `pi` on `PATH`, any version providing `PI_CODING_AGENT_DIR`, verified against 0.85.1 and 0.87.0
 - Node.js >= 22 (for the test suite and the dev-time type surface)
 - bash
+
+The optional right rail is a bounded enhancement, not a supported Pi surface.
+It mounts only on a fullscreen host whose layout tree AIES recognizes; otherwise
+the below-editor dock and narrow footer take over, with no workflow change.
 
 ## Quick start
 

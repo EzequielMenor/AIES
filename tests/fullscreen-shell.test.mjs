@@ -42,7 +42,6 @@ import {
   branchLabel,
   installRightRail,
   isRecognizedStackLayoutNode,
-  isSupportedPiVersion,
   piVersionMayAttemptRail,
   projectBranch,
   projectLabel,
@@ -231,14 +230,15 @@ describe("AIES theme", () => {
 });
 
 describe("right rail guard", () => {
-  it("documents the Pi minor families that were hand-audited", () => {
-    assert.equal(isSupportedPiVersion("0.85.1"), true);
-    assert.equal(isSupportedPiVersion("0.86.1"), true);
-    assert.equal(isSupportedPiVersion("0.87.0"), true);
-    assert.equal(isSupportedPiVersion("0.88.0"), false);
-    assert.equal(isSupportedPiVersion("0.84.9"), false);
-    assert.equal(isSupportedPiVersion(undefined), false);
-    assert.equal(isSupportedPiVersion("nonsense"), false);
+  it("admits the hand-audited minors through the floor and gates on the shape probe", () => {
+    for (const version of ["0.85.1", "0.86.1", "0.87.0"]) {
+      assert.equal(piVersionMayAttemptRail(version), true, `${version} is an audited minor`);
+    }
+    assert.equal(piVersionMayAttemptRail("0.88.0"), true, "a newer minor is attempted on the strength of the probe");
+    assert.equal(piVersionMayAttemptRail("0.84.9"), false);
+    assert.equal(piVersionMayAttemptRail(undefined), false);
+    assert.equal(piVersionMayAttemptRail("nonsense"), false);
+    assert.equal(isRecognizedStackLayoutNode(HOST_NODE), true, "shape recognition, not the version, admits the rail");
   });
 
   it("attempts the rail on any parseable minor at or above the audited 0.85 floor", () => {
