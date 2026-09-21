@@ -52,11 +52,11 @@ Do not change routing, autonomy, permissions, context governor, Linear, Verify p
   - GREEN: shared Pi-free `renderModalFrame`, centered content-adapted overlay, integrated title/border/help, injected Paint only; `overlay.ts` remained byte-for-byte unchanged.
   - Checks: `node --test tests/modal-frame.test.mjs tests/aies-models.test.mjs tests/aies-models-keys.test.mjs` → 60/60 pass; parent repeated the exact focused command in the isolated worktree → 60/60 pass.
 
-- [ ] **T2 — Height-aware empty-state placement**
-  - Route: delegated writer; runtime + pure renderer + tests.
-  - RED: tall and short terminal tests prove an upper-third-biased offset, bounded compact behavior, editor safety, and unchanged context/persistence behavior.
-  - GREEN: public TUI height feeds a bounded flow spacer; no rigid absolute coordinates or new overlay architecture.
-  - Checks: focused empty-state and UI seam suites.
+- [x] **T2 — Height-aware empty-state placement**
+  - Route: delegated writer `mubmks0v-6-gx9n`; runtime + pure renderer + focused tests.
+  - RED observed: 4 failures proved absent tall-terminal spacing, unbounded-growth expectations, and missing live-resize wiring.
+  - GREEN: public `TUI.terminal.rows` is read on each widget render and feeds a pure bounded trailing flow spacer; short heights collapse to zero and preserve a 6-row editor-band reserve.
+  - Checks: `node --test tests/empty-state.test.mjs tests/aies-ui-seam.test.mjs` → 38/38 pass; parent repeated the exact command → 38/38 pass.
 
 - [ ] **T3 — `/agents` observatory modal**
   - Route: delegated writer; pure renderer + runtime adapter + focused tests.
@@ -88,8 +88,9 @@ Do not change routing, autonomy, permissions, context governor, Linear, Verify p
 
 - Mapping complete via `gentle-ai-explore`: current observatory/event bridge is sufficient; missing seams are modal framing, `/agents` overlay mode, active-view repaint, responsive layout, and height input for empty-state spacing.
 - Pi 0.87 docs confirm public overlays, `overlayOptions`, injected keybindings, `tui.requestRender()`, and component invalidation. Repository dependency compatibility must remain valid with locked Pi 0.85.1 APIs already used by `/aies-models`.
-- T1 complete: new `extensions/aies-ui/modal.ts` shared frame; `/aies-models` uses a centered numeric preferred width and existing public overlay API. Focused tests pass 60/60. The temporary `node_modules` symlink used only for worktree test resolution was removed after the check. A cwd incident was diagnosed read-only: no T1 changes leaked into the dirty main worktree.
+- T1 complete and independently verified: new `extensions/aies-ui/modal.ts` shared frame; `/aies-models` uses a centered numeric preferred width and existing public overlay API. Focused tests pass 60/60. The temporary `node_modules` symlink used only for worktree test resolution was removed after the check. A cwd incident was diagnosed read-only: no T1 changes leaked into the dirty main worktree.
+- T2 complete: the Pi-free renderer computes a height-relative spacer, while the existing above-editor widget reads public `TUI.terminal.rows` per render. Focused tests pass 38/38, including heights 6–120 and live resize 48→14. Eligibility, transcript, context, persistence, and widget architecture remain unchanged.
 
 ## Next step
 
-Commit T1, then implement T2 with regression-first focused tests.
+Commit T2, then implement T3 with regression-first focused tests.

@@ -169,6 +169,22 @@ const BLOCKED_SENTENCES: Record<string, { happened: string; needs?: string; pend
 /** The slice of Pi's TUI the activity widget needs. */
 interface WidgetTui {
   requestRender?(force?: boolean): void;
+  /** Pi's public terminal shape; `rows` is the live viewport height. */
+  terminal?: { rows?: number };
+}
+
+/**
+ * Pi's live terminal height, read defensively from the public `TUI.terminal`.
+ * A partial host without a terminal shape degrades to no height at all, which
+ * keeps the legacy compact card instead of guessing a spacer.
+ */
+function tuiHeight(tui: unknown): number | undefined {
+  try {
+    const rows = (tui as WidgetTui | undefined)?.terminal?.rows;
+    return typeof rows === "number" && Number.isFinite(rows) && rows > 0 ? rows : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Pi's theme, read structurally because a partial host may not provide one. */
@@ -997,9 +1013,14 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (wanted) {
       if (emptyStateRegistered) return;
       try {
-        ui.setWidget(EMPTY_STATE_KEY, (_tui: unknown, theme: unknown) => ({
+        ui.setWidget(EMPTY_STATE_KEY, (tui: unknown, theme: unknown) => ({
           render: (width: number): string[] =>
-            renderEmptyState({ width, paint: themePaint(theme as ThemeLike | undefined) }),
+            renderEmptyState({
+              width,
+              // Read the live height on every render so a resize reflows.
+              height: tuiHeight(tui),
+              paint: themePaint(theme as ThemeLike | undefined),
+            }),
           invalidate() {},
         }));
         emptyStateRegistered = true;

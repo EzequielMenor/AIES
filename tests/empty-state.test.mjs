@@ -149,6 +149,77 @@ describe("renderEmptyState", () => {
   });
 });
 
+/**
+ * The empty state is docked directly above the editor and flows top-down, so a
+ * trailing blank spacer lifts the card toward the first third of the main pane.
+ * These checks pin the bounded, height-aware placement without any Pi runtime.
+ */
+describe("renderEmptyState height-aware placement", () => {
+  // The card body is 11 lines, including its internal breathing-room blanks.
+  const CARD_ROWS = 11;
+  // Bounded room kept below the widget for the editor band, status and footer.
+  const EDITOR_RESERVE = 6;
+
+  it("floats the card to the first third on a tall terminal with a trailing spacer", () => {
+    const height = 48;
+    const lines = renderEmptyState({ width: 80, height });
+
+    assert.ok(lines.length > CARD_ROWS, `expected a positive spacer, got ${lines.length} lines`);
+    const projectedTop = height - EDITOR_RESERVE - lines.length;
+    assert.equal(
+      projectedTop,
+      Math.floor(height / 3),
+      `card should start near the first third: top=${projectedTop}`,
+    );
+
+    // The spacer is trailing, blank flow space; the card stays the leading block.
+    const tail = lines.slice(CARD_ROWS);
+    assert.ok(tail.length > 0);
+    for (const line of tail) assert.equal(line, "", `spacer must be blank, got "${line}"`);
+
+    const nonEmpty = lines.filter((line) => line.trim().length > 0);
+    assert.equal(nonEmpty.at(-1).trim(), "Escribe una tarea…  / para comandos");
+  });
+
+  it("keeps the spacer bounded as the terminal grows", () => {
+    const tall = renderEmptyState({ width: 80, height: 100 }).length;
+    const taller = renderEmptyState({ width: 80, height: 200 }).length;
+
+    assert.ok(taller > tall, `a taller terminal should still float the card: ${tall} -> ${taller}`);
+    assert.ok(taller <= 200 - EDITOR_RESERVE, `the widget must leave the editor band free: ${taller}`);
+  });
+
+  it("never claims more rows than the terminal can spare for the editor", () => {
+    for (let h = 6; h <= 120; h += 1) {
+      const lines = renderEmptyState({ width: 80, height: h });
+      assert.ok(
+        lines.length <= Math.max(CARD_ROWS, h - EDITOR_RESERVE),
+        `height ${h} produced ${lines.length} rows`,
+      );
+    }
+
+    // The spacer flips on right where one row can be spared without crowding the editor.
+    assert.equal(renderEmptyState({ width: 80, height: 25 }).length, CARD_ROWS);
+    assert.ok(renderEmptyState({ width: 80, height: 26 }).length > CARD_ROWS);
+  });
+
+  it("collapses the spacer on short terminals so the card cannot crowd the editor", () => {
+    for (const height of [12, 18, 24, 25]) {
+      const lines = renderEmptyState({ width: 80, height });
+      assert.equal(lines.length, CARD_ROWS, `spacer did not collapse at height ${height}`);
+    }
+  });
+
+  it("treats a missing or unusable height as no spacer", () => {
+    const baseline = renderEmptyState({ width: 80 });
+    assert.equal(baseline.length, CARD_ROWS);
+    assert.deepEqual(renderEmptyState({ width: 80, height: undefined }), baseline);
+    assert.deepEqual(renderEmptyState({ width: 80, height: Number.NaN }), baseline);
+    assert.deepEqual(renderEmptyState({ width: 80, height: 0 }), baseline);
+    assert.deepEqual(renderEmptyState({ width: 80, height: -10 }), baseline);
+  });
+});
+
 describe("run-gated Todos", () => {
   it("gates the checklist until the run has a real signal", () => {
     const fresh = deriveTodos(snapOf(createState(T0)));

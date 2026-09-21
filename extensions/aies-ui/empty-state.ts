@@ -84,19 +84,45 @@ const CENTER_MIN_WIDTH = 56;
 const MIN_WIDTH = 20;
 
 /**
+ * Rows kept below the widget for the editor band (editor, status and footer).
+ * The spacer treats this as a bounded reserve, never an absolute coordinate.
+ */
+export const EMPTY_STATE_EDITOR_RESERVE = 6;
+
+/**
+ * The bounded flow spacer that floats the card toward the first third of the
+ * main pane. The `aboveEditor` widget is docked directly above the editor and
+ * flows top-down, so blank rows appended after the card lift it upward. The
+ * count is relative to the terminal height and collapses to zero on short
+ * terminals, where the spacer must never crowd out the editor.
+ */
+export function emptyStateSpacerRows(height: number | undefined, cardRows: number): number {
+  if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) return 0;
+  const targetTop = Math.floor(height / 3);
+  const widgetHeight = height - targetTop - EMPTY_STATE_EDITOR_RESERVE;
+  return Math.max(0, Math.floor(widgetHeight) - cardRows);
+}
+
+/**
  * Render the idle card. Every line is clipped to `width` and centered while the
  * terminal is wide enough; blank lines stay blank so they read as spacing. The
- * editor hint is always the last non-empty line.
+ * editor hint is always the last non-empty line. When a terminal `height` is
+ * known, a bounded, trailing flow spacer lifts the card toward the first third
+ * of the main pane; on short terminals the spacer collapses.
  */
-export function renderEmptyState(options: { width: number; paint?: Paint }): string[] {
+export function renderEmptyState(options: { width: number; height?: number; paint?: Paint }): string[] {
   const paint = options.paint ?? PLAIN_PAINT;
   const width = Math.max(MIN_WIDTH, Math.floor(Number.isFinite(options.width) ? options.width : MIN_WIDTH));
   const centered = width >= CENTER_MIN_WIDTH;
 
-  return EMPTY_LINES.map((line) => {
+  const lines = EMPTY_LINES.map((line) => {
     if (line.text === "") return "";
     const text = line.text.slice(0, width);
     const pad = centered ? Math.max(0, Math.floor((width - text.length) / 2)) : 0;
     return paint.fg(line.color, `${" ".repeat(pad)}${text}`);
   });
+
+  const spacer = emptyStateSpacerRows(options.height, EMPTY_LINES.length);
+  for (let row = 0; row < spacer; row += 1) lines.push("");
+  return lines;
 }

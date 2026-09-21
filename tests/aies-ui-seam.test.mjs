@@ -530,6 +530,32 @@ describe("AIES UI seam", () => {
     assert.deepEqual(component.render(80), []);
   });
 
+  it("passes the public TUI height into the idle empty state widget", async () => {
+    const host = createHost();
+    await host.start();
+
+    const baseline = host.mountWidget("aies-empty-state", 80).lines();
+    const tall = host.mountWidget("aies-empty-state", 80, { terminal: { rows: 48 }, requestRender() {} }).lines();
+    const short = host.mountWidget("aies-empty-state", 80, { terminal: { rows: 14 }, requestRender() {} }).lines();
+
+    assert.ok(tall.length > baseline.length, "a tall terminal must add bounded flow spacing");
+    assert.deepEqual(short, baseline, "a short terminal must keep the compact card");
+    assert.deepEqual(tall.slice(0, baseline.length), baseline, "the card body is unchanged by the trailing spacer");
+    for (const line of tall.slice(baseline.length)) assert.equal(line, "", "the spacer is blank flow space");
+  });
+
+  it("re-reads the terminal height on every render so a resize reflows", async () => {
+    const host = createHost();
+    await host.start();
+
+    const tui = { terminal: { rows: 48 }, requestRender() {} };
+    const widget = host.mountWidget("aies-empty-state", 80, tui);
+    const tall = widget.lines().length;
+
+    tui.terminal.rows = 14;
+    assert.ok(tall > widget.lines().length, "a shrink must reflow the spacer away");
+  });
+
   it("lets the physical rail own live activity and returns the inline card without it", async () => {
     const original = () => ({ type: "vstack", entries: [] });
     const root = { [LAYOUT_NODE]: original };
