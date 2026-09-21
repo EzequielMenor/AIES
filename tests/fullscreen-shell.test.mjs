@@ -41,7 +41,9 @@ import {
   RIGHT_RAIL_MIN_WIDTH,
   branchLabel,
   installRightRail,
+  isRecognizedStackLayoutNode,
   isSupportedPiVersion,
+  piVersionMayAttemptRail,
   projectBranch,
   projectLabel,
   renderRightRail,
@@ -229,13 +231,45 @@ describe("AIES theme", () => {
 });
 
 describe("right rail guard", () => {
-  it("accepts only the audited Pi minor families", () => {
-    assert.equal(isSupportedPiVersion("0.86.1"), true);
+  it("documents the Pi minor families that were hand-audited", () => {
     assert.equal(isSupportedPiVersion("0.85.1"), true);
-    assert.equal(isSupportedPiVersion("0.87.0"), false);
+    assert.equal(isSupportedPiVersion("0.86.1"), true);
+    assert.equal(isSupportedPiVersion("0.87.0"), true);
+    assert.equal(isSupportedPiVersion("0.88.0"), false);
     assert.equal(isSupportedPiVersion("0.84.9"), false);
     assert.equal(isSupportedPiVersion(undefined), false);
     assert.equal(isSupportedPiVersion("nonsense"), false);
+  });
+
+  it("attempts the rail on any parseable minor at or above the audited 0.85 floor", () => {
+    assert.equal(piVersionMayAttemptRail("0.84.9"), false);
+    assert.equal(piVersionMayAttemptRail("0.84.0"), false);
+    assert.equal(piVersionMayAttemptRail("0.85.0"), true);
+    assert.equal(piVersionMayAttemptRail("0.86.1"), true);
+    assert.equal(piVersionMayAttemptRail("0.87.0"), true);
+    assert.equal(piVersionMayAttemptRail("0.88.0"), true);
+    assert.equal(piVersionMayAttemptRail("1.0.0"), true);
+    assert.equal(piVersionMayAttemptRail(undefined), false);
+    assert.equal(piVersionMayAttemptRail("nonsense"), false);
+  });
+
+  it("recognizes only the audited StackLayoutNode vocabulary", () => {
+    assert.equal(isRecognizedStackLayoutNode(HOST_NODE), true);
+    assert.equal(isRecognizedStackLayoutNode({ type: "hstack", entries: [{ component: { render: () => [] } }] }), true);
+    assert.equal(isRecognizedStackLayoutNode({ type: "vstack", entries: [] }), true, "an empty stack is still a valid stack");
+    assert.equal(
+      isRecognizedStackLayoutNode({ type: "vstack", entries: [{ component: { [LAYOUT_NODE]: () => ({}) } }] }),
+      true,
+    );
+    assert.equal(isRecognizedStackLayoutNode({ type: "flex", entries: [{ component: { render: () => [] } }] }), false);
+    assert.equal(isRecognizedStackLayoutNode({ type: "vstack", entries: [{ component: {} }] }), false);
+    assert.equal(isRecognizedStackLayoutNode({ type: "vstack", entries: [{}] }), false);
+    assert.equal(isRecognizedStackLayoutNode({ type: "vstack", entries: [null] }), false);
+    assert.equal(isRecognizedStackLayoutNode({ type: "vstack", entries: "nope" }), false);
+    assert.equal(isRecognizedStackLayoutNode({ type: 7, entries: [{ component: { render: () => [] } }] }), false);
+    assert.equal(isRecognizedStackLayoutNode(null), false);
+    assert.equal(isRecognizedStackLayoutNode(undefined), false);
+    assert.equal(isRecognizedStackLayoutNode("vstack"), false);
   });
 
   it("uses the 120-column product breakpoint for the physical rail", () => {
@@ -549,6 +583,7 @@ describe("right rail projection", () => {
 describe("right rail install", () => {
   it("attaches the rail to a supported fullscreen host and restores it on dispose", () => {
     const { host, root, original } = fakeHost();
+    const descriptor = Object.getOwnPropertyDescriptor(root, LAYOUT_NODE);
     const handle = installRightRail(host, { version: "0.86.1", render: () => ["rail-line"] });
 
     assert.equal(handle.active, true);
@@ -564,22 +599,114 @@ describe("right rail install", () => {
 
     handle.dispose();
     assert.equal(root[LAYOUT_NODE], original, "dispose restores the private hook");
+    assert.equal(handle.active, false, "a disposed shim is no longer active");
+    assert.equal(handle.showing(), false, "a disposed shim stops presenting");
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(root, LAYOUT_NODE),
+      descriptor,
+      "dispose restores the exact original descriptor",
+    );
   });
 
-  it("is a non-fatal no-op on an unsupported version or host", () => {
-    const unsupported = fakeHost();
-    const unsupportedHandle = installRightRail(unsupported.host, { version: "0.87.0", render: () => ["x"] });
-    assert.equal(unsupportedHandle.active, false);
-    assert.equal(unsupportedHandle.showing(), false);
-    assert.equal(unsupported.root[LAYOUT_NODE], unsupported.original);
-    unsupportedHandle.dispose();
+  it("mounts the rail on a recognized fullscreen host at Pi 0.87.0", () => {
+    const { host, root, original } = fakeHost();
+    const handle = installRightRail(host, { version: "0.87.0", render: () => ["rail-line"] });
+
+    assert.equal(handle.active, true, "0.87.0 is above the audited floor and must attempt the rail");
+    assert.notEqual(root[LAYOUT_NODE], original, "the layout node must be wrapped");
+
+    const node = root[LAYOUT_NODE]();
+    assert.equal(node.type, "hstack");
+    assert.equal(handle.showing(), true, "a rendered rail reports itself as showing");
+    const right = node.entries.at(-1);
+    assert.deepEqual(right.component.render(46), ["rail-line"]);
+    const left = node.entries[0];
+    assert.deepEqual(left.component[LAYOUT_NODE](), original(), "the transcript side delegates to the host");
+    handle.dispose();
+  });
+
+  it("accepts a legitimately empty stack as the host layout node", () => {
+    const original = () => ({ type: "vstack", entries: [] });
+    const root = { [LAYOUT_NODE]: original };
+    const host = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+    const handle = installRightRail(host, { version: "0.87.0", render: () => ["rail-line"] });
+
+    assert.equal(root[LAYOUT_NODE]().type, "hstack", "an empty host stack is still recognized");
+    assert.equal(handle.active, true);
+    assert.equal(handle.showing(), true);
+    handle.dispose();
+  });
+
+  it("forward-accepts a future minor when the host stack vocabulary is still recognized", () => {
+    const { host, root } = fakeHost();
+    const handle = installRightRail(host, { version: "0.88.0", render: () => ["rail-line"] });
+
+    assert.equal(handle.active, true);
+    assert.equal(root[LAYOUT_NODE]().type, "hstack", "a recognizable host shape self-heals on a newer Pi");
+    assert.equal(handle.showing(), true);
+    handle.dispose();
+  });
+
+  it("latches off permanently when the host layout node is not a recognized stack", () => {
+    for (const bad of [
+      { type: "flex", children: [] },
+      { type: "vstack", entries: [{ somethingElse: 1 }] },
+      { type: "vstack", entries: [null] },
+    ]) {
+      const original = () => bad;
+      const root = { [LAYOUT_NODE]: original };
+      const host = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+      const handle = installRightRail(host, { version: "0.88.0", render: () => ["rail-line"] });
+
+      assert.equal(handle.active, true, "the gates pass before any layout pass runs the probe");
+      assert.equal(root[LAYOUT_NODE](), bad, "an unrecognized host node is delegated unchanged");
+      assert.equal(handle.active, false, "the structural probe latches the shim off");
+      assert.equal(handle.showing(), false);
+      assert.equal(root[LAYOUT_NODE](), bad, "later calls keep delegating permanently");
+      handle.dispose();
+    }
+  });
+
+  it("latches off and keeps delegating when the host layout node throws", () => {
+    const original = () => {
+      throw new Error("host boom");
+    };
+    const root = { [LAYOUT_NODE]: original };
+    const host = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+    const handle = installRightRail(host, { version: "0.87.0", render: () => ["rail-line"] });
+
+    assert.throws(() => root[LAYOUT_NODE](), /host boom/u);
+    assert.equal(handle.active, false, "a throwing host node must never be wrapped");
+    assert.equal(handle.showing(), false);
+    assert.throws(() => root[LAYOUT_NODE](), /host boom/u, "delegation stays permanent");
+    handle.dispose();
+  });
+
+  it("is a non-fatal no-op below the audited floor or without the private capability", () => {
+    const belowFloor = fakeHost();
+    const belowFloorHandle = installRightRail(belowFloor.host, { version: "0.84.9", render: () => ["x"] });
+    assert.equal(belowFloorHandle.active, false);
+    assert.equal(belowFloorHandle.showing(), false);
+    assert.equal(belowFloor.root[LAYOUT_NODE], belowFloor.original);
+    belowFloorHandle.dispose();
+
+    const unparseable = fakeHost();
+    const unparseableHandle = installRightRail(unparseable.host, { version: "nonsense", render: () => ["x"] });
+    assert.equal(unparseableHandle.active, false);
+    assert.equal(unparseable.root[LAYOUT_NODE], unparseable.original);
 
     const noRoot = { mode: "fullscreen", terminal: { columns: 160 }, requestRender() {} };
-    const noRootHandle = installRightRail(noRoot, { version: "0.86.1", render: () => ["x"] });
+    const noRootHandle = installRightRail(noRoot, { version: "0.87.0", render: () => ["x"] });
     assert.equal(noRootHandle.active, false);
 
+    const notFunction = fakeHost();
+    notFunction.root[LAYOUT_NODE] = "nope";
+    const notFunctionHandle = installRightRail(notFunction.host, { version: "0.87.0", render: () => ["x"] });
+    assert.equal(notFunctionHandle.active, false);
+    assert.equal(notFunction.root[LAYOUT_NODE], "nope", "the host hook is never replaced when it is not a function");
+
     const regular = fakeHost({ mode: "regular" });
-    const regularHandle = installRightRail(regular.host, { version: "0.86.1", render: () => ["x"] });
+    const regularHandle = installRightRail(regular.host, { version: "0.87.0", render: () => ["x"] });
     assert.equal(regularHandle.active, false);
     assert.equal(regular.root[LAYOUT_NODE], regular.original);
   });

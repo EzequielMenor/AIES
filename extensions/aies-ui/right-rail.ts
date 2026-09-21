@@ -1,6 +1,6 @@
 /**
- * The single, version-guarded private compatibility module for the optional
- * physical right rail (AIES-010D / T7).
+ * The single, compatibility-guarded private module for the optional physical
+ * right rail (AIES-010D / T7).
  *
  * Pi exposes no public passive side-rail primitive; the host keeps its fullscreen
  * layout tree behind `Symbol.for("@earendil-works/pi-tui/layout-node")`. Gentle
@@ -9,10 +9,19 @@
  *
  * - It never patches Pi, Gentle or `node_modules`; it only wraps the layout node
  *   the host already exposes on its own TUI instance and restores it on dispose.
- * - It is guarded to the Pi minor families actually audited (`0.85`, `0.86`).
- * - Every failure, an unsupported version, a missing private hook, a non-fullscreen
- *   host or a throwing render is non-fatal: the module no-ops or delegates to the
- *   host, so the existing below-editor dock and narrow footer stay the fallback.
+ * - The gate is feature detection, not a version allow-list. The version only
+ *   documents the minors that were hand-audited (`AUDITED_PI_MINORS`) and provides
+ *   a fail-closed floor (`piVersionMayAttemptRail`): anything older than 0.85 or
+ *   unparseable never attempts the hook.
+ * - Before wrapping, the shim lazily probes the host's own layout node and only
+ *   proceeds when it speaks the audited `StackLayoutNode` vocabulary
+ *   (`isRecognizedStackLayoutNode`). A rejection — wrong shape or a throw — latches
+ *   the shim off permanently and delegates to the host, so an unverified future Pi
+ *   never gets a half-built layout injected into it.
+ * - Every failure, a below-floor or unparseable version, a missing private hook, a
+ *   non-fullscreen host, an unrecognized node or a throwing render is non-fatal:
+ *   the module no-ops or delegates to the host, so the existing below-editor dock
+ *   and narrow footer stay the fallback.
  *
  * The projection itself is pure: `renderRightRail` reuses the dock's labelled
  * facts and adds the project and git branch the rail is there to show.
@@ -38,15 +47,60 @@ const MIN_CONTENT_WIDTH = 30;
 /** The host's private fullscreen layout symbol, read by name, never patched. */
 export const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 
-/** The Pi minor families whose private layout shape was audited for AIES. */
-const SUPPORTED_PI_MINORS: ReadonlySet<string> = new Set(["0.85", "0.86"]);
+/** The Pi minor families whose private layout shape was hand-audited for AIES. */
+const AUDITED_PI_MINORS: ReadonlySet<string> = new Set(["0.85", "0.86", "0.87"]);
 
 /** True only for a version whose private layout shape AIES actually audited. */
 export function isSupportedPiVersion(version: string | undefined): boolean {
   if (typeof version !== "string") return false;
   const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(version.trim());
   if (!match) return false;
-  return SUPPORTED_PI_MINORS.has(`${match[1]}.${match[2]}`);
+  return AUDITED_PI_MINORS.has(`${match[1]}.${match[2]}`);
+}
+
+/** The audited major/minor floor below which the shim refuses to even attempt the hook. */
+const RAIL_FLOOR_MAJOR = 0;
+const RAIL_FLOOR_MINOR = 85;
+
+/**
+ * True when the runtime version may *attempt* the private rail. This is a
+ * fail-closed floor, not an allow-list: any parseable `major.minor` at or above
+ * the audited 0.85 floor is attempted, because feature detection — not the
+ * version — decides whether the rail is actually safe on that host.
+ */
+export function piVersionMayAttemptRail(version: string | undefined): boolean {
+  if (typeof version !== "string") return false;
+  const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(version.trim());
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return false;
+  return major > RAIL_FLOOR_MAJOR || minor >= RAIL_FLOOR_MINOR;
+}
+
+/**
+ * The audited host-layout vocabulary the shim is allowed to wrap. It is read
+ * structurally, never by identity: a stack node with a valid `entries` array is
+ * accepted — an empty array is a legitimate stack — and anything else (a future
+ * rename, a different renderer, a throw) makes the shim latch off so the dock
+ * keeps working.
+ */
+export function isRecognizedStackLayoutNode(node: unknown): boolean {
+  if (!node || typeof node !== "object") return false;
+  const candidate = node as { type?: unknown; entries?: unknown };
+  if (candidate.type !== "vstack" && candidate.type !== "hstack") return false;
+  if (!Array.isArray(candidate.entries)) return false;
+  return candidate.entries.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    return isRenderableComponent((entry as { component?: unknown }).component);
+  });
+}
+
+/** True when a value looks like a Pi TUI component the layout engine can render. */
+function isRenderableComponent(value: unknown): boolean {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return false;
+  const candidate = value as { render?: unknown } & Record<symbol, unknown>;
+  return typeof candidate.render === "function" || typeof candidate[LAYOUT_NODE] === "function";
 }
 
 /** The project name the rail shows: the repository directory's last segment. */
@@ -351,7 +405,7 @@ function noopHandle(): RightRailHandle {
 export function installRightRail(tui: unknown, options: RightRailInstallOptions): RightRailHandle {
   try {
     if (!options || typeof options.render !== "function") return noopHandle();
-    if (!isSupportedPiVersion(options.version)) return noopHandle();
+    if (!piVersionMayAttemptRail(options.version)) return noopHandle();
 
     const host = tui as RailHost | undefined;
     if (!host || host.mode !== "fullscreen") return noopHandle();
@@ -364,6 +418,10 @@ export function installRightRail(tui: unknown, options: RightRailInstallOptions)
 
     let railLines: string[] = [];
     let showing = false;
+    let disposed = false;
+    // The structural probe runs once, lazily, on the first layout pass. Until then
+    // the hook is installed and the version gates have passed, so `active` is true.
+    let probe: "untested" | "recognized" | "incompatible" = "untested";
     const rail: RailComponent = {
       render: () => railLines,
       invalidate() {
@@ -394,6 +452,30 @@ export function installRightRail(tui: unknown, options: RightRailInstallOptions)
     };
 
     const replacement = (): unknown => {
+      // A latched incompatibility delegates permanently: the host's own node and
+      // its own throws are passed straight through, so the dock takes over.
+      if (probe === "incompatible") return original.call(root);
+
+      // The probe reads the host's own layout node once, during a layout pass and
+      // never at install time, then requires the audited stack vocabulary. A
+      // rejection — wrong shape or a throw — latches the shim off for good.
+      if (probe === "untested") {
+        let hostNode: unknown;
+        try {
+          hostNode = original.call(root);
+        } catch (error) {
+          probe = "incompatible";
+          showing = false;
+          throw error;
+        }
+        if (!isRecognizedStackLayoutNode(hostNode)) {
+          probe = "incompatible";
+          showing = false;
+          return hostNode;
+        }
+        probe = "recognized";
+      }
+
       const columns = host.terminal?.columns;
       if (typeof columns !== "number" || columns < breakpoint) {
         showing = false;
@@ -418,10 +500,12 @@ export function installRightRail(tui: unknown, options: RightRailInstallOptions)
     root[LAYOUT_NODE] = replacement;
     host.requestRender?.();
 
-    let disposed = false;
     return {
-      active: true,
-      showing: () => showing && !disposed,
+      // `active` reflects reality: installed until the probe latches off or dispose runs.
+      get active() {
+        return !disposed && probe !== "incompatible";
+      },
+      showing: () => showing && !disposed && probe !== "incompatible",
       dispose() {
         if (disposed) return;
         disposed = true;

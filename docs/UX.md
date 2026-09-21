@@ -223,7 +223,7 @@ segment is gone) and restoring the original on shutdown. It is one line:
 From 80 columns the status panel is a persistent `belowEditor` widget. In Pi
 fullscreen this fixed dock is visually and mechanically separate from the
 scrolling transcript, and it is the authoritative fallback for the optional
-right rail. Pi 0.86.1 still exposes no public persistent side-rail primitive:
+right rail. Pi 0.87.0 still exposes no public persistent side-rail primitive:
 `ExtensionWidgetOptions.placement` is limited to `aboveEditor | belowEditor`, and
 `ExtensionUIContext` has no root-composition or sidebar API, so a true rail is
 never a supported integration.
@@ -270,12 +270,21 @@ Pi's private fullscreen layout symbol,
   restores the exact descriptor it found on dispose. It never patches Pi,
   gentle-pi or `node_modules`, and it changes nothing outside the AIES profile
   and repository: no global installation is touched.
-- It is guarded to the Pi minor families actually audited (`0.85` and `0.86`) and
-  activates only in a fullscreen host. Any other version or mode is a no-op.
-- Every failure path is fail-safe: an unsupported version, a missing private
-  hook, a non-fullscreen host, a throwing render or an empty render delegates to
-  the host layout, so the below-editor dock and the narrow footer stay the
-  fallback instead of leaving the human with no status surface.
+- It gates on a fail-closed version floor plus a lazy structural probe of the
+  host's own layout node, not on a version allow-list. `AUDITED_PI_MINORS
+  {0.85, 0.86, 0.87}` only documents the Pi minors that were hand-audited;
+  `piVersionMayAttemptRail()` lets any parseable Pi minor at or above `0.85`
+  attempt the rail and refuses anything older or unparseable, and it activates
+  only in a fullscreen host. Any other version or mode is a no-op.
+- Every failure path is fail-safe: a version below the floor, a missing private
+  hook, a non-fullscreen host, an unrecognized node shape, a throwing render or
+  an empty render delegates to the host layout, so the below-editor dock and the
+  narrow footer stay the fallback instead of leaving the human with no status
+  surface. `isRecognizedStackLayoutNode()` probes the host's node once inside a
+  layout pass, never at install time, and accepts only the audited stack
+  vocabulary; a rejection or a throw latches the shim off permanently and
+  delegates to the host, so an unverified future Pi self-heals when the shape
+  still matches and fails closed when it does not.
 - The rail reuses the dock's labelled facts and adds `Proyecto` and `Rama`
   (project and git branch), capped at `46` columns of content.
 - It composes three sections in order: `Status` (project, branch, ticket, stage,
@@ -855,11 +864,12 @@ API behavior was cross-checked against its installed `docs/` and examples.
    `lib/shell-sidebar-layout.ts`. It activates only in fullscreen at its own
    140-column breakpoint, installs a 50-column `ScrollView`, caches frames,
    delegates resize to Pi and restores the original layout node on disposal. The
-   Pi 0.86.1 re-audit confirmed
+   Pi 0.87.0 re-audit confirmed
    the same boundary, so AIES does not reuse Gentle's rail as a supported
-   integration; instead the user authorized exactly one isolated, version-guarded
-   compatibility shim (§5), and the below-editor dock remains the fallback
-   everywhere the shim is not active.
+   integration; instead the user authorized exactly one isolated compatibility
+   shim (§5) that gates on a fail-closed version floor plus a structural probe of
+   the host's own node, and the below-editor dock remains the fallback everywhere
+   the shim is not active.
 3. One custom footer line replaces Pi's three-line footer, and a custom
    `CustomEditor` frame embeds the working state so the native Working row can be
    hidden through `setWorkingVisible(false)`.
@@ -931,7 +941,7 @@ next audit does not chase it twice.
 | Elapsed time per row | Adapt | Consistent `formatDuration` in the activity card, status panel, `/agents` and `/aies-status`; below 80 columns the footer is the panel fallback and carries elapsed too. |
 | Cost / subscription / usage bars | Reject v1, partially adopted (AIES-010C) | AIES-010 rejected this because there was no reliable per-child source and no own accounting was allowed. AIES-010C reads the real `SessionStats.cost` the child reported and shows Main / Agents / Total; it still builds no pricing catalogue, no subscription meter and no usage bar. |
 | Agent history browser | Reject v1, partially adopted (AIES-010C) | AIES-010 considered it out of scope. AIES-010C adds `/agents` over the ephemeral, session-local registry: this session's children with structured detail. It is still not persistent history, not a task store and not a cross-session browser. |
-| Persistent sidebar / large orchestration panel | One authorized shim + public fallback | The Gentle rail depends on Pi's private fullscreen layout-node symbol, not `ctx.ui`. Pi 0.86.1 still exposes no public passive side-rail API, so AIES keeps the fixed below-editor status dock as the supported fallback (full at 120+ columns, compact at 80–119, absent below 80). On top of it, one isolated, user-authorized, version-guarded shim adds a physical rail at 120+ columns on supported fullscreen hosts; it is bounded technical debt, re-audited on every Pi bump and removed once a public primitive exists. |
+| Persistent sidebar / large orchestration panel | One authorized shim + public fallback | The Gentle rail depends on Pi's private fullscreen layout-node symbol, not `ctx.ui`. Pi 0.87.0 still exposes no public passive side-rail API, so AIES keeps the fixed below-editor status dock as the supported fallback (full at 120+ columns, compact at 80–119, absent below 80). On top of it, one isolated, user-authorized shim — a fail-closed version floor plus a lazy structural probe of the host's own layout node — adds a physical rail at 120+ columns on supported fullscreen hosts; it is bounded technical debt, re-audited on every Pi bump and removed once a public primitive exists. |
 | Custom multi-part footer with brand, path, branch, dirty count | Adapt narrowly | AIES already replaces Pi's footer. With a status widget it stays minimal; below 80 columns it becomes the richer fallback with model, provider, context, elapsed and total cost, without branch/dirty plumbing. |
 | Finished-row TTL on the widget | Adapt, then dropped (AIES-010C) | AIES-010 copied the TTL to solve "ten historical cards". AIES-010C clears the widget the moment a child finishes and relies on the one durable entry per child, which removes the lingering card and the duplicated rows entirely. |
 | Pure renderer + theme interface, tested without a TUI | Adapt | This is why the AIES renderers live in a Pi-free module with injected paint. |
@@ -995,11 +1005,12 @@ rich fallback, the agents mini list lives inside the dock instead of a duplicate
 widget, and routine successful tools own a one-line shell. The rail, dock and
 summaries derive from one theme-backed vocabulary and add the run-local Todos
 checklist, while `/aies-models` picks registry-backed models and capability-valid
-effort for Parent and for future children. Pi 0.86.1 still exposes no public
+effort for Parent and for future children. Pi 0.87.0 still exposes no public
 passive side-rail API, so the dock is the supported surface; from 120 columns on a
-supported fullscreen host, one isolated, user-authorized, version-guarded shim
-adds an optional physical rail with project and branch, and every unsupported or
-failing path falls back to the dock and narrow footer. Final live acceptance of
+supported fullscreen host, one isolated, user-authorized shim (a fail-closed
+version floor plus a lazy structural probe of the host's own node) adds an optional
+physical rail with project and branch, and every unsupported or failing path falls
+back to the dock and narrow footer. Final live acceptance of
 the wide `IDLE`/`WORKER`/`VERIFY`/`DONE` states, the narrow layout, scrollback
 isolation and exit restoration belongs to T14 and is not yet complete.
 

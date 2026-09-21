@@ -767,6 +767,48 @@ still leave `189` for the transcript. This correction is appended rather than
 rewriting the entry above, per the append-only decision history. The T9 visual
 acceptance remains open and is not claimed here.
 
+**0.87.0 re-audit correction (feature detection, not an allow-list).** Pi was
+updated from `0.86.1` to `0.87.0` on this machine, and AIES then stopped showing
+its physical right rail and fell back to the below-editor dock, on the same host
+where Gentle AI kept its sidebar. The root cause was the shim's own guard, not a
+Pi layout change: `extensions/aies-ui/right-rail.ts` gated installation on
+`SUPPORTED_PI_MINORS = {0.85, 0.86}` and returned a no-op handle before it ever
+inspected the host, so the designed dock fallback took over. The measured audit
+found Pi's private layout shape effectively identical across `0.85.1` → `0.87.0`:
+`pi-tui`'s `dist/layout-node.js` and `dist/layout-node.d.ts` are identical
+(`StackLayoutNode { type: "vstack" | "hstack", entries, gap, align }`),
+`dist/layout.js` is byte-identical (MD5 `624eed4a0131380c109222c24abce831`),
+`layoutRoot` keeps the same seven occurrences and the same
+`this.layoutRoot ?? this.implicitScrollView` semantics, and the only real
+`tui-alt-screen.js` diffs are clipboard-error flash text, scroll-to-end label
+centering and WezTerm Kitty row clearing. The fullscreen sticky dock arrived in
+Pi `0.84.0`, already inside the audited range. All three commands run the same
+Pi `0.87.0`: global `pi` is `0.87.0`, `aies` execs that binary
+(`aies --aies-info` → `pi_version=0.87.0`) and `extensions/aies-runtime/index.ts`
+reads the host's own `VERSION`, and Gentle is a Pi *package* in the same global
+`0.87.0` (`~/.pi/agent/settings.json` → `lastChangelogVersion: "0.87.0"`) whose
+pinned `@earendil-works/pi-tui@0.85.1` is only a library import for
+`ScrollView`/`VStack`, never the host runtime. Gentle's working sidebar therefore
+proves the internals still exist. The public-API re-audit on `0.87.0` still finds
+no passive side-rail: `setWidget` placement is still
+`aboveEditor | belowEditor`, `layoutRoot` is declared `private`, and
+`LAYOUT_NODE`/`getLayoutNode` are not exported from `pi-tui`'s index;
+`setLayoutRoot()` is public but *replaces* the root, so it is not a migration
+target and the single shim stays. The gate is corrected: `AUDITED_PI_MINORS
+{0.85, 0.86, 0.87}` now only documents what was hand-audited,
+`piVersionMayAttemptRail()` is a fail-closed floor (anything parseable at or
+above `0.85` may attempt the rail; below `0.85` or unparseable never does), and
+`isRecognizedStackLayoutNode()` lazily probes the host's own layout node once,
+inside a layout pass and never at install time, accepting only the audited stack
+vocabulary. A rejection or a throw latches the shim off permanently and delegates
+to the host, so an unverified future Pi self-heals when the shape still matches
+and fails closed when it does not, with the below-editor dock and the narrow
+footer as the fallback. The fallback tiers, the `46`-column content width, the
+`hstack` entry shape, `showing()` as the dock's sole yield signal, the exact
+descriptor restore on `dispose()` and the removal condition (delete the shim once
+Pi exposes a public passive side-rail) are unchanged. This correction is appended
+rather than rewriting the entry above, per the append-only decision history.
+
 Detailed reference: `docs/UX.md` §2, §3, §5, §6, §17, §18 and §19.
 
 ---
