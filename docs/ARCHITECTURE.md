@@ -644,9 +644,11 @@ extensions/aies-ui/          pure: snapshot -> strings, no Pi import, no state
   format.ts                  formatTokens, formatDuration, formatCost, clip, singleLine
   vocabulary.ts              deriveStage + independent indicators
   footer.ts                  renderFooter/renderHeader with width degradation
-  panel.ts                   the status panel and its responsive bands
+  panel.ts                   the below-editor status dock, its responsive bands and the shared section primitives
+  right-rail.ts              the rail projection plus the one version-guarded private install hook
+  todos.ts                   the run-local, ephemeral Todos projection and its bounded renderer
   activity.ts                live child card, finished line, entry data
-  agents.ts                  mini agents widget, /agents view, selectAgent
+  agents.ts                  /agents view and selectAgent over the observatory records
   tools.ts                   quiet projections for the six generic tools
   approval.ts                structured permission prompt
   summary.ts                 DONE/BLOCKED cards, /aies-status overview, /aies-run status
@@ -757,26 +759,83 @@ independent indicators and are never folded into the stage.
 |---|---|---|---|
 | Custom footer | `ctx.ui.setFooter` | `aies-runtime` | until cleared or session end |
 | Startup ticket header | `ctx.ui.setHeader` | `aies-runtime` | until cleared or session end; renders no lines while the panel is visible |
-| Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs; cleared as soon as it finishes |
-| Widget `aies-agents` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while the observatory has records |
-| Widget `aies-panel` | `ctx.ui.setWidget` (factory, below editor) | `aies-runtime` | while the terminal is at least 72 columns |
+| Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs and no rail is showing; cleared as soon as it finishes |
+| Widget `aies-panel` | `ctx.ui.setWidget` (factory, below editor) | `aies-runtime` | while the terminal is at least 80 columns and no rail is showing |
+| Optional physical right rail | private fullscreen layout hook, one guarded module | `aies-runtime` | while a supported fullscreen host is at least 120 columns |
 | `/agents` view | `ctx.ui.custom` | `aies-runtime` | until Escape |
 | Finished child / DONE / BLOCKED entries | `pi.appendEntry` + `pi.registerEntryRenderer` | `aies-runtime` | persisted in the session file |
 | Quiet generic tool rows | `pi.registerTool` with `renderCall`/`renderResult` | `aies-runtime` | re-registered once per working directory |
 | Permission prompt | `ctx.ui.confirm` | `aies-agents` | until answered |
 
-The panel is content-driven. At `>= 72` terminal columns the status panel is a
-persistent widget below the editor and the startup ticket header renders no
-lines, so the two never duplicate a fact; below that the panel is absent and the
-responsive ticket header is the identity surface. While the panel is visible the
-footer renders its minimal form (identity, ticket, stage, context and alarms) so
-it does not repeat what the panel already shows; otherwise the rich footer
-returns. The panel is never a sidebar, takes no editor width and holds no state.
+The shell is content-driven and one surface owns each fact. `>= 120` columns on a
+supported fullscreen host shows the optional physical right rail (`Status` >
+active `Agents` > `Todos`); when the rail cannot install, the full below-editor
+dock renders from `120`. `80`-`119` shows the compact dock with a bounded
+`Todos · n/m` row. Below `80` the dock renders nothing and the rich one-line
+footer plus the responsive ticket header are the identity surface. While any dock
+or rail is visible the startup ticket header renders no lines and the footer is
+minimal, so no fact is duplicated. Live child activity is rail-only at wide
+widths: when the rail is showing, the runtime suppresses the inline
+`aies-activity` card and the rail owns the live child; everywhere else the inline
+card is the fallback. The dock is never a sidebar, takes no editor width and
+holds no state.
+
+The right rail is the **sole private seam** in AIES: one isolated, version-guarded
+module (`extensions/aies-ui/right-rail.ts`) reads Pi's private fullscreen
+layout-node symbol, and it is the only place AIES touches non-public internals. It
+is guarded to the audited Pi `0.85`/`0.86` minor families, restores the exact
+descriptor on dispose, and every unsupported version, missing hook, non-fullscreen
+host, throwing render or empty render is a fail-safe no-op that leaves the dock and
+the narrow footer as the fallback. Pi still owns the whole fullscreen lifecycle.
 
 One timer exists, owned by `aies-runtime`: 1s while a child is active, 5s
 otherwise, cleared on shutdown and unreferenced so it can never hold the process
-open. The observatory adds no timer of its own; its widget repaints from the
+open. The observatory adds no timer of its own; its projection repaints from the
 registry subscription and that single clock.
+
+### Profile theme and role model preferences (`extensions/aies-models/`)
+
+Two supporting surfaces live beside the presentation module and add no workflow
+authority:
+
+```
+themes/aies.json             the profile-local theme, selected by `profile/settings.json`
+extensions/aies-models/      `/aies-models`: model and effort preferences, no routing
+  capabilities.ts            available-model projection and `thinkingLevelMap` filtering
+  config.ts                  isolated Parent/child persistence
+  overlay.ts                 pure keyboard-first picker state machine
+  headless.ts                bounded print/JSON/RPC projection
+  index.ts                   the command, the Pi model/thinking setters and the TUI adapter
+```
+
+- **Theme discovery.** `bootstrap-profile.sh` symlinks `themes/` into the isolated
+  profile, and the seeded `profile/settings.json` selects `"theme": "aies"`. Pi
+  discovers the theme through its supported profile mechanism; AIES writes no
+  ANSI and ships no second painter.
+- **Only-settings seed rule.** The bootstrap copies only `profile/settings.json`
+  once. `profile/aies.json` is deliberately **not** seeded, so a fresh profile
+  starts from built-in defaults and Pi creates its own `aies.json` only after a
+  user saves a child role; the repository file stays a documented defaults
+  fixture.
+- **Registry-only model choices.** `/aies-models` lists only what
+  `ctx.modelRegistry.getAvailable()` reports at command time. Nothing is
+  hardcoded, and a model without configured auth never appears.
+- **Thinking-level metadata.** Selectable levels come from each model's public
+  `thinkingLevelMap`: a non-reasoning model offers only `off`, ordinary levels
+  through `high` follow the provider default, `xhigh`/`max` appear only when the
+  map defines them, and a `null` entry removes a level. An unsupported level is
+  never offered or persisted; `normalizeThinkingLevel` returns `undefined` rather
+  than clamping to a neighbour.
+- **Isolated Parent/child persistence.** The Parent default goes through Pi's
+  public `SettingsManager` pointed at `$PI_CODING_AGENT_DIR` (writing
+  `settings.json`) and fails safely instead of falling back to the ambient
+  profile. Child preferences go to `$PI_CODING_AGENT_DIR/aies.json` through a
+  key-preserving atomic write that refuses to clobber an unparseable file.
+- **Future-child wiring.** A delegation resolves each role's model and effort
+  through `model.ts` (`resolveAgentModel` / `resolveAgentThinkingLevel`) against
+  `ctx.modelRegistry`, so a saved preference applies to the next child and never
+  to an active one. Resolution order stays env (`AIES_<ROLE>_MODEL`) >
+  `aies.json` > parent model.
 
 ### AIES tool rendering
 
@@ -817,17 +876,17 @@ headline twice.
 
 ### Degradation
 
-- Terminal width: at `>= 100` columns the status panel (a widget below the
-  editor) is a borderless block of at most 4 lines, each at most `72` columns
-  wide; from `72` columns it is a single-column box of at most 6 lines, at most
-  `72` columns wide; below `72` it renders nothing and the responsive ticket
-  header is the identity surface. While the panel is present the footer is
-  minimal; otherwise it drops segments by documented priority
-  (model -> cwd -> `V:PASS` -> `AUTO` -> stage -> `ctx`) and keeps identity,
-  ticket and alarms (`V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`, `SANDBOX OFF`). The
-  ticket header collapses to one line below 60 columns, the activity card is boxed
-  from 48 columns and capped at `72`, and the mini agents widget renders from 48
-  columns.
+- Terminal width: at `>= 120` columns on a supported fullscreen host the optional
+  physical rail renders (`Status` > active `Agents` > `Todos`), otherwise the full
+  below-editor dock renders capped at `96` columns; `80`-`119` renders the compact
+  dock capped at `72` columns with the bounded `Todos · n/m` row; below `80` no
+  dock renders and the rich one-line footer is the fallback. While a dock or rail
+  is present the footer is minimal; otherwise it drops segments by documented
+  priority (model -> cwd -> `V:PASS` -> `AUTO` -> stage -> `ctx`) and keeps
+  identity, ticket and alarms (`V:FAIL`, `V:STALE`, `V:ERROR`, `PERM`,
+  `SANDBOX OFF`). The ticket header collapses to one line below 60 columns, and
+  the inline activity card is boxed from 48 columns but renders only where the
+  rail is not showing.
 - No UI (print, json, RPC without dialogs): no widget, no status, no entries, no
   panel. The workflow is unchanged; `/aies-status` still answers and `/agents`
   answers through `notify`.
@@ -861,9 +920,13 @@ the real Pi profile), so the suite proves both isolation and override.
 | observatory child wiring (AIES-010C) | exactly one `subscribe` listener per child, usage sampled only on lifecycle boundaries, the last sample surviving disposal, and a throwing observer or unavailable `subscribe` never failing the run (`tests/agent-observatory-wiring.test.mjs`) |
 | run telemetry (AIES-010C) | the run baseline subtracted from Parent lifetime usage, run start/restart, Main kept Parent-only, Agents as the registry sum, and an unknown cost propagating as `null` (`tests/run-telemetry.test.mjs`) |
 | status panel (AIES-010C) | the wide borderless / mid box / hidden tiers and their breakpoints, row omission with no value, and `formatCost` rendering an em dash for an unknown value (`tests/aies-panel.test.mjs`) |
-| `/agents` view (AIES-010C) | the mini widget cap and `… N más` overflow, the detail rows, and the wrap-around `selectAgent` navigation (`tests/agents-view.test.mjs`) |
-| observatory UI seam (AIES-010C) | the panel below the editor with no duplicate ticket header, the minimal footer exactly while the panel is visible, the `aies-agents` widget, `/agents` navigation and the compact DONE telemetry, all through a fake `ExtensionAPI` (`tests/observatory-ui.test.mjs`) |
+| `/agents` view (AIES-010C) | the detail rows and the wrap-around `selectAgent` navigation (`tests/agents-view.test.mjs`) |
+| observatory UI seam (AIES-010C) | the panel below the editor with no duplicate ticket header, the minimal footer exactly while the panel is visible, the absence of a standalone `aies-agents` widget, `/agents` navigation and the compact DONE telemetry, all through a fake `ExtensionAPI` (`tests/observatory-ui.test.mjs`) |
 | quiet generic tools (AIES-010C) | the six re-registered tools delegating `execute` untouched, collapsed success rows, the always-visible bounded error rows, the truncation hint and byte-identical expanded output (`tests/quiet-tools.test.mjs`) |
+| run-local Todos (AIES-010D) | the pure projection over real state, `Explorar` omitted when it never ran, running/done/blocked derived from the active child and the verification verdict, the `Todos · n/m` height collapse, and the rail's `Status` > active `Agents` > `Todos` order under height pressure (`tests/fullscreen-shell.test.mjs`) |
+| profile theme and right rail (AIES-010D) | the complete `aies` theme loaded through Pi's supported mechanism, the `120`-column rail breakpoint and `0.85`/`0.86` version guard, project/branch normalization and the vertical `Status`/`Agents` composition with a DONE-frozen run time (`tests/fullscreen-shell.test.mjs`, `tests/isolation.test.mjs`) |
+| model preferences (AIES-010D) | registry-only available-model projection, `thinkingLevelMap` filtering that never clamps, the keyboard-first overlay reducer, the bounded headless projection, key-preserving atomic child persistence and isolated Parent settings (`tests/aies-models.test.mjs`, `tests/agent-observatory-wiring.test.mjs`) |
+| delegation model wiring (AIES-010D) | env > `aies.json` > parent resolution, `ctx.modelRegistry` forwarded as the resolution source for all three roles, and a configured effort validated against the resolved model before it reaches the child (`tests/worker.test.mjs`, `tests/agent-observatory-wiring.test.mjs`) |
 | Linear identity boundary (AIES-010C) | a remote issue without a non-empty `identifier`/`id` rejected before normalization or state mutation, uuid-only payloads refused, the active ticket preserved on invalid refresh, and `no_pending_remote` kept as the stale-replay guard (`tests/linear.test.mjs`) |
 | skills policy | RPC `get_commands` contains zero `source: "skill"` entries |
 | package isolation | `aies list` output excludes every package of the ambient profile |
@@ -873,9 +936,18 @@ No credentials and no model calls are involved, so the suite runs anywhere. The
 checks above are unit and integration checks: they prove the wiring, not a live
 Linear workflow. The shell additionally ran by hand in a real TUI — `/aies-status`
 and `/aies-status detalle` render in Spanish in cmux, and the shell renders
-correctly in an 80-column `tmux`. The AIES-010C suites bring the suite to 607
-passing tests across the observatory, telemetry, panel, agents view and quiet tool
-checks listed above.
+correctly in an 80-column `tmux`. The AIES-010C suites brought the suite to 607
+passing tests; the AIES-010D T10-T12 suites add the transcript-ownership,
+run-local Todos, right-rail/theme and `/aies-models` checks listed above,
+reaching a historical milestone of 718 passing tests at that point. T13 then
+removed five production-dead mini-widget tests together with their dead
+renderer; those tests covered no live surface, so no live coverage was lost,
+and the current suite is exactly **713 passing tests** with zero failures.
+These remain unit and integration
+checks. The final live visual acceptance of the wide `IDLE`/`WORKER`/`VERIFY`/
+`DONE` states, the narrow fallback, scrollback isolation and exit restoration
+belongs to T14 and is **not yet complete**; no live visual acceptance is claimed
+here.
 
 The phase also ran live smokes in a scratch `aies-smoke` repository on the
 isolated profile. `EZE-424` (a 140-column TUI) and `EZE-425` reached

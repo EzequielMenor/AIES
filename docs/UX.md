@@ -43,10 +43,14 @@ AIES adds no terminal renderer of its own. It uses Pi's public extension API:
 Pi's own fullscreen viewport, transcript, editor, resize handling, terminal
 teardown, keybindings and compaction loader stay Pi's. The isolated profile sets
 `tuiMode: "fullscreen"`, `fullscreenExitOutput: "resume-hint"`,
-`quietStartup: true` and `hideThinkingBlock: true`; AIES does not emit ANSI,
-clear the terminal or intercept reasoning. The single exception besides that
-boundary is the optional right rail, installed by the one version-guarded
-compatibility shim described in §5: it wraps the layout node the host already
+`quietStartup: true`, `hideThinkingBlock: true` and `theme: "aies"`; AIES does
+not emit ANSI, clear the terminal or intercept reasoning. The profile-local
+`themes/aies.json` is loaded through Pi's supported theme mechanism, and the
+hidden thinking block stays user-toggleable through Pi's native `Ctrl+T`.
+
+The single exception besides that boundary is the optional right rail, installed
+by the one version-guarded compatibility shim described in §5: it wraps the
+layout node the host already
 exposes on its own TUI instance and never mutates Pi, gentle-pi or `node_modules`.
 AIES changes nothing outside its own isolated profile and repository: it does not
 write `~/.pi`, `~/.agents` or any global installation. While a session is active
@@ -90,11 +94,11 @@ Ticket, workflow stage, context health, autonomy. Nothing else.
 From 80 columns the same snapshot is drawn as a persistent status dock below the
 editor, outside the scrolling fullscreen transcript, and the footer turns
 minimal. The panel carries the run's headline facts (model, context, time,
-agents) and usage (tokens, cost). It is the supported status surface and the
-authoritative fallback for the optional right rail. On a supported Pi fullscreen
-host at 120 columns or more, that optional rail (the single version-guarded shim
-in §5) shows the same facts plus project and branch, and the dock yields to it.
-See §5 and §18.
+agents) and usage (tokens, cost), plus the run-local Todos. It is the supported
+status surface and the authoritative fallback for the optional right rail. On a
+supported Pi fullscreen host at 120 columns or more, that optional rail (the
+single version-guarded shim in §5) shows the same facts plus project and branch
+and owns the live child, and the dock yields to it. See §5 and §18.
 
 ```
 ╭─ ✧ AIES · EZE-417 · WORK ───────────────────────────────────────────╮
@@ -107,9 +111,11 @@ See §5 and §18.
 
 ### While a child works
 
-One live activity card makes the child in flight obvious; the status panel owns
-the bounded agents mini-overview, and `/agents` owns selectable detail. There is
-no duplicate agents widget. See §6.
+One live child surface makes the child in flight obvious. At a width where the
+physical rail is showing, the rail owns that live child and no inline card is
+drawn; everywhere else the inline `aies-activity` card is the fallback. The
+status dock carries the bounded agents row and the run-local Todos, and `/agents`
+owns selectable detail. There is no duplicate agents widget. See §6.
 
 ### When something matters
 
@@ -224,9 +230,9 @@ never a supported integration.
 
 | Terminal width | Surface |
 |---|---|
-| `>= 120`, supported fullscreen host | optional physical right rail (project, branch and the dock facts); the dock yields |
+| `>= 120`, supported fullscreen host | optional physical right rail (`Status` > active `Agents` > `Todos`, plus project and branch); it owns the live child and the dock yields |
 | `>= 120`, no rail available | full boxed dock below the editor, at most 6 lines and 96 columns |
-| `80`–`119` | compact boxed dock, at most 7 lines and 72 columns |
+| `80`–`119` | compact boxed dock, at most 8 lines and 72 columns, including the bounded `Todos · n/m` row |
 | `< 80` | no panel; the rich one-line footer and ticket header are the fallback |
 
 Full tier:
@@ -246,10 +252,11 @@ a missing value is never invented. Tokens and costs always retain the
 to the active child plus the newest completed child, active first. This replaces
 the old standalone `aies-agents` widget and removes one duplicated surface.
 
-The full tier uses at most four body rows; the compact tier at most five. An idle
-panel is still intentional — identity, model/provider, context and elapsed — but
-omits empty usage and agent rows. The header renders no lines while either panel
-tier is visible, and the footer switches to its minimal form.
+The full tier uses at most four body rows; the compact tier at most six body rows
+(five status/agent rows plus the `Todos · n/m` line), so the box tops out at eight
+lines. An idle panel is still intentional — identity, model/provider, context and
+elapsed — but omits empty usage and agent rows. The header renders no lines while
+either panel tier is visible, and the footer switches to its minimal form.
 
 #### The optional right rail and its version-guarded shim
 
@@ -271,6 +278,13 @@ Pi's private fullscreen layout symbol,
   fallback instead of leaving the human with no status surface.
 - The rail reuses the dock's labelled facts and adds `Proyecto` and `Rama`
   (project and git branch), capped at `46` columns of content.
+- It composes three sections in order: `Status` (project, branch, ticket, stage,
+  model, provider, context, run time and vertical Main/Agents/Total tokens/cost),
+  `Agents` (bounded active-first child rows, then the newest finished ones) and
+  `Todos` (the run-local checklist, collapsing to `Todos · n/m` before an active
+  agent row is lost). While it is showing it owns the one live-child surface, so
+  the inline activity card is suppressed and the finished child still leaves one
+  durable transcript line.
 
 Pi still owns the whole fullscreen lifecycle — alternate-screen entry, transcript
 scrolling, resize, Ctrl+C/exit teardown and terminal restoration — and AIES emits
@@ -281,8 +295,8 @@ can change without notice. It must be re-audited before trusting on every Pi
 minor or major bump and removed as soon as Pi exposes a public passive side-rail
 primitive, or sooner if it can no longer be maintained safely. Until removal the
 below-editor dock is the contract and the rail is a bounded enhancement, never a
-supported integration. Real visual acceptance of the rail remains pending under
-T9 and is not claimed here.
+supported integration. Final live visual acceptance of the rail belongs to T14
+and is not yet complete; it is not claimed here.
 
 ### Narrow terminals
 
@@ -338,13 +352,16 @@ reading its transcript.* The Agent Observatory projects the active child into a
 live card, a bounded overview into the status panel, and selectable detail into
 `/agents`.
 
-### Live (one widget per active child)
+### Live (one child surface)
 
-Exactly one widget, key `aies-activity`, above the editor. From 48 columns it is a
-boxed card capped at 72 columns, so a wide terminal reads it as a card and not as
-a full-width banner; below 48 it stays three plain lines. It is updated in place
-by re-rendering from state, never a new message per event, and it shows no tool
-calls, no file reads, no reasoning and no transcript.
+Exactly one live-child surface at any time. On a supported fullscreen host at
+`120` columns or more the physical rail (§5) is that surface and the inline card
+is suppressed; everywhere else the one widget, key `aies-activity`, above the
+editor is the fallback. From 48 columns that card is boxed and capped at 72
+columns, so a wide terminal reads it as a card and not as a full-width banner;
+below 48 it stays three plain lines. It is updated in place by re-rendering from
+state, never a new message per event, and it shows no tool calls, no file reads,
+no reasoning and no transcript.
 
 ```
 ╭─ ◆ Worker ───────────────────────────────────────────────╮
@@ -665,12 +682,13 @@ disagree.
 
 ## 14. Commands
 
-Five primitives.
+Six primitives.
 
 | Command | Role | Visibility |
 |---|---|---|
 | `/aies-status` | the human view of the session; `detalle` (or `all`) prints the full telemetry | normal |
 | `/agents` | the session's children and the selected record's structured detail (AIES-010C) | normal |
+| `/aies-models` | pick the model and effort for Parent, Explore, Worker and Verify (AIES-010D); a keyboard-first overlay, or bounded text headless | normal |
 | `/aies-ticket [id]` | activate or inspect the Linear ticket | normal |
 | `/aies-run [id\|stop\|status]` | bounded autonomy; `status` prints the autonomy view | normal |
 | `/aies-info` | resolved profile paths, mode, extension path | diagnostic |
@@ -678,8 +696,12 @@ Five primitives.
 `/aies-info` stays registered but is deliberately demoted: it is a
 diagnostic/dev command and must not compete with `/aies-status`. `/agents` is the
 one command AIES-010C adds: it opens the ephemeral observatory and intervenes in
-nothing. No further command is added for context, verify, permissions, Linear or
-autonomy: the UI reduces the need for commands instead of multiplying them.
+nothing. `/aies-models` is the one command AIES-010D adds: it lists only the
+models `ctx.modelRegistry.getAvailable()` reports, offers only the thinking levels
+each model's metadata supports, and changes the session model or a future child's
+preference without ever interrupting an active child. No further command is added
+for context, verify, permissions, Linear or autonomy: the UI reduces the need for
+commands instead of multiplying them.
 
 `/aies-run status` deliberately does **not** reprint the session view. It is the
 autonomy command, so it reports the stage, the continuation count, the last step
@@ -694,6 +716,12 @@ commands printing the same report is the duplication this phase removes.
   role runner's resolved model through the public `model.ts` path, and they appear
   in the activity card metric line and in the `/agents` detail. AIES never invents
   a model it cannot read.
+- **Preferences and theme.** `/aies-models` reads only the available registry,
+  validates each effort against the model's `thinkingLevelMap`, and persists the
+  Parent default through Pi's isolated `SettingsManager` (`settings.json`) and
+  each child role into the isolated `aies.json`; a saved preference applies to the
+  next child, never to an active one. The visual theme is the profile-local `aies`
+  theme selected in `settings.json` (§2, §18).
 - **Time.** One shared `formatDuration`: `00:14`, `02:31`, `1:04:22`. Used by the
   activity card, the status panel and `/aies-status`; below 80 columns it also
   appears in the footer fallback.
@@ -721,7 +749,9 @@ extensions/aies-ui/            pure presentation, no Pi import, no state
   format.ts                    formatTokens, formatDuration, formatCost, clip, paint adapter
   vocabulary.ts                deriveStage, indicators
   footer.ts                    renderFooter/renderHeader + width degradation
-  panel.ts                     status panel, responsive bands
+  panel.ts                     status dock, responsive bands, shared section primitives
+  right-rail.ts                rail projection + the one version-guarded private install hook
+  todos.ts                     run-local ephemeral Todos projection and its bounded renderer
   activity.ts                  live card, finished line, entry data
   agents.ts                    /agents view and selectAgent
   tools.ts                     quiet projections for the six generic tools
@@ -732,6 +762,12 @@ extensions/aies-runtime/       the only writer of the footer, the header and the
   state.ts                     the runtime state and its transitions
   usage.ts                     aggregateUsage: Main / Agents / Total
   quiet-tools.ts               the Pi boundary for the quiet generic tools
+extensions/aies-models/        /aies-models: registry-backed model and effort preferences (no routing)
+  capabilities.ts              available-model projection + thinkingLevelMap filtering
+  config.ts                    isolated Parent/child persistence
+  overlay.ts                   pure keyboard-first picker state machine
+  headless.ts                  bounded print/JSON/RPC projection
+  index.ts                     the command, the Pi model/thinking setters and the TUI adapter
 extensions/aies-agents/        the child roles and the registry that observes them
   observatory.ts               the ephemeral, session-local Agent Observatory registry
 ```
@@ -741,10 +777,11 @@ Rules:
 - `aies-ui` imports nothing from Pi and holds no state. Every function is
   `state -> string`.
 - Exactly one owner per Pi surface: `aies-runtime` owns the footer, the startup
-  ticket header, the widget keys `aies-activity` and `aies-panel`, the `/agents`
-  custom view, the quiet tool registration and the entry renderers;
-  `aies-agents` owns the approval dialog and produces the observatory records that
-  `aies-ui` renders.
+  ticket header, the widget keys `aies-activity` and `aies-panel`, the sole
+  version-guarded right-rail install, the `/agents` custom view, the quiet tool
+  registration and the entry renderers; `aies-agents` owns the approval dialog and
+  produces the observatory records that `aies-ui` renders; `aies-models` owns
+  `/aies-models` and the preference stores it writes.
 - Painting is injected (`Paint`), so the same renderer works uncolored in tests
   and headless.
 - No `packages/ui`, no component registry, no virtual DOM, no state management.
@@ -815,9 +852,10 @@ API behavior was cross-checked against its installed `docs/` and examples.
 2. **The right rail is not a public Pi primitive.** Gentle 3.2.1 patches Pi's
    fullscreen layout tree through the internal symbol
    `Symbol.for("@earendil-works/pi-tui/layout-node")` in
-   `lib/shell-sidebar-layout.ts`. It activates only in fullscreen at 140 columns,
-   installs a 50-column `ScrollView`, caches frames, delegates resize to Pi and
-   restores the original layout node on disposal. The Pi 0.86.1 re-audit confirmed
+   `lib/shell-sidebar-layout.ts`. It activates only in fullscreen at its own
+   140-column breakpoint, installs a 50-column `ScrollView`, caches frames,
+   delegates resize to Pi and restores the original layout node on disposal. The
+   Pi 0.86.1 re-audit confirmed
    the same boundary, so AIES does not reuse Gentle's rail as a supported
    integration; instead the user authorized exactly one isolated, version-guarded
    compatibility shim (§5), and the below-editor dock remains the fallback
@@ -887,7 +925,7 @@ next audit does not chase it twice.
 
 | Gentle concept | AIES decision | Reason |
 |---|---|---|
-| Agent activity cards | Adapt | The core feeling to keep: a child working without its transcript. The live card is one running child; the status dock has a bounded two-agent overview and `/agents` has detail, without a duplicate standalone widget. |
+| Agent activity cards | Adapt | The core feeling to keep: a child working without its transcript. One live child surface at a time: the rail owns it at wide widths, the inline card is the fallback, the status dock has a bounded two-agent overview and `/agents` has detail, without a duplicate standalone widget. |
 | Context gauge (8-cell bar + `%`) | Reject | A meter needs a ceiling to be read, and a ceiling invites "how full am I" math. `ctx 42k` with an `!` only under pressure is quieter and answers the same question. |
 | Model + effort in the footer | Adapt only as narrow fallback | The panel owns model/provider from 80 columns; below that the footer carries compact `model/provider` while it fits. Effort remains absent. |
 | Elapsed time per row | Adapt | Consistent `formatDuration` in the activity card, status panel, `/agents` and `/aies-status`; below 80 columns the footer is the panel fallback and carries elapsed too. |
@@ -950,17 +988,20 @@ projection. The finished-child TTL is removed, so the durable entry is the only
 trace of a finished child.
 
 **AIES-010D.** Moves the product into Pi's native fullscreen viewport, restores
-the previous terminal screen on exit, suppresses startup chatter and hides
-thinking blocks through public settings. The fixed status dock now has exact
-120+/80–119/<80 tiers, the narrow footer is the rich fallback, the agents mini
-list lives inside the dock instead of a duplicate widget, and routine successful
-tools own a one-line shell. Pi 0.86.1 still exposes no public passive side-rail
-API, so the dock is the supported surface; from 120 columns on a supported
-fullscreen host, one isolated, user-authorized, version-guarded shim adds an
-optional physical rail with project and branch, and every unsupported or failing
-path falls back to the dock and narrow footer. Real visual acceptance of the wide
-`IDLE`/`WORKER`/`VERIFY`/`DONE` states, the narrow layout, scrollback isolation
-and `/exit`/Ctrl+C restoration is still pending under T9.
+the previous terminal screen on exit, suppresses startup chatter, hides thinking
+blocks through public settings and loads the profile-local `aies` theme. The
+fixed status dock now has exact 120+/80–119/<80 tiers, the narrow footer is the
+rich fallback, the agents mini list lives inside the dock instead of a duplicate
+widget, and routine successful tools own a one-line shell. The rail, dock and
+summaries derive from one theme-backed vocabulary and add the run-local Todos
+checklist, while `/aies-models` picks registry-backed models and capability-valid
+effort for Parent and for future children. Pi 0.86.1 still exposes no public
+passive side-rail API, so the dock is the supported surface; from 120 columns on a
+supported fullscreen host, one isolated, user-authorized, version-guarded shim
+adds an optional physical rail with project and branch, and every unsupported or
+failing path falls back to the dock and narrow footer. Final live acceptance of
+the wide `IDLE`/`WORKER`/`VERIFY`/`DONE` states, the narrow layout, scrollback
+isolation and exit restoration belongs to T14 and is not yet complete.
 
 ## 20. Linear authentication and the MCP handoff
 

@@ -1,9 +1,8 @@
 /**
  * Agent Observatory renderers (AIES-010C / T4a).
  *
- * Two pure surfaces and one navigation helper:
+ * One pure surface and one navigation helper:
  *
- * - `renderAgentsMini` is the compact `Agents` widget: one row per child, capped.
  * - `renderAgentsView` is the `/agents` screen: a selectable list plus the
  *   selected record's structured detail.
  * - `selectAgent` is the wrap-around index math T4b binds keys to.
@@ -21,29 +20,15 @@ import { PLAIN_PAINT, type Paint } from "./paint.ts";
 import { sectionHeading } from "./panel.ts";
 import { GLYPH } from "./vocabulary.ts";
 
-/** Below this width the mini widget renders nothing. */
-export const AGENTS_MINI_MIN_WIDTH = 48;
-
-/**
- * The runtime snapshot plus the observatory records the UI renders. The snapshot
- * projects run telemetry but not `agents` (which lives on `AiesState`), so the UI
- * types its parameter as the snapshot augmented with the records it reads.
- */
-export type AgentsSnapshot = AiesSnapshot & { readonly agents?: readonly AgentRecord[] };
-
-/** Rows the mini widget shows before it collapses the rest into `… N más`. */
-const MAX_MINI_ROWS = 4;
-
 /** Mechanical activity entries the detail block shows. */
 const MAX_RECENT = 5;
 
 /** Paths the `/agents` detail row lists before it collapses the rest into `… N más`. */
 const MAX_DETAIL_PATHS = 3;
 
-const ROLE_WIDTH = 9;
-const DETAIL_WIDTH = 18;
 const VIEW_LABEL_WIDTH = 13;
 
+export type AgentsSnapshot = AiesSnapshot & { readonly agents?: readonly AgentRecord[] };
 export type AgentDirection = "left" | "right" | "up" | "down" | (string & {});
 
 export interface AgentsOptions {
@@ -68,18 +53,6 @@ function hasActivity(record: AgentRecord): boolean {
   return Boolean(record.currentActivity) || (Array.isArray(record.changedPaths) && record.changedPaths.length > 0);
 }
 
-function lastPath(record: AgentRecord): string | undefined {
-  const paths = Array.isArray(record.changedPaths) ? record.changedPaths : [];
-  const last = singleLine(String(paths[paths.length - 1] ?? ""));
-  return last || undefined;
-}
-
-function basename(path: string): string {
-  const trimmed = path.replace(/\/+$/u, "");
-  const index = trimmed.lastIndexOf("/");
-  return index >= 0 ? trimmed.slice(index + 1) : trimmed;
-}
-
 /** The status glyph: a running child is live once it reports activity, queued before. */
 function statusGlyph(record: AgentRecord): string {
   switch (record.status) {
@@ -94,55 +67,10 @@ function statusGlyph(record: AgentRecord): string {
   }
 }
 
-function detailOf(record: AgentRecord): string {
-  if (record.status === "running") {
-    const path = lastPath(record);
-    if (path) return basename(path);
-    if (record.currentActivity) return singleLine(record.currentActivity);
-    return "esperando";
-  }
-  const count = Array.isArray(record.changedPaths) ? record.changedPaths.length : 0;
-  if (count > 0) return count === 1 ? "1 archivo" : `${count} archivos`;
-  if (record.result) return singleLine(record.result);
-  return "";
-}
-
 function elapsedBetween(record: AgentRecord, now: number): string | undefined {
   if (typeof record.startedAt !== "number") return undefined;
   const end = typeof record.finishedAt === "number" ? record.finishedAt : now;
   return formatDuration(Math.max(0, end - record.startedAt));
-}
-
-/** Elapsed time, omitted for a running child that has not reported activity yet. */
-function miniElapsed(record: AgentRecord, now: number): string {
-  if (record.status === "running" && !hasActivity(record)) return "";
-  return elapsedBetween(record, now) ?? "";
-}
-
-function miniRow(record: AgentRecord, now: number, width: number): string {
-  const head = `${statusGlyph(record)} ${capitalize(record.role).padEnd(ROLE_WIDTH)}`;
-  const detail = detailOf(record);
-  const elapsed = miniElapsed(record, now);
-  const tail = detail ? `${hardClip(detail, DETAIL_WIDTH - 1).padEnd(DETAIL_WIDTH)}${elapsed}` : elapsed;
-  return hardClip(`${head}${tail}`, width);
-}
-
-/**
- * The compact `Agents` widget. `[]` with no records or below `AGENTS_MINI_MIN_WIDTH`;
- * otherwise at most four rows plus a `… N más` line.
- */
-export function renderAgentsMini(snapshot: AgentsSnapshot, now: number, options: AgentsOptions = {}): string[] {
-  const paint = options.paint ?? PLAIN_PAINT;
-  const width = positiveWidth(options.width);
-  const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  if (records.length === 0) return [];
-  if (width === undefined || width < AGENTS_MINI_MIN_WIDTH) return [];
-
-  const lines = records.slice(0, MAX_MINI_ROWS).map((record) => paint.fg("text", miniRow(record, now, width)));
-  if (records.length > MAX_MINI_ROWS) {
-    lines.push(paint.fg("dim", hardClip(`… ${records.length - MAX_MINI_ROWS} más`, width)));
-  }
-  return lines;
 }
 
 function clampIndex(index: number, count: number): number {

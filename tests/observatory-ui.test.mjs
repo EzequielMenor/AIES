@@ -4,7 +4,8 @@
  * Drive the real `extensions/aies-runtime/index.ts` through a fake
  * `ExtensionAPI`/`ctx` to pin what the pure renderer tests cannot: the status
  * panel band in the header, the minimal footer while the panel is present, the
- * `aies-agents` mini widget, the `/agents` component and its keys, the compact
+ * absence of a standalone duplicate `aies-agents` widget while `/agents` stays
+ * functional, the `/agents` component and its keys, the compact
  * DONE projection and the "one durable entry per child" invariant.
  *
  * No Pi runtime, no model, no terminal beyond a stubbed `process.stdout.columns`.

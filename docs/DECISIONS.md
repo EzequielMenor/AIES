@@ -771,6 +771,71 @@ Detailed reference: `docs/UX.md` §2, §3, §5, §6, §17, §18 and §19.
 
 ---
 
+## D25 - Final shell, theme and role model preferences: one theme-backed shell, run-local Todos, and a registry-backed `/aies-models` (AIES-010D)
+
+**Decision.**
+1. The fullscreen shell keeps one responsive hierarchy owned by `aies-runtime`:
+   `>= 120` columns on a supported fullscreen host shows the optional physical
+   rail (`Status` > active `Agents` > `Todos`); with no rail the full below-editor
+   dock renders from `120`; `80`–`119` shows the compact dock with a bounded
+   `Todos · n/m` row; below `80` no dock renders and the rich one-line footer plus
+   the responsive ticket header are the identity surface. While a dock or rail is
+   visible the ticket header stays quiet and the footer is minimal, so no fact is
+   drawn twice. The compact dock is at most 8 lines including the Todos row.
+2. Live child activity has exactly one owner per width: while the rail is showing
+   it owns the live child and the inline `aies-activity` card is suppressed;
+   wherever the rail is unavailable the inline card is the fallback, and a
+   finished child still leaves exactly one durable transcript line.
+3. Todos are a run-local, ephemeral projection of state AIES already measures.
+   They are derived, bounded, lower priority than `Status` and active agents,
+   never persisted and never authored by the model, and collapse to `Todos · n/m`
+   before an active agent row is lost.
+4. The profile-local `aies` theme (`themes/aies.json`, selected by
+   `profile/settings.json`) is the single visual vocabulary for the rail, dock,
+   `/agents`, summaries and footer; it is loaded through Pi's supported theme
+   mechanism and AIES ships no hardcoded ANSI.
+5. `/aies-models` lists only `ctx.modelRegistry.getAvailable()` models, offers
+   only the thinking levels each model's `thinkingLevelMap` supports (never
+   clamping an unsupported level), and persists the Parent default through Pi's
+   isolated `SettingsManager` and each child role into the isolated `aies.json`.
+   A saved preference applies to the next child, never to an active one.
+6. `bootstrap-profile.sh` seeds only `profile/settings.json`, once;
+   `profile/aies.json` is deliberately not copied. A fresh profile starts from
+   built-in defaults and Pi creates its own `aies.json` only after a user saves a
+   child role.
+7. DONE and BLOCKED stay deterministic and runtime-owned: exactly one durable
+   entry each, from one publish path, never a Parent-authored second summary.
+8. The single private seam is unchanged and still the only non-public Pi access:
+   `extensions/aies-ui/right-rail.ts`, guarded to Pi `0.85`/`0.86` and fail-safe
+   on every miss.
+
+**Why.** AIES-010C left three gaps: the wide live-child card duplicated the rail's
+activity section, the run had no compact visible plan, and model/effort choice had
+no supported surface at all. A single theme-backed vocabulary, a derived checklist
+with no authority, and a registry-backed picker close those gaps without adding
+routing, persistence or a second renderer. Keeping the Todo projection out of
+persistence and out of the model is what stops a presentation phase from becoming
+a task store.
+
+**Consequence.** The shell shows the same run at three widths without repeating a
+fact, the rail owns the live child where it exists, and role models and effort are
+configurable from the registry alone. This records no new architecture or product
+beyond the implemented T10–T12 work: routing, verification, permissions, sandbox,
+Context Governor thresholds, Linear policy and the repair budget keep their
+semantics.
+
+**Supersedes D24's activation detail.** D24's `140`-column rail activation and its
+appended T9 correction are obsolete: the contract in force is one breakpoint per
+tier — `>=120` rail, `80`–`119` compact dock, `<80` rich footer. D24's core
+decision (one user-authorized, version-guarded private shim, with the below-editor
+dock as the unconditional fallback) and its technical-debt condition stand
+unchanged: the shim must be re-audited on every Pi minor or major bump and removed
+once Pi exposes a public passive side-rail primitive, or sooner if it can no longer
+be maintained safely. Real visual acceptance remains T14's and is not claimed
+here. Detailed reference: `docs/UX.md` §2, §3, §5, §6, §14, §15, §16 and §19.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)
