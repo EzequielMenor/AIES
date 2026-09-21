@@ -806,8 +806,11 @@ and fails closed when it does not, with the below-editor dock and the narrow
 footer as the fallback. The fallback tiers, the `46`-column content width, the
 `hstack` entry shape, `showing()` as the dock's sole yield signal, the exact
 descriptor restore on `dispose()` and the removal condition (delete the shim once
-Pi exposes a public passive side-rail) are unchanged. This correction is appended
-rather than rewriting the entry above, per the append-only decision history.
+Pi exposes a public passive side-rail) are unchanged. This correction supersedes
+D24 item 3 and the guard detail in D25 item 8, both of which state the retired
+`0.85`/`0.86` allow-list; those entries are left as written history. This
+correction is appended rather than rewriting the entry above, per the append-only
+decision history.
 
 Detailed reference: `docs/UX.md` §2, §3, §5, §6, §17, §18 and §19.
 
