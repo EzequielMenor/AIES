@@ -31,6 +31,14 @@ import {
 } from "./config.ts";
 import { renderHeadlessModels } from "./headless.ts";
 import {
+  MODAL_FRAME_CHROME,
+  MODAL_MAX_WIDTH,
+  MODAL_MIN_WIDTH,
+  renderModalFrame,
+  type ModalLine,
+} from "../aies-ui/modal.ts";
+import { themePaint } from "../aies-ui/paint.ts";
+import {
   ROLE_LABELS,
   createOverlayState,
   decodeOverlayKey,
@@ -38,6 +46,7 @@ import {
   renderOverlayState,
   type OverlayAction,
   type OverlayContext,
+  type OverlayState,
 } from "./overlay.ts";
 
 /** The resolved picker choice. */
@@ -137,23 +146,46 @@ function overlayKeys(keybindings: unknown): { decode(data: string): OverlayActio
 /** A theme surface read structurally so a partial host still renders text. */
 interface OverlayTheme {
   fg?(color: string, text: string): string;
-  bold?(text: string): string;
 }
 
-function paint(theme: OverlayTheme | undefined, color: string, text: string): string {
-  try {
-    return typeof theme?.fg === "function" ? theme.fg(color, text) : text;
-  } catch {
-    return text;
+/** Narrow the host theme to the shape the shared paint adapter accepts. */
+function paintableTheme(
+  theme: OverlayTheme | undefined,
+): { fg(color: string, text: string): string } | undefined {
+  return theme && typeof theme.fg === "function"
+    ? (theme as { fg(color: string, text: string): string })
+    : undefined;
+}
+
+/**
+ * The widest content the picker can show across its three steps. Sizing the
+ * overlay from real content keeps the frame tight on a wide terminal and lets
+ * Pi clamp it safely when the terminal is narrow.
+ */
+export function overlayPreferredWidth(context: OverlayContext): number {
+  const roleState = createOverlayState();
+  const modelState: OverlayState = { ...roleState, step: "model", role: "parent" };
+  const states: OverlayState[] = [roleState, modelState];
+  const model = context.models.find((option) => option.levels.length > 1) ?? context.models[0];
+  if (model) states.push({ ...modelState, step: "thinking", model });
+
+  let widest = 0;
+  for (const state of states) {
+    const view = renderOverlayState(state, context);
+    widest = Math.max(widest, view.title.length, ...view.lines.map((line) => line.length), view.help.length);
   }
+  return Math.min(MODAL_MAX_WIDTH, Math.max(MODAL_MIN_WIDTH, widest + MODAL_FRAME_CHROME));
 }
 
-function truncate(line: string, width: number): string {
-  const limit = Math.max(0, Math.floor(Number.isFinite(width) ? width : 0));
-  return line.length <= limit ? line : limit <= 1 ? "…" : `${line.slice(0, limit - 1)}…`;
+/** Map the pure overlay view into the shared frame's content shape. */
+function overlayModalLines(view: ReturnType<typeof renderOverlayState>): ModalLine[] {
+  return view.lines.map((line) => ({
+    text: line,
+    color: line.startsWith("›") ? "accent" : "text",
+  }));
 }
 
-/** Render the pure overlay view into bounded, themed terminal lines. */
+/** Render the pure overlay view into the shared AIES modal frame. */
 export function renderOverlayLines(
   state: Parameters<typeof renderOverlayState>[0],
   context: OverlayContext,
@@ -161,13 +193,14 @@ export function renderOverlayLines(
   width: number,
 ): string[] {
   const view = renderOverlayState(state, context);
-  const title = paint(theme, "accent", typeof theme?.bold === "function" ? theme.bold(view.title) : view.title);
-  const lines: string[] = [truncate(title, width), ""];
-  for (const line of view.lines) {
-    lines.push(truncate(paint(theme, line.startsWith("›") ? "accent" : "text", line), width));
-  }
-  lines.push("", truncate(paint(theme, "dim", view.help), width));
-  return lines;
+  return renderModalFrame({
+    title: view.title,
+    lines: overlayModalLines(view),
+    help: view.help,
+    width,
+    preferredWidth: overlayPreferredWidth(context),
+    paint: themePaint(paintableTheme(theme)),
+  });
 }
 
 /** Open the TUI overlay and resolve the confirmed selection, or `null` on cancel. */
@@ -214,7 +247,12 @@ async function openOverlay(ctx: ExtensionContext, models: ModelOption[]): Promis
     },
     {
       overlay: true,
-      overlayOptions: { anchor: "center", width: "70%", minWidth: 40, maxHeight: "80%" },
+      overlayOptions: {
+        anchor: "center",
+        width: overlayPreferredWidth(context),
+        minWidth: MODAL_MIN_WIDTH,
+        maxHeight: "80%",
+      },
     },
   );
 

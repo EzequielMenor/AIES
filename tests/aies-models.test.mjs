@@ -462,6 +462,13 @@ describe("command wiring", () => {
     }
 
     assert.equal(overlayOptions?.overlay, true, "TUI must use the overlay custom UI");
+    assert.equal(overlayOptions?.overlayOptions?.anchor, "center", "the modal stays centered");
+    assert.equal(
+      typeof overlayOptions?.overlayOptions?.width,
+      "number",
+      "the overlay width is content-adapted, not a fixed percentage",
+    );
+    assert.ok(overlayOptions.overlayOptions.width >= 24, "the modal keeps a readable minimum width");
     const written = JSON.parse(readFileSync(join(agentDir, AIES_CONFIG_FILE), "utf8"));
     assert.equal(written.agents.worker.model, "faux/faux-1");
     assert.equal(written.agents.worker.thinkingLevel, "high");

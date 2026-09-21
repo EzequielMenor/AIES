@@ -131,10 +131,21 @@ function open(host) {
   return { command, session: host.session };
 }
 
-/** The text of the currently marked row in the overlay, without the marker. */
+/**
+ * The label of the currently marked row in the overlay, without the marker and
+ * without the shared modal frame's chrome. The frame change (T1) means the
+ * marked row now reads `│ › Explore   │`, so the helper locates the marker
+ * anywhere on the line instead of assuming it starts the line.
+ */
 function selectedLabel(component, width = 80) {
-  const marked = component.render(width).find((line) => line.startsWith("› "));
-  return marked ? marked.slice(2) : undefined;
+  for (const line of component.render(width)) {
+    const index = line.indexOf("› ");
+    if (index < 0) continue;
+    const rest = line.slice(index + 2);
+    const end = rest.endsWith(" │") ? rest.length - 2 : rest.length;
+    return rest.slice(0, end).trimEnd();
+  }
+  return undefined;
 }
 
 /** Feed one or more keys to the overlay, one call per key as the host does. */
@@ -401,6 +412,45 @@ describe("confirm via Enter and Ctrl+S", () => {
     await command;
     assert.equal(session.doneCalls[0].role, "explore");
     assert.equal(session.doneCalls[0].option.id, "m2");
+  });
+});
+
+describe("shared modal frame", () => {
+  it("frames the overlay while navigation keeps working", async () => {
+    useAgentDir();
+    const models = [option({ id: "m1" }), option({ id: "m2" })];
+    const host = createHost({ models });
+    const { command, session } = open(host);
+
+    const width = 72;
+    const frame = session.component.render(width);
+    assert.equal(frame[0].startsWith("╭"), true, frame[0]);
+    assert.equal(frame.at(-1).startsWith("╰"), true, frame.at(-1));
+    assert.ok(frame[0].includes("Modelo"), "the title is integrated into the frame");
+    for (const line of frame) assert.ok(line.length <= width, `overflow: ${line}`);
+
+    session.component.handleInput("j"); // down -> explore
+    assert.equal(selectedLabel(session.component), "Explore");
+    session.component.handleInput("\x1b[A"); // up -> parent
+    assert.equal(selectedLabel(session.component), "Parent");
+
+    press(session, "\r", "\r"); // role -> model -> done (non-reasoning)
+    await command;
+    assert.equal(session.doneCalls[0].role, "parent");
+    assert.equal(session.doneCalls[0].option.id, "m1");
+  });
+
+  it("keeps every framed line inside a narrow render width", async () => {
+    const host = createHost({ models: [option({ id: "m1", name: "A very long model label indeed" })] });
+    const { command, session } = open(host);
+
+    const frame = session.component.render(28);
+    for (const line of frame) assert.ok(line.length <= 28, `overflow: ${line}`);
+    assert.ok(frame.some((line) => line.includes("…")), "long content is clipped, not wrapped");
+
+    session.component.handleInput("\x1b"); // cancel so the command settles
+    await command;
+    assert.equal(session.doneCalls[0], null);
   });
 });
 
