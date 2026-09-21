@@ -6,8 +6,8 @@
  * the presentation module.
  */
 
-/** Below this, token counts are verbatim; above, rounded to thousands (`34k`). */
-const TOKEN_ROUNDING_THRESHOLD = 10_000;
+/** The thousand count past which a fractional `k` would stop being readable. */
+const TOKEN_FRACTION_LIMIT = 100;
 
 const THOUSAND = 1000;
 
@@ -15,9 +15,16 @@ const THOUSAND = 1000;
 export function formatTokens(value: number | null | undefined): string {
   const tokens = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
   if (tokens === null) return "?";
-  if (tokens < TOKEN_ROUNDING_THRESHOLD) return `${tokens}`;
-  const thousands = Math.round(tokens / THOUSAND);
-  if (thousands < THOUSAND) return `${thousands}k`;
+  if (tokens < THOUSAND) return `${tokens}`;
+  const thousands = tokens / THOUSAND;
+  if (thousands < THOUSAND) {
+    // 8747 -> 8.7k, 34000 -> 34k, 123400 -> 123k: one decimal only while it
+    // stays compact, then whole thousands so the number never grows unbounded.
+    if (thousands < TOKEN_FRACTION_LIMIT) {
+      return `${(Math.round(thousands * 10) / 10).toFixed(1).replace(/\.0$/u, "")}k`;
+    }
+    return `${Math.round(thousands)}k`;
+  }
   return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
 }
 
@@ -44,6 +51,21 @@ export function formatDuration(milliseconds: number): string {
 /** Collapse every run of whitespace (including newlines) into one trimmed line. */
 export function singleLine(text: string): string {
   return String(text ?? "").replace(/\s+/gu, " ").trim();
+}
+
+/** Capitalize the first letter of a single-line value; empty stays empty. */
+export function capitalize(value: string): string {
+  const trimmed = singleLine(value);
+  return trimmed ? trimmed.charAt(0).toUpperCase() + trimmed.slice(1) : "";
+}
+
+/**
+ * One canonical role label (`worker` -> `Worker`). The panel, the live card and
+ * the `/agents` view all read the same child role, so this is the single place
+ * that decides how it is humanized.
+ */
+export function roleLabel(value: string, fallback = "Agente"): string {
+  return capitalize(value) || fallback;
 }
 
 /**

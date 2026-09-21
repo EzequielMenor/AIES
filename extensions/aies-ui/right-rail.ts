@@ -20,9 +20,11 @@
 
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import type { AgentsSnapshot } from "./agents.ts";
-import { formatDuration } from "./format.ts";
-import { agentFact, compactStatusRows, sectionHeading, statusBox, statusTitle } from "./panel.ts";
+import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { activeRunElapsed, agentFact, sectionHeading, statusBox, statusTitle } from "./panel.ts";
 import { PLAIN_PAINT, type Paint } from "./paint.ts";
+import { deriveStage, isCompacting, isContextPressure, SPACING } from "./vocabulary.ts";
+import { deriveTodos, renderTodos } from "./todos.ts";
 
 /** The fullscreen width at which the physical rail is worth its columns. */
 export const RIGHT_RAIL_MIN_WIDTH = 120;
@@ -64,17 +66,70 @@ export function branchLabel(branch: string | null | undefined): string | undefin
   return trimmed || undefined;
 }
 
+/** A short, readable commit sha derived from a full or abbreviated HEAD. */
+export function shortShaLabel(value: string | null | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const hex = value.trim().replace(/[^0-9a-fA-F]/gu, "");
+  return hex ? hex.slice(0, 7) : undefined;
+}
+
+/** The facts the branch projection reads; all of them are already available locally. */
+export interface BranchFacts {
+  /** The change branch an active ticket already carries, when one is known. */
+  changeBranch?: string | null;
+  /** Pi's workspace branch, or `"detached"` for a detached HEAD. */
+  workspaceBranch?: string | null;
+  /** A commit sha read once from the workspace, used only while detached. */
+  shortSha?: string | null;
+}
+
+/**
+ * Project the one branch the rail shows, in documented precedence: the active
+ * ticket's change branch, then the workspace branch, then `detached @ <sha>`,
+ * then nothing (the caller renders an em dash). It reads only facts already in
+ * hand and never queries git on a cadence.
+ */
+export function projectBranch(facts: BranchFacts): string | undefined {
+  const change = branchLabel(facts.changeBranch);
+  if (change) return change;
+  const workspace = branchLabel(facts.workspaceBranch);
+  if (workspace && workspace !== "detached") return workspace;
+  const sha = shortShaLabel(facts.shortSha);
+  if (sha) return `detached @ ${sha}`;
+  return undefined;
+}
+
 export interface RightRailOptions {
   width?: number;
+  /**
+   * The rows the host can actually show. It is a layout input only: Status is
+   * never dropped, active agents are never hidden for Todos, and Todos collapse
+   * to `Todos · n/m` before an agent row is lost.
+   */
+  height?: number;
   paint?: Paint;
   /** The working directory the project name is derived from. */
   project?: string;
-  /** The host's git branch, when the host reported one. */
+  /** The host's workspace git branch, when the host reported one. */
   branch?: string | null;
+  /** The active ticket's change branch, when the workflow already knows one. */
+  changeBranch?: string | null;
+  /** A short commit sha for the detached case, read once and cached. */
+  shortSha?: string | null;
+  /** When the run reached DONE, so its displayed time stays final. */
+  runEndedAt?: number;
 }
 
 /** Rows the rail's Agents section shows before collapsing the rest. */
 const MAX_RAIL_AGENTS = 3;
+
+/** One ordered agent row plus whether it represents an active child. */
+interface RailAgentRow {
+  text: string;
+  active: boolean;
+  /** The `en espera` placeholder, which is not a hidden agent. */
+  placeholder?: boolean;
+}
 
 /** Elapsed time of a child, omitted for a running child with nothing to show yet. */
 function railElapsed(record: AgentRecord, now: number): string | undefined {
@@ -90,9 +145,9 @@ function railElapsed(record: AgentRecord, now: number): string | undefined {
  * ones, never more than `MAX_RAIL_AGENTS` rows. An idle run keeps the section
  * explicit and quiet instead of leaving an unexplained hole under the heading.
  */
-function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): string[] {
+function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): RailAgentRow[] {
   const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  if (records.length === 0) return [paint.fg("dim", "en espera")];
+  if (records.length === 0) return [{ text: paint.fg("dim", "en espera"), active: false, placeholder: true }];
 
   const ordered = [...records].sort((left, right) => {
     if (left.status === "running" && right.status !== "running") return -1;
@@ -100,18 +155,91 @@ function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): str
     return right.startedAt - left.startedAt;
   });
 
-  const rows = ordered.slice(0, MAX_RAIL_AGENTS).map((record) => {
+  return ordered.map((record) => {
     const elapsed = railElapsed(record, now);
-    return elapsed ? `${agentFact(record)} · ${elapsed}` : agentFact(record);
+    const fact = elapsed ? `${agentFact(record)} · ${elapsed}` : agentFact(record);
+    return { text: fact, active: record.status === "running" };
   });
-  if (ordered.length > MAX_RAIL_AGENTS) rows.push(`… ${ordered.length - MAX_RAIL_AGENTS} más`);
-  return rows;
+}
+
+/** A `label  value` row, omitted entirely when the value is empty. */
+function railFact(label: string, value: string | undefined): string | undefined {
+  const text = singleLine(value ?? "");
+  return text ? `${label.padEnd(SPACING.label)}${text}` : undefined;
 }
 
 /**
- * The pure rail projection: a `Status` section (project, branch and the dock's
- * labelled facts) over an `Agents` section (bounded active/recent children).
- * `[]` when the width cannot carry the card.
+ * Tokens and cost as vertical Main/Agents/Total groups. A rail is too narrow for
+ * the dock's single line, so the three buckets never truncate into one another.
+ */
+function railUsageRows(snapshot: AgentsSnapshot): string[] {
+  const usage = snapshot.runUsage;
+  if (!usage) return [];
+  const rows: string[] = [];
+  const bucket = (name: string, value: string) => `  ${name.padEnd(8)}${value}`;
+
+  if (usage.total.totalTokens > 0) {
+    rows.push("Tokens");
+    rows.push(bucket("Main", formatTokens(usage.main.totalTokens)));
+    rows.push(bucket("Agents", formatTokens(usage.agents.totalTokens)));
+    rows.push(bucket("Total", formatTokens(usage.total.totalTokens)));
+  }
+
+  const hasKnownCost = usage.main.cost !== null || usage.agents.cost !== null || usage.total.cost !== null;
+  const hasNonZeroCost = [usage.main.cost, usage.agents.cost, usage.total.cost].some(
+    (value) => typeof value === "number" && value > 0,
+  );
+  if (hasKnownCost && (hasNonZeroCost || usage.agents.totalTokens > 0)) {
+    rows.push("Coste");
+    rows.push(bucket("Main", formatCost(usage.main.cost)));
+    rows.push(bucket("Agents", formatCost(usage.agents.cost)));
+    rows.push(bucket("Total", formatCost(usage.total.cost)));
+  }
+  return rows;
+}
+
+/** The vertical, non-empty Status facts the rail shows above Agents and Todos. */
+function railStatusRows(
+  snapshot: AgentsSnapshot,
+  now: number,
+  project: string | undefined,
+  branch: string | undefined,
+  runEndedAt: number | undefined,
+): string[] {
+  const ticket = snapshot.ticket?.active && snapshot.ticket.identifier ? singleLine(snapshot.ticket.identifier) : undefined;
+  const model = singleLine(snapshot.model?.label ?? snapshot.model?.id ?? "") || undefined;
+  const provider = singleLine(snapshot.model?.provider ?? "") || undefined;
+  const pressure = isContextPressure(snapshot) ? " !" : "";
+  const compacting = isCompacting(snapshot) ? " · compactando…" : "";
+  const elapsed = activeRunElapsed(snapshot, now, runEndedAt);
+
+  const rows = [
+    railFact("Proyecto", project),
+    // The branch row always exists: with no source it reads as a dash, never
+    // vanishing and leaving the reader to wonder whether it was measured.
+    railFact("Rama", branch ?? "—"),
+    railFact("Ticket", ticket),
+    railFact("Etapa", deriveStage(snapshot)),
+    railFact("Modelo", model),
+    railFact("Proveedor", provider),
+    railFact("Contexto", `${formatTokens(snapshot.contextTokens)}${pressure}${compacting}`),
+    // No run, no clock: IDLE stays a dash instead of a session timer.
+    railFact("Tiempo", elapsed ?? "—"),
+  ].filter((row): row is string => Boolean(row));
+
+  return [...rows, ...railUsageRows(snapshot)];
+}
+
+function usableHeight(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+/**
+ * The pure rail projection: one card with three coherent sections — `Status`
+ * (project, branch, ticket, stage, model, provider, context, run time and split
+ * tokens/cost), `Agents` (bounded active/recent children) and `Todos` (the
+ * derived run checklist). `[]` when the width cannot carry the card.
  */
 export function renderRightRail(
   snapshot: AgentsSnapshot,
@@ -126,15 +254,47 @@ export function renderRightRail(
   const paint = options.paint ?? PLAIN_PAINT;
   const width = Math.min(columns, RIGHT_RAIL_CONTENT_WIDTH);
   const project = projectLabel(options.project);
-  const branch = branchLabel(options.branch);
+  const branch = projectBranch({
+    changeBranch: options.changeBranch,
+    workspaceBranch: options.branch,
+    shortSha: options.shortSha,
+  });
 
-  const rows: string[] = [sectionHeading("Status", paint, "accent")];
-  if (project) rows.push(`Proyecto  ${project}`);
-  if (branch) rows.push(`Rama      ${branch}`);
-  rows.push(...compactStatusRows(snapshot, now));
-  rows.push(sectionHeading("Agents", paint, "accent"));
-  rows.push(...railAgentRows(snapshot, now, paint));
-  return statusBox(statusTitle(snapshot), rows, width, paint);
+  const lines: string[] = [sectionHeading("Status", paint, "accent"), ...railStatusRows(snapshot, now, project, branch, options.runEndedAt)];
+  lines.push(sectionHeading("Agents", paint, "accent"));
+
+  // Agent budget: at most `MAX_RAIL_AGENTS` ordered rows, active children first.
+  const ordered = railAgentRows(snapshot, now, paint);
+  const considered = ordered.slice(0, MAX_RAIL_AGENTS);
+  const active = considered.filter((row) => row.active);
+  const finished = considered.filter((row) => !row.active);
+
+  // Height pressure order: Status (already drawn), then every active child, then
+  // Todos (collapsing to a single line), and only then finished children.
+  const height = usableHeight(options.height);
+  let remaining = height === undefined ? Number.POSITIVE_INFINITY : height - lines.length;
+
+  for (const row of active) {
+    lines.push(row.text);
+    remaining -= 1;
+  }
+  let shownFinished = 0;
+  for (const row of finished) {
+    if (remaining - SPACING.gap <= 0) break;
+    lines.push(row.text);
+    remaining -= 1;
+    shownFinished += 1;
+  }
+
+  const hidden = ordered.filter((row) => !row.placeholder).length - active.length - shownFinished;
+  if (hidden > 0) lines.push(`… ${hidden} más`);
+
+  // Todos last: with room the full checklist, otherwise the `Todos · n/m` line.
+  lines.push("");
+  const todoBudget = height === undefined ? undefined : Math.max(0, remaining - 1);
+  lines.push(...renderTodos(deriveTodos(snapshot), { paint, maxRows: todoBudget }));
+
+  return statusBox(statusTitle(snapshot), lines, width, paint);
 }
 
 /** The narrow slice of Pi's TUI the install reads; every field is optional. */

@@ -240,12 +240,12 @@ function zoneLabel(zone: string | undefined): string {
 export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: Paint } = {}): string {
   const paint = options.paint ?? PLAIN_PAINT;
   const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
-  const sections: string[][] = [[paint.fg("text", "AIES · autonomía")]];
+  const sections: string[][] = [[sectionHeading("AIES · autonomía", paint, "accent")]];
 
   const ticket = snapshot.ticket;
   if (ticket?.active && ticket.identifier) {
     const value = ticket.status ? `${ticket.identifier} · ${ticket.status}` : ticket.identifier;
-    sections.push([paint.fg("muted", "Ticket"), row("", value)]);
+    sections.push([sectionHeading("Ticket", paint, "muted"), row("", value)]);
   }
 
   const autonomy = snapshot.autonomy;
@@ -259,7 +259,7 @@ export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: 
     const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
     if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
-  sections.push([paint.fg("muted", "Ejecución"), ...runRows]);
+  sections.push([sectionHeading("Ejecución", paint, "muted"), ...runRows]);
 
   sections.push([paint.fg("dim", "Estado completo: /aies-status")]);
   return sections.map((section) => section.join("\n")).join("\n\n");
@@ -280,14 +280,14 @@ function agentSummary(record: AgentRecord, now: number): string {
 export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, options: { paint?: Paint } = {}): string {
   const paint = options.paint ?? PLAIN_PAINT;
   const row = (label: string, value: string) => `  ${label.padEnd(LABEL_WIDTH)}${value}`;
-  const sections: string[][] = [["AIES"]];
+  const sections: string[][] = [[sectionHeading("AIES", paint, "accent")]];
 
   const ticket = snapshot.ticket;
   if (ticket?.active && ticket.identifier) {
     const rows = [row("id", ticket.identifier)];
     if (ticket.status) rows.push(row("situación", ticket.status));
     if (ticket.title) rows.push(row("título", ticket.title));
-    sections.push([paint.fg("muted", "Ticket"), ...rows]);
+    sections.push([sectionHeading("Ticket", paint, "muted"), ...rows]);
   }
 
   // Ejecución is always worth a row: the stage is the headline answer to "what is
@@ -309,12 +309,12 @@ export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, opti
   const clock = [formatDuration(Math.max(0, now - snapshot.startedAt))];
   if (run?.active && typeof run.startedAt === "number") clock.push(`run ${formatDuration(Math.max(0, now - run.startedAt))}`);
   runRows.push(row("tiempo", clock.join(" · ")));
-  sections.push([paint.fg("muted", "Ejecución"), ...runRows]);
+  sections.push([sectionHeading("Ejecución", paint, "muted"), ...runRows]);
 
   const verification = snapshot.verification;
   if (verification && (verification.status !== "none" || verification.attempts > 0 || verification.repairs > 0 || verification.awaiting)) {
     sections.push([
-      paint.fg("muted", "Verificación"),
+      sectionHeading("Verificación", paint, "muted"),
       row("estado", verification.status === "none" ? "pendiente" : verificationStatusLabel(verification.status)),
       row("intentos", String(verification.attempts)),
       row("reparaciones", `${verification.repairs} / ${verification.maxRepairs}`),
@@ -328,7 +328,7 @@ export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, opti
     row("pico", formatTokens(snapshot.peakContextTokens)),
     row("compactaciones", String(snapshot.compactionCount)),
   ];
-  sections.push([paint.fg("muted", "Contexto"), ...contextRows]);
+  sections.push([sectionHeading("Contexto", paint, "muted"), ...contextRows]);
 
   // Usage: tokens and cost grouped together, zero rows omitted, an unknown cost
   // rendered as an em dash rather than a zero.
@@ -349,12 +349,12 @@ export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, opti
       ),
     );
   }
-  if (usageRows.length) sections.push([paint.fg("muted", "Uso"), ...usageRows]);
+  if (usageRows.length) sections.push([sectionHeading("Uso", paint, "muted"), ...usageRows]);
 
   const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
   const delegations = snapshot.delegations;
   if (records.length) {
-    sections.push([paint.fg("muted", "Agentes"), ...records.map((record) => row(singleLine(record.role), agentSummary(record, now)))]);
+    sections.push([sectionHeading("Agentes", paint, "muted"), ...records.map((record) => row(singleLine(record.role), agentSummary(record, now)))]);
   } else if (delegations && delegations.total > 0) {
     const rows: string[] = [];
     const active = delegations.activeRole;
@@ -364,7 +364,7 @@ export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, opti
       else if (count > 0) rows.push(row(role, "terminado"));
     }
     if (active && !["explore", "worker", "verify"].includes(active)) rows.push(row(active, "activo"));
-    if (rows.length) sections.push([paint.fg("muted", "Agentes"), ...rows]);
+    if (rows.length) sections.push([sectionHeading("Agentes", paint, "muted"), ...rows]);
   }
 
   const permissions = snapshot.permissions;
@@ -372,7 +372,7 @@ export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, opti
     const rows = [row("sandbox", permissions.sandbox)];
     if (permissions.denials > 0) rows.push(row("denegaciones", String(permissions.denials)));
     if (permissions.approvals > 0) rows.push(row("aprobaciones", String(permissions.approvals)));
-    sections.push([paint.fg("muted", "Permisos"), ...rows]);
+    sections.push([sectionHeading("Permisos", paint, "muted"), ...rows]);
   }
 
   return sections.map((section) => section.join("\n")).join("\n\n");

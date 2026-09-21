@@ -8,7 +8,17 @@
  */
 
 /** The only colors a renderer is allowed to name. */
-export type SemanticColor = "accent" | "success" | "warning" | "error" | "muted" | "dim" | "text";
+export type SemanticColor =
+  | "accent"
+  | "success"
+  | "warning"
+  | "error"
+  | "running"
+  | "pending"
+  | "selection"
+  | "muted"
+  | "dim"
+  | "text";
 
 /** Injected colorizer: pure by contract, never throws into a renderer. */
 export interface Paint {

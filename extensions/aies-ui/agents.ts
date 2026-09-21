@@ -16,8 +16,10 @@
 
 import { shortPath, type AgentRecord } from "../aies-agents/observatory.ts";
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
-import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { capitalize, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint } from "./paint.ts";
+import { sectionHeading } from "./panel.ts";
+import { GLYPH } from "./vocabulary.ts";
 
 /** Below this width the mini widget renders nothing. */
 export const AGENTS_MINI_MIN_WIDTH = 48;
@@ -62,12 +64,6 @@ function hardClip(text: string, width: number): string {
   return `${text.slice(0, width - 1)}…`;
 }
 
-function capitalize(value: string): string {
-  const trimmed = singleLine(value);
-  if (!trimmed) return "";
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
 function hasActivity(record: AgentRecord): boolean {
   return Boolean(record.currentActivity) || (Array.isArray(record.changedPaths) && record.changedPaths.length > 0);
 }
@@ -88,13 +84,13 @@ function basename(path: string): string {
 function statusGlyph(record: AgentRecord): string {
   switch (record.status) {
     case "completed":
-      return "✓";
+      return GLYPH.done;
     case "failed":
-      return "✗";
+      return GLYPH.failed;
     case "blocked":
-      return "!";
+      return GLYPH.blocked;
     default:
-      return hasActivity(record) ? "◆" : "◇";
+      return hasActivity(record) ? GLYPH.running : GLYPH.pending;
   }
 }
 
@@ -251,7 +247,7 @@ export function renderAgentsView(
   const width = positiveWidth(options.width) ?? 80;
   const list = Array.isArray(records) ? records : [];
 
-  const lines: string[] = [paint.fg("text", hardClip("AIES Agents", width))];
+  const lines: string[] = [sectionHeading(hardClip("AIES Agents", width), paint, "accent")];
   const hint = paint.fg("dim", hardClip("← → agente · esc cerrar", width));
 
   if (list.length === 0) {
@@ -263,7 +259,7 @@ export function renderAgentsView(
   const index = clampIndex(selectedIndex, list.length);
   list.forEach((record, position) => {
     const row = hardClip(`${position === index ? "▸" : " "} ${statusGlyph(record)} ${agentLabel(record, position)}  ${record.status}`, width);
-    lines.push(paint.fg(position === index ? "accent" : "dim", row));
+    lines.push(paint.fg(position === index ? "selection" : "dim", row));
   });
 
   lines.push("");

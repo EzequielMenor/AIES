@@ -120,7 +120,7 @@ ${lines.join("\n")}`);
     assert.match(text, /00:31/u);
     assert.match(text, /Tokens/u);
     assert.match(text, /Main 12k/u);
-    assert.match(text, /Agents 4000/u);
+    assert.match(text, /Agents 4k/u);
     assert.match(text, /Total 16k/u);
     assert.match(text, /Coste/u);
     assert.match(text, /Agentes/u);
@@ -239,7 +239,7 @@ ${lines.join("\n")}`);
 
   it("collapses to a bounded compact product panel from 80 to 119 columns", () => {
     const lines = renderStatusPanel(snapOf(richState()), T0 + 31_000, { width: 80 });
-    assert.ok(lines.length <= 7, `compact panel has ${lines.length} lines:
+    assert.ok(lines.length <= 8, `compact panel has ${lines.length} lines:
 ${lines.join("\n")}`);
     assert.ok(lines[0].startsWith("╭"), lines[0]);
     assert.ok(lines.at(-1).startsWith("╰"), lines.at(-1));
@@ -250,8 +250,21 @@ ${lines.join("\n")}`);
     assert.match(text, /Tiempo/u);
     assert.match(text, /Agentes/u);
     assert.match(text, /Main 12k/u);
-    assert.match(text, /Agents 4000/u);
+    assert.match(text, /Agents 4k/u);
     assert.match(text, /Total 16k/u);
+  });
+
+  it("carries the derived Todos summary in the compact dock without crowding the active agent", () => {
+    for (const width of [PANEL_MIN_WIDTH, 100, PANEL_WIDE_WIDTH - 1]) {
+      const text = renderStatusPanel(snapOf(richState()), T0 + 31_000, { width }).join("\n");
+      assert.match(text, /Todos · 2\/6/u, `width ${width} lost the Todos summary:\n${text}`);
+      assert.match(text, /◆ Worker activo/u, `width ${width} dropped the active agent:\n${text}`);
+      assert.equal(
+        text.includes("Cargar ticket"),
+        false,
+        `the compact dock must bound Todos to one line:\n${text}`,
+      );
+    }
   });
 
   it("uses the rich one-line footer as the below-80 fallback", () => {
@@ -268,7 +281,7 @@ ${lines.join("\n")}`);
     for (const width of [PANEL_MIN_WIDTH, 100, PANEL_WIDE_WIDTH, 160]) {
       const lines = renderStatusPanel(snapOf(richState()), T0, { width });
       assert.ok(lines.length > 0, `no panel at ${width}`);
-      assert.ok(lines.length <= 7, `width ${width}: ${lines.length} lines`);
+      assert.ok(lines.length <= 8, `width ${width}: ${lines.length} lines`);
       for (const line of lines) {
         assert.ok(line.length <= width, `width ${width}: "${line}"`);
         assert.ok(line.length <= 96, `width ${width}: "${line}" exceeds the 96 max`);

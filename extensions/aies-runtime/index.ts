@@ -15,6 +15,8 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
+import { readFileSync, statSync, type Stats } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 import {
   applyActiveToolCount,
@@ -50,6 +52,7 @@ import { PANEL_MIN_WIDTH, renderStatusPanel } from "../aies-ui/panel.ts";
 import {
   installRightRail,
   renderRightRail,
+  shortShaLabel,
   type RightRailHandle,
 } from "../aies-ui/right-rail.ts";
 import { renderStatusReport } from "./status.ts";
@@ -71,7 +74,8 @@ import {
   type BlockedSummaryInput,
   type DoneSummaryInput,
 } from "../aies-ui/summary.ts";
-import { deriveStage } from "../aies-ui/vocabulary.ts";
+import { deriveStage, statusGlyph } from "../aies-ui/vocabulary.ts";
+import { roleLabel } from "../aies-ui/format.ts";
 import { themePaint } from "../aies-ui/paint.ts";
 import { registerQuietTools } from "./quiet-tools.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
@@ -203,6 +207,91 @@ function eventsOf(pi: ExtensionAPI): EventsSurface | undefined {
 /** The observatory projection the bus carries; an unreadable payload is empty. */
 function asAgentSnapshot(payload: unknown): ObservatorySnapshot {
   return Array.isArray(payload) ? (payload as ObservatorySnapshot) : [];
+}
+
+/** A full detached commit id exactly as git writes it into `HEAD`. */
+const DETACHED_SHA_RE = /^[0-9a-f]{40}$/u;
+
+/**
+ * The commit a detached `HEAD` names, or `undefined` for a branch ref or any
+ * content that is not a full commit id. Pure: it judges only the text of a
+ * `HEAD` file, so it is safe to exercise without a repository.
+ */
+export function parseDetachedHead(content: string | undefined): string | undefined {
+  const text = typeof content === "string" ? content.trim() : "";
+  if (!text || text.startsWith("ref:")) return undefined;
+  const sha = text.split(/\s+/u)[0];
+  return DETACHED_SHA_RE.test(sha) ? sha : undefined;
+}
+
+/**
+ * Resolve a `.git` file's `gitdir: <path>` pointer to an absolute git directory.
+ * Git records the pointer relative to the directory holding the `.git` file of a
+ * linked worktree, so a relative path is resolved against `baseDir`. Pure.
+ */
+export function resolveGitDirPointer(content: string | undefined, baseDir: string): string | undefined {
+  const text = typeof content === "string" ? content.trim() : "";
+  const match = /^gitdir:\s*(.+)$/u.exec(text);
+  const pointer = match?.[1].trim();
+  return pointer ? resolve(baseDir, pointer) : undefined;
+}
+
+/** The `HEAD` path a working directory's `.git` marker points at, if any. */
+function gitHeadPath(dir: string): string | undefined {
+  const marker = join(dir, ".git");
+  let stats: Stats;
+  try {
+    stats = statSync(marker);
+  } catch {
+    return undefined;
+  }
+  if (stats.isDirectory()) return join(marker, "HEAD");
+  if (!stats.isFile()) return undefined;
+  let pointer: string | undefined;
+  try {
+    pointer = resolveGitDirPointer(readFileSync(marker, "utf8"), dir);
+  } catch {
+    pointer = undefined;
+  }
+  return pointer ? join(pointer, "HEAD") : undefined;
+}
+
+/**
+ * A short commit sha for the detached-HEAD case, read once per working directory
+ * from the worktree's own `HEAD` file. Pi's public `getGitBranch()` reports the
+ * literal `"detached"` and no sha, and this is a layout input, not a poller: the
+ * result is cached and only consulted when the workspace branch is detached. It
+ * understands both a normal repository (`.git/HEAD`) and a linked worktree,
+ * whose `.git` is a file holding a relative `gitdir: <path>` pointer.
+ */
+let detachedShaCache: { cwd: string; sha: string | undefined } | undefined;
+export function readDetachedShortSha(cwd: string | undefined): string | undefined {
+  if (typeof cwd !== "string" || !cwd) return undefined;
+  if (detachedShaCache?.cwd === cwd) return detachedShaCache.sha;
+  let sha: string | undefined;
+  try {
+    let dir = resolve(cwd);
+    for (let depth = 0; depth < 50; depth += 1) {
+      const head = gitHeadPath(dir);
+      if (head !== undefined) {
+        let content: string | undefined;
+        try {
+          content = readFileSync(head, "utf8");
+        } catch {
+          content = undefined;
+        }
+        sha = shortShaLabel(parseDetachedHead(content));
+        break;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    sha = undefined;
+  }
+  detachedShaCache = { cwd, sha };
+  return sha;
 }
 
 /**
@@ -347,6 +436,9 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   // (the observed ticket reaching Linear's completed state, or autonomy stopping
   // with `completed`). A new run re-arms the latch.
   let doneEmitted = false;
+  // When the run reached DONE in this session, so the rail's run clock stays
+  // final instead of growing after the run is over. Presentation-local only.
+  let runEndedAt: number | undefined;
   // Whether the observed ticket has already been read as completed in this run,
   // so the DONE edge fires once per completion rather than on every render.
   let ticketWasComplete = false;
@@ -383,6 +475,16 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     try {
       const columns = process.stdout?.columns;
       return typeof columns === "number" && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The real terminal height, a layout input only; absent on a non-TTY host. */
+  function terminalRows(): number | undefined {
+    try {
+      const rows = process.stdout?.rows;
+      return typeof rows === "number" && Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : undefined;
     } catch {
       return undefined;
     }
@@ -611,6 +713,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       // only repeat the command that started it.
       state = applyRunStart(state, Date.now());
       doneEmitted = false;
+      runEndedAt = undefined;
     }
     if (newStop && stopReason) handleStopReason(ctx, stopReason);
   }
@@ -647,6 +750,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   function emitDone(ctx: ExtensionContext): void {
     if (doneEmitted) return;
     doneEmitted = true;
+    runEndedAt = Date.now();
     const { data, headline } = doneSummary();
     publishSummary(ctx, data, headline);
   }
@@ -715,7 +819,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     // One compact row per session child: role, outcome glyph and the child's own
     // already-bound result. Nothing here is re-narrated from the raw summary.
     const agentRows = (snapshot.agents ?? []).map((record) => ({
-      role: capitalizeRole(record.role),
+      role: roleLabel(record.role),
       glyph: statusGlyph(record.status),
       text: singleLineText(record.result),
     }));
@@ -810,7 +914,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (!ui || typeof ui.setWidget !== "function") return;
 
     const activity = state.activity;
-    const wanted = activity ? isActivityVisible(activity, Date.now()) : false;
+    // Visual ownership: while the physical rail is showing at a wide terminal it
+    // owns live child activity, so the transcript must not also show the inline
+    // card. Wherever the rail is unavailable it remains the fallback.
+    const railShowing = railHandle?.showing() === true;
+    const wanted = !railShowing && activity ? isActivityVisible(activity, Date.now()) : false;
 
     if (wanted) {
       if (widgetRegistered) return;
@@ -882,13 +990,21 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
             railHandle?.dispose();
             railHandle = installRightRail(tui, {
               version: VERSION,
-              render: (width: number): string[] =>
-                renderRightRail(uiSnapshot(), Date.now(), {
+              render: (width: number): string[] => {
+                const workspaceBranch = branchReader?.() ?? null;
+                return renderRightRail(uiSnapshot(), Date.now(), {
                   width,
+                  height: terminalRows(),
                   project: ctx.cwd,
-                  branch: branchReader?.() ?? null,
+                  branch: workspaceBranch,
+                  // The active ticket's change branch is not carried by any state
+                  // today; the projection still prefers it the moment it exists.
+                  changeBranch: undefined,
+                  shortSha: workspaceBranch === "detached" ? readDetachedShortSha(ctx.cwd) : undefined,
+                  runEndedAt,
                   paint: themePaint(theme as ThemeLike | undefined),
-                }),
+                });
+              },
             });
             return {
               render: (width: number): string[] => {
@@ -1222,6 +1338,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       ticketWasComplete = false;
       ticketStatusTypeComplete = false;
       lastVerify = undefined;
+      runEndedAt = undefined;
 
       // A session switch must not carry another session's cumulative Parent
       // usage: reset the incremental cache before the first sample.
@@ -1238,6 +1355,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       railHandle?.dispose();
       railHandle = undefined;
       branchReader = undefined;
+      detachedShaCache = undefined;
 
       state = createState(now);
       state = applyAgents(state, []);
@@ -1456,27 +1574,6 @@ function entryData(data: unknown): Record<string, unknown> {
 /** Collapse a value to one trimmed line, or an empty string. */
 function singleLineText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
-}
-
-/** `Worker`: the role label the DONE row uses. */
-function capitalizeRole(role: unknown): string {
-  const text = singleLineText(role);
-  if (!text) return "Agente";
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-/** The outcome glyph for a finished child: mirrors the observatory's own mapping. */
-function statusGlyph(status: unknown): string {
-  switch (status) {
-    case "completed":
-      return "✓";
-    case "failed":
-      return "✗";
-    case "blocked":
-      return "!";
-    default:
-      return "◆";
-  }
 }
 
 interface AgentKeys {

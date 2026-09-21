@@ -5,6 +5,7 @@
  */
 
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
+import type { SemanticColor } from "./paint.ts";
 
 /** Where the work is. Answer exactly one of these; never a second dimension. */
 export type Stage = "IDLE" | "EXPLORE" | "WORK" | "VERIFY" | "REPAIR" | "WAIT" | "BLOCKED" | "DONE";
@@ -101,4 +102,100 @@ export function deriveStage(snapshot: AiesSnapshot): Stage {
   if (activeRole === "worker") return verification?.status === "fail" ? "REPAIR" : "WORK";
   if (activeRole === "explore") return "EXPLORE";
   return "IDLE";
+}
+
+/**
+ * The one AIES visual vocabulary. Every renderer names a glyph, a border, a gap
+ * or a tone from here instead of spelling `◆` or `╭` inline, so the shell reads
+ * as one product and a future theme change lands in exactly one file. Nothing
+ * here is ANSI: the tone names are resolved by `paint.ts` against Pi's theme.
+ */
+export const GLYPH = {
+  running: "◆",
+  pending: "◇",
+  done: "✓",
+  failed: "✗",
+  blocked: "!",
+  warning: "⚠",
+  idle: "—",
+} as const;
+
+export const BORDER = {
+  topLeft: "╭",
+  topRight: "╮",
+  bottomLeft: "╰",
+  bottomRight: "╯",
+  horizontal: "─",
+  vertical: "│",
+  arrow: "▸",
+  bullet: "·",
+} as const;
+
+export const SPACING = {
+  gap: 2,
+  indent: 2,
+  label: 10,
+} as const;
+
+/** Tone names available to every renderer, resolved through the `Paint` boundary. */
+export const TONE: Record<string, SemanticColor> = {
+  accent: "accent",
+  running: "running",
+  pending: "pending",
+  success: "success",
+  warning: "warning",
+  error: "error",
+  selection: "selection",
+  muted: "muted",
+  dim: "dim",
+  text: "text",
+};
+
+/** The semantic tone of a workflow stage. */
+export const STAGE_TONE: Record<Stage, SemanticColor> = {
+  IDLE: "muted",
+  EXPLORE: "accent",
+  WORK: "running",
+  REPAIR: "running",
+  VERIFY: "running",
+  WAIT: "warning",
+  BLOCKED: "error",
+  DONE: "success",
+};
+
+/** The semantic tone of a child outcome, shared by fact rows and durable entries. */
+export function outcomeTone(outcome: string | undefined): SemanticColor {
+  switch (outcome) {
+    case "done":
+      return "success";
+    case "failed":
+    case "protocol_error":
+      return "error";
+    case "blocked":
+      return "warning";
+    default:
+      return "dim";
+  }
+}
+
+/**
+ * The one status glyph: observatory statuses (`running`, `completed`, `failed`,
+ * `blocked`) and the queued/pending case. `/agents`, the mini rows, the durable
+ * entries and the derived Todos all read it, so a child reads the same way
+ * everywhere.
+ */
+export function statusGlyph(status: string | undefined): string {
+  switch (status) {
+    case "completed":
+    case "done":
+      return GLYPH.done;
+    case "failed":
+      return GLYPH.failed;
+    case "blocked":
+      return GLYPH.blocked;
+    case "running":
+      return GLYPH.running;
+    default:
+      return GLYPH.pending;
+  }
 }

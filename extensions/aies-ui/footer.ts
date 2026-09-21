@@ -21,7 +21,7 @@
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
-import { deriveStage, isCompacting, isContextPressure, verificationIndicator, type Stage } from "./vocabulary.ts";
+import { deriveStage, isCompacting, isContextPressure, STAGE_TONE, verificationIndicator, type Stage } from "./vocabulary.ts";
 
 /** The fixed brand identity of the footer. */
 const IDENTITY = "✧ AIES";
@@ -64,16 +64,7 @@ interface Segment {
   drop?: DropTag;
 }
 
-const STAGE_COLOR: Record<Stage, SemanticColor> = {
-  IDLE: "text",
-  EXPLORE: "accent",
-  WORK: "accent",
-  REPAIR: "accent",
-  VERIFY: "accent",
-  WAIT: "warning",
-  BLOCKED: "error",
-  DONE: "success",
-};
+const STAGE_COLOR: Record<Stage, SemanticColor> = STAGE_TONE;
 
 function positiveWidth(width: number | undefined): number | undefined {
   if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return undefined;

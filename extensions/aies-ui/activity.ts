@@ -6,9 +6,9 @@
  * shown as `0` or `—`; a broken record degrades to silence, never a guess.
  */
 
-import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
-import type { Stage } from "./vocabulary.ts";
+import { clip, formatCost, formatDuration, formatTokens, roleLabel, singleLine } from "./format.ts";
+import { PLAIN_PAINT, type Paint } from "./paint.ts";
+import { GLYPH, outcomeTone, type Stage } from "./vocabulary.ts";
 
 /** At or above this width the live card is boxed; below it stays three plain lines. */
 const BOXED_ACTIVITY_MIN_WIDTH = 48;
@@ -60,36 +60,16 @@ function positiveWidth(width: number | undefined): number | undefined {
   return Math.floor(width);
 }
 
-function roleLabel(role: string): string {
-  const trimmed = singleLine(role ?? "");
-  if (!trimmed) return "Agente";
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
-function outcomeColor(outcome: string | undefined): SemanticColor {
-  switch (outcome) {
-    case "done":
-      return "success";
-    case "failed":
-    case "protocol_error":
-      return "error";
-    case "blocked":
-      return "warning";
-    default:
-      return "dim";
-  }
-}
-
 function outcomeGlyph(outcome: string | undefined): string {
   switch (outcome) {
     case "done":
-      return "✓";
+      return GLYPH.done;
     case "failed":
-      return "✗";
+      return GLYPH.failed;
     case "protocol_error":
-      return "⚠";
+      return GLYPH.warning;
     case "blocked":
-      return "!";
+      return GLYPH.blocked;
     default:
       return "–";
   }
@@ -295,5 +275,5 @@ export function renderActivityEntry(activity: ActivityRecord, options: { paint?:
   let line = parts.join(" · ");
   const factList = facts(activity);
   if (factList.length) line += ` · ${factList.join(" · ")}`;
-  return paint.fg(outcomeColor(activity.outcome), line);
+  return paint.fg(outcomeTone(activity.outcome), line);
 }

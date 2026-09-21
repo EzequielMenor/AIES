@@ -34,7 +34,7 @@ import {
 } from "../extensions/aies-runtime/state.ts";
 import { renderFooter, renderHeader } from "../extensions/aies-ui/footer.ts";
 import { clip, formatCost, formatDuration, formatTokens, singleLine } from "../extensions/aies-ui/format.ts";
-import { deriveStage, isCompacting, isContextPressure, verificationIndicator } from "../extensions/aies-ui/vocabulary.ts";
+import { deriveStage, isCompacting, isContextPressure, statusGlyph, verificationIndicator } from "../extensions/aies-ui/vocabulary.ts";
 import { isActivityVisible, renderActivityCard, renderActivityEntry } from "../extensions/aies-ui/activity.ts";
 import { approvalOptions, renderApprovalPrompt } from "../extensions/aies-ui/approval.ts";
 import { PLAIN_PAINT, themePaint } from "../extensions/aies-ui/paint.ts";
@@ -95,6 +95,7 @@ describe("paint", () => {
 describe("format", () => {
   it("formats tokens and durations compactly", () => {
     assert.equal(formatTokens(820), "820");
+    assert.equal(formatTokens(8747), "8.7k");
     assert.equal(formatTokens(34_000), "34k");
     assert.equal(formatTokens(1_500_000), "1.5M");
     assert.equal(formatTokens(null), "?");
@@ -174,6 +175,14 @@ describe("vocabulary", () => {
     const protocol = applyVerificationReport(createState(T0), { status: "protocol_error", valid: false, attempts: 1, awaitingVerification: true });
     assert.equal(verificationIndicator(snap(protocol)), "V:ERROR");
     assert.equal(deriveStage(snap(protocol)), "BLOCKED");
+  });
+
+  it("shares one semantic glyph vocabulary for every status", () => {
+    assert.equal(statusGlyph("running"), "◆");
+    assert.equal(statusGlyph("completed"), "✓");
+    assert.equal(statusGlyph("failed"), "✗");
+    assert.equal(statusGlyph("blocked"), "!");
+    assert.equal(statusGlyph("queued"), "◇");
   });
 });
 
@@ -720,9 +729,9 @@ describe("summaries", () => {
     assert.equal(field(full, "intentos"), "1");
     assert.equal(field(full, "reparaciones"), "0 / 2");
     assert.equal(field(full, "modelo"), "Qwen 3.8 Flash · openrouter");
-    assert.match(field(full, "Tokens"), /Main 12k · Agents 4000 · Total 16k/u);
+    assert.match(field(full, "Tokens"), /Main 12k · Agents 4k · Total 16k/u);
     assert.match(field(full, "Coste"), /Main \$0\.04 · Agents \$0\.02 · Total \$0\.06/u);
-    assert.match(field(full, "worker"), /completed · 00:31 · 4000/u);
+    assert.match(field(full, "worker"), /completed · 00:31 · 4k/u);
     for (const label of ["Ejecución", "tiempo", "Uso", "Agentes"]) assert.ok(full.includes(label), full);
     assert.ok(full.split("\n").length <= 34, `too many lines:\n${full}`);
 

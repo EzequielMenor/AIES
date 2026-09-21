@@ -1,9 +1,10 @@
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import { runStartedAt } from "../aies-runtime/state.ts";
-import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { clip, formatCost, formatDuration, formatTokens, roleLabel, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
-import { deriveStage, isCompacting, isContextPressure } from "./vocabulary.ts";
+import { deriveStage, isCompacting, isContextPressure, statusGlyph } from "./vocabulary.ts";
 import type { AgentsSnapshot } from "./agents.ts";
+import { deriveTodos, renderTodos } from "./todos.ts";
 
 /** Below this width the status moves into the footer. */
 export const PANEL_MIN_WIDTH = 80;
@@ -60,23 +61,18 @@ function usageRows(snapshot: AgentsSnapshot): string[] {
   return rows;
 }
 
-function roleLabel(role: string): string {
-  const value = singleLine(role);
-  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Agente";
-}
-
 /**
  * One child's one-line fact: role plus status glyph and label. Exported because
  * both the compact dock and the physical rail describe a child the same way.
  */
 export function agentFact(record: AgentRecord): string {
-  const look = {
-    running: ["◆", "activo"],
-    completed: ["✓", "completado"],
-    failed: ["✗", "falló"],
-    blocked: ["!", "bloqueado"],
-  }[record.status] ?? ["·", singleLine(record.status)];
-  return `${look[0]} ${roleLabel(record.role)} ${look[1]}`;
+  const label = {
+    running: "activo",
+    completed: "completado",
+    failed: "falló",
+    blocked: "bloqueado",
+  }[record.status] ?? singleLine(record.status);
+  return `${statusGlyph(record.status)} ${roleLabel(record.role)} ${label}`;
 }
 
 /** Active child first, then the newest completed child; never grow the dock. */
@@ -99,11 +95,14 @@ function title(snapshot: AgentsSnapshot): string {
 /**
  * Elapsed time of the run in flight. It reads only the recorded run start so an
  * idle dock never turns the whole session into a run clock; with no run there is
- * no timer at all.
+ * no timer at all. `endAt`, when supplied, freezes the reading at the run's own
+ * end so a finished run keeps its final duration instead of growing forever.
  */
-export function activeRunElapsed(snapshot: AgentsSnapshot, now: number): string | undefined {
+export function activeRunElapsed(snapshot: AgentsSnapshot, now: number, endAt?: number): string | undefined {
   const startedAt = runStartedAt(snapshot);
-  return startedAt === undefined ? undefined : formatDuration(Math.max(0, now - startedAt));
+  if (startedAt === undefined) return undefined;
+  const end = typeof endAt === "number" && Number.isFinite(endAt) ? Math.min(endAt, now) : now;
+  return formatDuration(Math.max(0, end - startedAt));
 }
 
 /**
@@ -185,5 +184,8 @@ export function renderStatusPanel(
     return statusBox(title(snapshot), [primary, ...usage, agents].filter((row): row is string => Boolean(row)), width, paint);
   }
 
-  return statusBox(title(snapshot), compactPanelRows(snapshot, now), width, paint);
+  // The compact dock always carries the derived Todos summary as a single
+  // bounded line, after the agent row so an active child is never crowded out.
+  const todos = renderTodos(deriveTodos(snapshot), { paint, maxRows: 1 });
+  return statusBox(title(snapshot), [...compactPanelRows(snapshot, now), ...todos], width, paint);
 }

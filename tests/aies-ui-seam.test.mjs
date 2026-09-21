@@ -525,6 +525,41 @@ describe("AIES UI seam", () => {
     assert.deepEqual(component.render(80), []);
   });
 
+  it("lets the physical rail own live activity and returns the inline card without it", async () => {
+    const original = () => ({ type: "vstack", entries: [] });
+    const root = { [LAYOUT_NODE]: original };
+    const tui = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+    const host = createHost();
+    timers.setColumns(160);
+    await host.start();
+    await host.emit("tool_result", {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "ok" }],
+      details: { ticket: { identifier: "EZE-424", title: "Rail", status: "In Progress" } },
+    });
+
+    const panel = host.mountWidget("aies-panel", 160, tui);
+    root[LAYOUT_NODE](); // the host layout pass makes the rail report itself as showing
+
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement" } });
+    assert.equal(
+      host.widgets.some((widget) => widget.key === "aies-activity" && widget.factory),
+      false,
+      "the rail owns live activity at wide width; no simultaneous transcript card",
+    );
+
+    // Below the rail breakpoint the inline card is the fallback again.
+    tui.terminal.columns = RIGHT_RAIL_MIN_WIDTH - 20;
+    root[LAYOUT_NODE]();
+    await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement again" } });
+    assert.ok(
+      host.widgets.some((widget) => widget.key === "aies-activity" && widget.factory),
+      "without the rail the inline activity card returns",
+    );
+
+    await host.emit("session_shutdown", { reason: "quit" });
+  });
+
   it("appends one durable entry, clears the widget at once and shows the finished state", async () => {
     const host = createHost();
     await host.start();

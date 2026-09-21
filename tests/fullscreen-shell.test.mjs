@@ -11,17 +11,28 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  parseDetachedHead,
+  readDetachedShortSha,
+  resolveGitDirPointer,
+} from "../extensions/aies-runtime/index.ts";
+
+import {
   applyAgents,
   applyContextUsage,
+  applyDelegationEnd,
   applyDelegationStart,
   applyModel,
   applyRunStart,
+  applyRunUsage,
   applyTicketObservationSync,
+  applyVerificationReport,
   createState,
   toSnapshot,
 } from "../extensions/aies-runtime/state.ts";
@@ -31,9 +42,12 @@ import {
   branchLabel,
   installRightRail,
   isSupportedPiVersion,
+  projectBranch,
   projectLabel,
   renderRightRail,
 } from "../extensions/aies-ui/right-rail.ts";
+import { deriveTodos, renderTodos } from "../extensions/aies-ui/todos.ts";
+import { formatTokens } from "../extensions/aies-ui/format.ts";
 
 const SETTINGS = fileURLToPath(new URL("../profile/settings.json", import.meta.url));
 const profile = JSON.parse(readFileSync(SETTINGS, "utf8"));
@@ -75,6 +89,19 @@ function richState() {
 
 function snapOf(state) {
   return { ...toSnapshot(state), agents: state.agents };
+}
+
+/** A ticket run with measured tokens and cost, mirroring the panel fixture. */
+function usageState() {
+  let state = richState();
+  state = applyRunUsage(state, { totalTokens: 1_000, cost: 0.01 }, [], T0);
+  state = applyRunUsage(
+    state,
+    { totalTokens: 13_000, cost: 0.05 },
+    [record({ totalTokens: 4_000, cost: 0.02 })],
+    T0 + 31_000,
+  );
+  return state;
 }
 
 /** A stable host layout node so delegation can be compared by reference. */
@@ -136,6 +163,218 @@ describe("right rail guard", () => {
   });
 });
 
+describe("right rail product composition", () => {
+  it("renders vertical Status rows with ticket, stage, provider, run time and split usage", () => {
+    const text = renderRightRail(snapOf(usageState()), T0 + 31_000, {
+      width: 46,
+      project: "/Users/dev/Proyectos/Developer/AIES",
+      branch: "feat/aies-010d-fullscreen-shell",
+    }).join("\n");
+
+    assert.match(text, /Proyecto\s+AIES/u);
+    assert.match(text, /Ticket\s+EZE-417/u);
+    assert.match(text, /Etapa\s+WORK/u);
+    assert.match(text, /Modelo\s+Qwen 3\.8 Flash/u);
+    assert.match(text, /Proveedor\s+openrouter/u);
+    assert.match(text, /Contexto\s+42k/u);
+    assert.match(text, /Tiempo\s+00:31/u);
+    // Tokens and cost never collapse into a single truncated line.
+    assert.match(text, /Tokens/u);
+    assert.match(text, /Main\s+12k/u);
+    assert.match(text, /Agents\s+4k/u);
+    assert.match(text, /Total\s+16k/u);
+    assert.match(text, /Coste/u);
+    assert.match(text, /Main\s+\$0\.04/u);
+    assert.match(text, /Total\s+\$0\.06/u);
+    assert.ok(
+      text.split("\n").every((line) => line.length <= 46),
+      text,
+    );
+  });
+
+  it("shows a dash for the run time at IDLE instead of a session clock", () => {
+    let state = applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 });
+    state = applyModel(state, { id: "qwen3.8-flash", provider: "openrouter", name: "Qwen 3.8 Flash" });
+    const text = renderRightRail(snapOf(state), T0, { width: 46 }).join("\n");
+
+    assert.match(text, /Tiempo\s+—/u, text);
+    assert.equal(text.includes("00:00"), false, text);
+  });
+
+  it("composes a run-local Todos section for the normal flow", () => {
+    let state = applyTicketObservationSync(createState(T0), { active: true, identifier: "EZE-417", status: "In Progress" });
+    state = applyDelegationStart(state, "worker", T0);
+    state = applyDelegationEnd(state, "done", T0 + 1_000);
+    state = applyVerificationReport(state, { status: "pass", valid: true, attempts: 1, repairs: 0, maxRepairs: 2 });
+
+    const text = renderRightRail(snapOf(state), T0 + 2_000, { width: 60, project: "/repo" }).join("\n");
+    assert.match(text, /Todos/u, text);
+    assert.match(text, /Cargar ticket/u, text);
+    assert.match(text, /Implementar/u, text);
+    assert.match(text, /Verificar/u, text);
+    assert.match(text, /Sincronizar Linear/u, text);
+    assert.match(text, /Finalizar/u, text);
+    assert.equal(text.includes("Explorar"), false, text);
+  });
+
+  it("freezes the run time at the DONE moment instead of growing forever", () => {
+    const state = applyRunStart(
+      applyContextUsage(createState(T0), { tokens: 31_000, contextWindow: 200_000 }),
+      T0,
+    );
+    const text = renderRightRail(snapOf(state), T0 + 120_000, { width: 60, runEndedAt: T0 + 60_000 }).join("\n");
+    assert.match(text, /Tiempo\s+01:00/u, text);
+    assert.equal(text.includes("02:00"), false, text);
+  });
+
+  it("never hides an active agent to show Todos under height pressure", () => {
+    let state = applyTicketObservationSync(createState(T0), { active: true, identifier: "EZE-417", status: "In Progress" });
+    state = applyDelegationStart(state, "worker", T0);
+    state = applyAgents(state, [
+      record({ id: "worker-1", role: "worker" }),
+      record({ id: "worker-2", role: "worker" }),
+      record({ id: "worker-3", role: "worker" }),
+    ]);
+
+    const text = renderRightRail(snapOf(state), T0, { width: 46, height: 12 }).join("\n");
+    assert.match(text, /Worker activo/u, text);
+    assert.match(text, /Todos · \d+\/\d+/u, text);
+  });
+});
+
+describe("derived Todos", () => {
+  it("projects the normal flow and omits Explore when it never ran", () => {
+    let state = applyTicketObservationSync(createState(T0), { active: true, identifier: "EZE-417", status: "In Progress" });
+    const todos = deriveTodos(snapOf(state));
+
+    assert.deepEqual(
+      todos.items.map((item) => item.label),
+      ["Cargar ticket", "Implementar", "Verificar", "Sincronizar Linear", "Finalizar"],
+    );
+    assert.equal(todos.items[0].state, "done");
+    assert.equal(todos.items[1].state, "pending");
+    assert.equal(todos.total, 5);
+    assert.equal(todos.done, 1);
+  });
+
+  it("includes Explore only when the real flow used it", () => {
+    let state = applyTicketObservationSync(createState(T0), { active: true, identifier: "EZE-417" });
+    state = applyDelegationStart(state, "explore", T0);
+    state = applyDelegationEnd(state, "done", T0 + 500);
+
+    const todos = deriveTodos(snapOf(state));
+    assert.deepEqual(
+      todos.items.map((item) => item.label),
+      ["Cargar ticket", "Explorar", "Implementar", "Verificar", "Sincronizar Linear", "Finalizar"],
+    );
+    assert.equal(todos.items.find((item) => item.key === "explore").state, "done");
+  });
+
+  it("derives running and done states from the active child and verification", () => {
+    let state = applyTicketObservationSync(createState(T0), { active: true, identifier: "EZE-417" });
+    state = applyDelegationStart(state, "worker", T0);
+    let todos = deriveTodos(snapOf(state));
+    assert.equal(todos.items.find((item) => item.key === "work").state, "running");
+
+    state = applyDelegationEnd(state, "done", T0 + 1_000);
+    state = applyVerificationReport(state, { status: "pass", valid: true, attempts: 1, repairs: 0, maxRepairs: 2 });
+    todos = deriveTodos(snapOf(state));
+    assert.equal(todos.items.find((item) => item.key === "work").state, "done");
+    assert.equal(todos.items.find((item) => item.key === "verify").state, "done");
+    assert.equal(todos.items.find((item) => item.key === "linear").state, "running");
+  });
+
+  it("collapses to `Todos · n/m` when the height is insufficient", () => {
+    let state = applyTicketObservationSync(createState(T0), { active: true, identifier: "EZE-417" });
+    const todos = deriveTodos(snapOf(state));
+
+    assert.match(renderTodos(todos).join("\n"), /Cargar ticket/u);
+    assert.deepEqual(renderTodos(todos, { maxRows: 2 }), ["Todos · 1/5"]);
+  });
+});
+
+describe("detached head reader", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+  it("accepts only a full detached commit id from a HEAD file", () => {
+    assert.equal(parseDetachedHead(`${SHA}\n`), SHA);
+    assert.equal(parseDetachedHead(SHA), SHA);
+    assert.equal(parseDetachedHead("ref: refs/heads/main"), undefined);
+    assert.equal(parseDetachedHead("abc1234"), undefined);
+    assert.equal(parseDetachedHead("not a sha"), undefined);
+    assert.equal(parseDetachedHead(""), undefined);
+    assert.equal(parseDetachedHead(undefined), undefined);
+  });
+
+  it("resolves a relative gitdir pointer against the directory holding the .git file", () => {
+    assert.equal(resolveGitDirPointer("gitdir: ../gitdirs/wt", "/base/wt"), "/base/gitdirs/wt");
+    assert.equal(resolveGitDirPointer("gitdir: /abs/gitdirs/wt", "/base/wt"), "/abs/gitdirs/wt");
+    assert.equal(resolveGitDirPointer("not a pointer", "/base/wt"), undefined);
+    assert.equal(resolveGitDirPointer("gitdir:", "/base/wt"), undefined);
+    assert.equal(resolveGitDirPointer(undefined, "/base/wt"), undefined);
+  });
+
+  it("reads and shortens a normal repository's detached HEAD", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-git-normal-"));
+    try {
+      mkdirSync(join(dir, ".git"));
+      writeFileSync(join(dir, ".git", "HEAD"), `${SHA}\n`);
+      assert.equal(readDetachedShortSha(dir), SHA.slice(0, 7));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("follows a linked worktree's relative gitdir pointer to its HEAD", () => {
+    const base = mkdtempSync(join(tmpdir(), "aies-git-worktree-"));
+    try {
+      const worktree = join(base, "wt");
+      const gitdir = join(base, "gitdirs", "wt");
+      mkdirSync(worktree);
+      mkdirSync(gitdir, { recursive: true });
+      // The `.git` file is a worktree pointer; git records it relative to the
+      // worktree root, so the reader must resolve it before reading HEAD.
+      writeFileSync(join(worktree, ".git"), `gitdir: ${join("..", "gitdirs", "wt")}\n`);
+      writeFileSync(join(gitdir, "HEAD"), `${SHA}\n`);
+      assert.equal(readDetachedShortSha(worktree), SHA.slice(0, 7));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("fails safely to undefined for a branch HEAD and for missing metadata", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-git-branch-"));
+    try {
+      mkdirSync(join(dir, ".git"));
+      writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+      assert.equal(readDetachedShortSha(dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    assert.equal(readDetachedShortSha(undefined), undefined);
+    assert.equal(readDetachedShortSha(""), undefined);
+  });
+});
+
+describe("branch projection", () => {
+  it("prefers the ticket change branch, then the workspace branch, then a detached short sha", () => {
+    assert.equal(
+      projectBranch({ changeBranch: "aies/EZE-417", workspaceBranch: "main", shortSha: "abc1234def" }),
+      "aies/EZE-417",
+    );
+    assert.equal(projectBranch({ workspaceBranch: "main", shortSha: "abc1234def" }), "main");
+    assert.equal(projectBranch({ workspaceBranch: "detached", shortSha: "abc1234def" }), "detached @ abc1234");
+    assert.equal(projectBranch({ workspaceBranch: "detached" }), undefined);
+    assert.equal(projectBranch({}), undefined);
+  });
+
+  it("formats the new token vocabulary so 8747 becomes 8.7k", () => {
+    assert.equal(formatTokens(8747), "8.7k");
+    assert.equal(formatTokens(4200), "4.2k");
+    assert.equal(formatTokens(999), "999");
+  });
+});
+
 describe("right rail projection", () => {
   it("projects the project and branch beside the run status", () => {
     const text = renderRightRail(snapOf(richState()), T0, {
@@ -149,6 +388,11 @@ describe("right rail projection", () => {
     assert.match(text, /✧ AIES · EZE-417 · WORK/u);
     assert.ok(text.length > 0);
     assert.ok(text.split("\n").every((line) => line.length <= 60), text);
+  });
+
+  it("shows a Rama dash instead of dropping the row when no branch source exists", () => {
+    const text = renderRightRail(snapOf(richState()), T0, { width: 60 }).join("\n");
+    assert.match(text, /Rama\s+—/u, `the branch row must stay visible as a dash:\n${text}`);
   });
 
   it("renders coherent Status and Agents sections", () => {
@@ -172,7 +416,9 @@ describe("right rail projection", () => {
     assert.match(text, /Status/u);
     assert.match(text, /Agents/u);
     assert.match(text, /en espera/u, `the empty Agents section must stay explicit:\n${text}`);
-    assert.equal(text.includes("Tiempo"), false, text);
+    // IDLE has no run: the time row stays but reads as a dash, never a session clock.
+    assert.match(text, /Tiempo\s+—/u, text);
+    assert.equal(text.includes("00:00"), false, text);
   });
 
   it("bounds the Agents section during work", () => {
@@ -201,7 +447,7 @@ describe("right rail projection", () => {
 
     const idle = renderRightRail(snapOf(state), T0 + 90_000, { width: 60 }).join("\n");
     assert.equal(idle.includes("01:30"), false, `the session elapsed leaked into the rail:\n${idle}`);
-    assert.equal(idle.includes("Tiempo"), false, idle);
+    assert.match(idle, /Tiempo\s+—/u, idle);
 
     state = applyRunStart(state, T0 + 60_000);
     const running = renderRightRail(snapOf(state), T0 + 90_000, { width: 60 }).join("\n");
