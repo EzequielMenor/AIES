@@ -146,3 +146,25 @@ installation gate is the same trap that hid this regression. The hand-audited
 coverage now lives only where it is read: the shim's header comment, `docs/UX.md`
 §5 and D24's correction. `README.md` was also corrected: it promised the rail
 only on audited minors, which the shipped probe-based gate does not do.
+
+## Closure
+
+- Independent read-only verification over `26cd083..HEAD` returned **PASS**: root
+  cause confirmed from the pre-fix source, scope confirmed at six files (shim, its test, its
+  docs), the deleted predicate confirmed unreferenced outside append-only history, and the
+  probe confirmed to accept the node Pi 0.87.0 really produces (`createChatViewport` builds
+  `new VStack([transcript, dock])`; `Stack[LAYOUT_NODE]()` returns `{type:"vstack", entries,
+  gap, align}`). It found two wording misreadings, both fixed in `b1d6211`.
+- Risk assessment was unassessable (`native command returned empty output`), so the plan
+  treated the candidate as high risk and required writer self-verification plus the separate
+  independent verifier above.
+- Final automated state: `npm test` 760/760, `npm run check:isolation` 760/760,
+  `node --test tests/fullscreen-shell.test.mjs` 42/42, `bash -n bin/aies scripts/*.sh` clean,
+  `git diff --check` clean.
+- Final real-runtime smoke on the committed HEAD (`aies` in tmux at 200x50): the physical rail
+  renders in columns 154-201 with `Status` / `Agents` / `Todos`, and zero dock rows between
+  editor and footer.
+- Commits: `dc1ba1e` fix, `903a58f` + `92a0d48` + `6f5d536` + `f4a28cc` + `b1d6211` records and
+  cleanup. Not pushed; push, PR and merge remain the user's decisions.
+- Deliberately not done, per the user's stop condition: the additional `/agents` and
+  `/aies-models` polish.
