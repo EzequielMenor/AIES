@@ -568,6 +568,12 @@ describe("verification observability (AIES-005)", () => {
 
     await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
 
+    const finalizingFooter = host.footerText();
+    assert.match(finalizingFooter, /· FINALIZING ·/u);
+    assert.equal(finalizingFooter.includes("VERIFY"), false);
+
+    await host.emit("turn_end", { message: { role: "assistant" } });
+
     const footer = host.footerText();
     assert.match(footer, /· DONE ·/u);
     assert.equal(footer.includes("V:PASS"), false, footer);
@@ -580,6 +586,7 @@ describe("verification observability (AIES-005)", () => {
 
     await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
     await host.emit("tool_result", verifyResult({ status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true }));
+    await host.emit("turn_end", { message: { role: "assistant" } });
     assert.match(host.footerText(), /· DONE ·/u);
 
     await host.emit("tool_call", toolCall("edit", { path: "config.js" }));

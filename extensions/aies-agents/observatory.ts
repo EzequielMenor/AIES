@@ -76,6 +76,8 @@ export interface BeginAgentInput {
 export interface FinishAgentInput {
   status?: Exclude<AgentStatus, "running">;
   result?: string | null;
+  /** Paths observed, modified or relevant to this child run. */
+  paths?: readonly string[];
   /** Explicit finish timestamp; the caller owns the clock. */
   at?: number;
 }
@@ -138,6 +140,50 @@ export function firstCommandLine(command: unknown): string {
   return clipText(firstLine, COMMAND_MAX);
 }
 
+/** Classify a bash command line into a safe, human Spanish category. */
+export function classifyBashCommand(command: string): string {
+  const flat = command.toLowerCase();
+
+  // Test execution
+  if (
+    /\b(npm\s+(?:run\s+)?test|node\s+--test|pnpm\s+(?:run\s+)?test|yarn\s+test|bun\s+test|pytest|vitest|jest|cargo\s+test|go\s+test)\b/u.test(
+      flat,
+    )
+  ) {
+    return "Ejecutando tests";
+  }
+
+  // Git state inspection
+  if (/\bgit\s+(?:status|diff|log|show|branch|check)\b/u.test(flat)) {
+    return "Comprobando estado Git";
+  }
+
+  // Fixture preparation
+  if (/\bfixtures?\b/u.test(flat) && (/\b(mkdir|touch|cp|echo|cat|printf)\b/u.test(flat) || />/u.test(flat))) {
+    return "Preparando fixture";
+  }
+
+  // File modification
+  if (
+    /\b(sed|awk|patch|cp|mv|rm|touch)\b/u.test(flat) ||
+    /(?:>>?)\s*[^&|;\s]+/u.test(flat)
+  ) {
+    return "Modificando archivos";
+  }
+
+  // File reading
+  if (/\b(cat|head|tail|less|more|bat|xxd)\b/u.test(flat)) {
+    return "Leyendo archivos";
+  }
+
+  // Searching references
+  if (/\b(grep|rg|ripgrep|ag|find|locate|fd)\b/u.test(flat)) {
+    return "Buscando referencias";
+  }
+
+  return "Ejecutando comando";
+}
+
 /**
  * Derive the Spanish activity text from the tool and its argument. The result is
  * always one bounded line and never child-authored prose.
@@ -155,22 +201,22 @@ export function describeActivity(
 
   switch (tool) {
     case "read":
-      return path ? `Leyendo ${path}` : "Leyendo";
+      return path ? `Leyendo ${path}` : "Leyendo archivos";
     case "grep":
-      return path ? `Buscando ${path}` : pattern ? `Buscando ${pattern}` : "Buscando";
+      return path ? `Buscando ${path}` : pattern ? `Buscando ${pattern}` : "Buscando referencias";
     case "find":
-      return path ? `Buscando ${path}` : "Buscando";
+      return path ? `Buscando ${path}` : "Buscando referencias";
     case "ls":
-      return `Listando ${path || "."}`;
+      return path && path !== "." ? `Listando ${path}` : "Consultando archivo";
     case "edit":
     case "write":
-      return path ? `Editando ${path}` : "Editando";
+      return path ? `Editando ${path}` : "Modificando archivos";
     case "bash":
-      return command ? `Ejecutando ${command}` : "Ejecutando";
+      return command ? classifyBashCommand(command) : "Ejecutando comando";
     case "aies_verify_complete":
       return "Comprobando el veredicto";
     default:
-      return clipText(`Usando ${tool}`, ACTIVITY_TEXT_MAX);
+      return "Ejecutando comando";
   }
 }
 
@@ -295,6 +341,17 @@ export class AgentObservatory {
     record.finishedAt = timestampOf(input.at);
     record.result = input.result == null ? null : clipText(String(input.result), RESULT_MAX) || null;
     record.currentActivity = null;
+
+    if (Array.isArray(input.paths)) {
+      for (const p of input.paths) {
+        if (typeof p === "string" && p.trim()) {
+          const normalized = p.trim().replace(/\\/gu, "/").replace(/^\.\//u, "");
+          if (!record.changedPaths.includes(normalized)) {
+            record.changedPaths.push(normalized);
+          }
+        }
+      }
+    }
 
     this.emit();
   }

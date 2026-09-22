@@ -185,6 +185,17 @@ function contextValue(record: AgentRecord): string {
   return tokensValue(tokens);
 }
 
+function filesValue(record: AgentRecord): string {
+  if (Array.isArray(record.changedPaths) && record.changedPaths.length > 0) {
+    const formatted = changedPathsValue(record.changedPaths);
+    if (formatted) return formatted;
+  }
+  const result = typeof record.result === "string" ? record.result : "";
+  const match = result.match(/(\d+\s+archivos?\s+(?:relevantes?|modificados?))/i);
+  if (match) return match[1];
+  return "";
+}
+
 /**
  * The selected record's structured detail. Every telemetry row is always
  * present and an unmeasured value renders as `—`: a missing sample must not look
@@ -204,7 +215,7 @@ function detailLines(record: AgentRecord, now: number, width: number): ModalLine
   add("coste", costValue(record.cost));
   add("contexto", contextValue(record));
   add("herramientas", countValue(record.toolCount));
-  add("archivos", changedPathsValue(Array.isArray(record.changedPaths) ? record.changedPaths : []));
+  add("archivos", filesValue(record));
   add("resultado final", textValue(record.result));
 
   const activities = Array.isArray(record.activities) ? record.activities.slice(0, MAX_RECENT) : [];

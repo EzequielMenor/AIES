@@ -128,7 +128,9 @@ export function deriveTodos(snapshot: AgentsSnapshot): TodoProjection {
   const items: TodoItem[] = [];
 
   const loaded = ticketLoaded(snapshot);
-  items.push({ key: "ticket", label: "Cargar ticket", state: loaded ? "done" : "pending" });
+  if (loaded) {
+    items.push({ key: "ticket", label: "Cargar ticket", state: "done" });
+  }
   if (exploreUsed(snapshot)) {
     items.push({ key: "explore", label: "Explorar", state: roleStep(snapshot, "explore") });
   }
@@ -141,12 +143,24 @@ export function deriveTodos(snapshot: AgentsSnapshot): TodoProjection {
 
   const complete = ticketComplete(snapshot);
   const verified = snapshot.verification?.status === "pass" && snapshot.verification.valid;
-  items.push({
-    key: "linear",
-    label: "Sincronizar Linear",
-    state: complete ? "done" : verified ? "running" : "pending",
-  });
-  items.push({ key: "done", label: "Finalizar", state: complete ? "done" : "pending" });
+  const isFinalDone = snapshot.doneEmitted === true || (typeof snapshot.runEndedAt === "number" && snapshot.runEndedAt > 0) || complete;
+
+  if (loaded) {
+    items.push({
+      key: "linear",
+      label: "Sincronizar Linear",
+      state: complete ? "done" : verified ? "running" : "pending",
+    });
+  }
+
+  let doneState: TodoState = "pending";
+  if (isFinalDone) {
+    doneState = "done";
+  } else if (verified && !snapshot.delegations?.activeRole) {
+    doneState = "running";
+  }
+
+  items.push({ key: "done", label: "Finalizar", state: doneState });
 
   const done = items.filter((item) => item.state === "done").length;
   return { items, done, total: items.length, idle: false };

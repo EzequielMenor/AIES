@@ -78,7 +78,7 @@ import {
   type DoneSummaryInput,
 } from "../aies-ui/summary.ts";
 import { deriveStage, statusGlyph } from "../aies-ui/vocabulary.ts";
-import { roleLabel } from "../aies-ui/format.ts";
+import { observableCost, roleLabel } from "../aies-ui/format.ts";
 import { themePaint } from "../aies-ui/paint.ts";
 import { registerQuietTools } from "./quiet-tools.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
@@ -533,7 +533,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
    * projection here and no two surfaces can disagree.
    */
   function uiSnapshot(): AgentsSnapshot {
-    return { ...toSnapshot(state), agents: state.agents };
+    return {
+      ...toSnapshot(state),
+      agents: state.agents,
+      doneEmitted,
+      runEndedAt,
+    };
   }
 
   /**
@@ -555,6 +560,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
           // Repaint the open observatory through its own scoped handle, then the
           // shell. A closed overlay has no handle and is never repainted.
           activeAgentsOverlay?.requestRender();
+          widgetTui?.requestRender?.();
           requestRender();
         });
       });
@@ -612,7 +618,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     // A cache from a different (or compacted) session cannot be trusted: rebuild
     // it from the current entries instead of carrying another session's totals.
     if (!usageCache || usageCache.count > entries.length) {
-      usageCache = { count: 0, totalTokens: 0, cost: 0, costKnown: true };
+      usageCache = { count: 0, totalTokens: 0, cost: 0, costKnown: false };
     }
 
     for (let index = usageCache.count; index < entries.length; index += 1) {
@@ -627,8 +633,11 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         usageCache.totalTokens += usage.totalTokens;
       }
       const total = usage.cost && typeof usage.cost === "object" ? (usage.cost as { total?: unknown }).total : undefined;
-      if (typeof total === "number" && Number.isFinite(total)) {
-        usageCache.cost += total;
+      const modelId = typeof ctx.model?.id === "string" ? ctx.model.id : undefined;
+      const provider = typeof ctx.model?.provider === "string" ? ctx.model.provider : undefined;
+      const filtered = observableCost(typeof total === "number" ? total : undefined, modelId, provider);
+      if (filtered !== null) {
+        usageCache.cost += filtered;
         usageCache.costKnown = true;
       }
       // An entry with no cost is skipped, never latched: the observed costs still
@@ -968,7 +977,18 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
               const current = state.activity;
               if (!current) return [];
               const snapshot = uiSnapshot();
-              return renderActivityCard(current, deriveStage(snapshot), Date.now(), {
+              const runningRecord = snapshot.agents?.find((r) => r.status === "running" && r.role === current.role)
+                ?? snapshot.agents?.find((r) => r.status === "running");
+              const currentWithTokens: ActivityRecord = runningRecord ? {
+                ...current,
+                totalTokens: runningRecord.totalTokens > 0 ? runningRecord.totalTokens : current.totalTokens,
+                cost: runningRecord.cost !== null ? runningRecord.cost : current.cost,
+                modelLabel: runningRecord.modelLabel ?? current.modelLabel,
+                providerLabel: runningRecord.providerLabel ?? current.providerLabel,
+                currentActivity: runningRecord.currentActivity ?? current.currentActivity,
+                changedPaths: runningRecord.changedPaths?.length ? runningRecord.changedPaths : current.changedPaths,
+              } : current;
+              return renderActivityCard(currentWithTokens, deriveStage(snapshot), Date.now(), {
                 width,
                 paint: themePaint(theme as ThemeLike | undefined),
                 ticketTitle: snapshot.ticket?.active ? snapshot.ticket.title : undefined,
@@ -1566,6 +1586,14 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     guard(() => {
       if (event.message.role === "assistant") {
         state = applyStopReason(state, event.message.stopReason, Date.now());
+        if (
+          state.verification?.status === "pass" &&
+          state.verification.valid &&
+          !state.delegations?.activeRole &&
+          !doneEmitted
+        ) {
+          emitDone(ctx);
+        }
       }
       render(ctx);
     });
@@ -1575,6 +1603,14 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     guard(() => {
       if (state.delegations.activeRole) {
         state = applyDelegationEnd(state, "interrupted", Date.now());
+      }
+      if (
+        state.verification?.status === "pass" &&
+        state.verification.valid &&
+        !state.delegations?.activeRole &&
+        !doneEmitted
+      ) {
+        emitDone(ctx);
       }
       render(ctx);
       persist();

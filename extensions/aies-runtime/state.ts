@@ -9,6 +9,7 @@
 
 import { aggregateUsage, normalizeUsage, type UsageBucket } from "./usage.ts";
 import type { AgentRecord } from "../aies-agents/observatory.ts";
+import { observableCost } from "../aies-ui/format.ts";
 
 /** Version of the persisted shape. Bump it only with a compatible reader. */
 export const STATE_VERSION = 1;
@@ -769,13 +770,18 @@ export function applyRunUsage(
     main = { ...current.main };
   } else {
     const parent = normalizeUsage(parentUsage);
+    const modelId = state.model?.id;
+    const provider = state.model?.provider;
+    const filteredCost = observableCost(parent.cost, modelId, provider);
     // An all-zero cumulative sample is not an observation. A session with no
     // assistant usage reports `{ totalTokens: 0, cost: 0 }`, and treating that as
     // an observed zero fabricates a `$0.00` at IDLE. A genuinely observed zero
     // cost always arrives with a nonzero token count, so only the all-zero case
     // is degraded to an unknown cost.
     const observed: UsageBucket =
-      parent.totalTokens === 0 && parent.cost === 0 ? { totalTokens: 0, cost: null } : parent;
+      parent.totalTokens === 0 && (parent.cost === 0 || parent.cost === null)
+        ? { totalTokens: 0, cost: null }
+        : { totalTokens: parent.totalTokens, cost: filteredCost };
     baseline = current.active && current.baseline === null ? observed : current.baseline;
     main = baseline
       ? {
@@ -827,6 +833,21 @@ export function applyRunUsage(
 export function applyAgents(state: AiesState, snapshot: readonly AgentRecord[] | null | undefined): AiesState {
   const next = cloneState(state);
   next.agents = Array.isArray(snapshot) ? [...snapshot] : [];
+  if (next.activity && next.activity.finishedAt === undefined && Array.isArray(snapshot)) {
+    const running = snapshot.find((r) => r.status === "running" && r.role === next.activity?.role)
+      ?? snapshot.find((r) => r.status === "running");
+    if (running) {
+      next.activity = {
+        ...next.activity,
+        totalTokens: running.totalTokens > 0 ? running.totalTokens : next.activity.totalTokens,
+        cost: running.cost !== null ? running.cost : next.activity.cost,
+        modelLabel: running.modelLabel ?? next.activity.modelLabel,
+        providerLabel: running.providerLabel ?? next.activity.providerLabel,
+        currentActivity: running.currentActivity ?? next.activity.currentActivity,
+        changedPaths: running.changedPaths?.length ? running.changedPaths : next.activity.changedPaths,
+      };
+    }
+  }
   return next;
 }
 
@@ -942,6 +963,8 @@ export interface AiesSnapshot {
   autonomy?: AutonomyObservationState;
   runUsage: RunUsageState;
   activity?: ActivityState;
+  doneEmitted?: boolean;
+  runEndedAt?: number;
 }
 
 /**

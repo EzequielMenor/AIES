@@ -147,32 +147,80 @@ function facts(activity: ActivityRecord): string[] {
 }
 
 /** The "what it is doing" subtitle for a live child. */
-function liveSubtitle(activity: ActivityRecord, stage: Stage, ticketTitle: string | undefined): string {
-  // Verify reports the criterion count, which is its own authority, not the task.
-  if (activity.role === "verify" && typeof activity.criteriaTotal === "number" && activity.criteriaTotal >= 1) {
-    const noun = activity.criteriaTotal === 1 ? "criterio" : "criterios";
-    return `Comprobando ${activity.criteriaTotal} ${noun}…`;
+function extractTarget(task: string): string | undefined {
+  const fnMatch = task.match(/\b([a-zA-Z0-9_$]+)\s*\([^)]*\)/u) ?? task.match(/`([a-zA-Z0-9_$]+)`/u);
+  if (fnMatch) return `${fnMatch[1]}()`;
+  const wordMatch = task.match(/\b(?:function|fn|helper|method|clamp)\b/i);
+  if (wordMatch) {
+    const val = wordMatch[0].toLowerCase();
+    if (val === "clamp") return "clamp()";
+  }
+  return undefined;
+}
+
+function isInternalPrompt(text: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim();
+  return (
+    lower.startsWith("investigate") ||
+    lower.startsWith("you are") ||
+    lower.includes("in order to plan") ||
+    lower.includes("to plan a") ||
+    lower.includes("minimal implementation") ||
+    lower.includes("english prompt")
+  );
+}
+
+export function humanizeTask(
+  role: string,
+  rawTask: string | undefined,
+  ticketTitle: string | undefined,
+  stage?: Stage,
+  criteriaTotal?: number,
+): string {
+  const normalizedRole = role.toLowerCase().trim();
+  if (normalizedRole === "verify" && typeof criteriaTotal === "number" && criteriaTotal >= 1) {
+    const noun = criteriaTotal === 1 ? "criterio" : "criterios";
+    return `Comprobando ${criteriaTotal} ${noun}…`;
   }
 
-  // Prefer the active ticket title so a Parent-authored English task prompt never
-  // leaks into the default UI; fall back to the delegation's own task text.
   const title = singleLine(ticketTitle ?? "");
-  const task = title || singleLine(activity.task);
-  if (activity.role === "worker" && stage === "REPAIR") {
-    return task ? `reparando · ${task}` : "reparando";
+  if (title) {
+    return title;
   }
-  if (task) return task;
 
-  switch (activity.role) {
-    case "explore":
-      return "Explorando el repositorio…";
-    case "worker":
-      return "Implementando el work unit…";
-    case "verify":
-      return "Comprobando criterios…";
-    default:
-      return "Trabajando…";
+  const task = singleLine(rawTask ?? "");
+
+  if (task && !isInternalPrompt(task)) {
+    if (normalizedRole === "worker" && stage === "REPAIR") {
+      return task.toLowerCase().startsWith("reparando") ? task : `reparando · ${task}`;
+    }
+    return task;
   }
+
+  const target = extractTarget(task) ?? (title ? extractTarget(title) : undefined);
+
+  if (normalizedRole === "explore") {
+    return "Revisando el proyecto y preparando el cambio";
+  }
+
+  if (normalizedRole === "verify") {
+    return "Verificando el cambio y ejecutando tests";
+  }
+
+  if (normalizedRole === "worker") {
+    if (stage === "REPAIR") {
+      return target ? `Reparando ${target} y sus tests` : "Reparando el cambio y sus tests";
+    }
+    return target ? `Implementando ${target} y sus tests` : "Implementando el cambio y sus tests";
+  }
+
+  return "Trabajando…";
+}
+
+/** The "what it is doing" subtitle for a live child. */
+function liveSubtitle(activity: ActivityRecord, stage: Stage, ticketTitle: string | undefined): string {
+  return humanizeTask(activity.role, activity.task, ticketTitle, stage, activity.criteriaTotal);
 }
 
 /**
@@ -193,21 +241,15 @@ function activityLine(activity: ActivityRecord, stage: Stage, ticketTitle: strin
   return liveSubtitle(activity, stage, ticketTitle);
 }
 
-/** The current file or command line: the last changed path, when the child reported one. */
-function currentFileLine(activity: ActivityRecord): string | undefined {
-  const paths = activity.changedPaths;
-  if (!Array.isArray(paths) || paths.length === 0) return undefined;
-  const last = singleLine(String(paths[paths.length - 1] ?? ""));
-  return last || undefined;
-}
-
-/** The metric line: elapsed always, then each fact only when the child reported it. */
-function metricsLine(activity: ActivityRecord, elapsed: string): string {
+/** The metric line: elapsed always, then tokens and cost only when reported. */
+function metricsLine(activity: ActivityRecord, elapsed: string, showModel = false): string {
   const parts = [elapsed];
-  const model = singleLine(activity.modelLabel ?? activity.model ?? "");
-  if (model) parts.push(model);
+  if (showModel) {
+    const model = singleLine(activity.modelLabel ?? activity.model ?? "");
+    if (model) parts.push(model);
+  }
   if (isPositive(activity.totalTokens)) parts.push(`${formatTokens(activity.totalTokens)} tokens`);
-  if (typeof activity.cost === "number") parts.push(formatCost(activity.cost));
+  if (typeof activity.cost === "number" && activity.cost > 0) parts.push(formatCost(activity.cost));
   return parts.join(" · ");
 }
 
@@ -243,7 +285,7 @@ export function renderActivityCard(
   const elapsed = formatDuration(now - activity.startedAt);
 
   if (width !== undefined && width >= BOXED_ACTIVITY_MIN_WIDTH) {
-    const content = [line, currentFileLine(activity), metricsLine(activity, elapsed)].filter(
+    const content = [line, metricsLine(activity, elapsed, options.showModel)].filter(
       (entry): entry is string => Boolean(entry),
     );
     // Cap the box to the same maximum the status panel uses, so a wide terminal
@@ -255,9 +297,7 @@ export function renderActivityCard(
   const head = paint.fg("accent", `◆ ${role}`);
   const shownLine = width !== undefined ? clip(line, width - 2) : singleLine(line);
   const subtitle = shownLine ? paint.fg("muted", `  ${shownLine}`) : "";
-  const model = singleLine(activity.modelLabel ?? activity.model ?? "");
-  const elapsedText = options.showModel && model ? `${elapsed} · ${model}` : elapsed;
-  const elapsedLine = paint.fg("dim", `  ${elapsedText}`);
+  const elapsedLine = paint.fg("dim", `  ${metricsLine(activity, elapsed, options.showModel)}`);
   return [head, subtitle, elapsedLine].filter((entry) => entry !== "");
 }
 
@@ -270,7 +310,7 @@ export function renderActivityEntry(activity: ActivityRecord, options: { paint?:
   const duration = durationOf(activity);
   if (duration) parts.push(duration);
   if (isPositive(activity.totalTokens)) parts.push(formatTokens(activity.totalTokens));
-  if (typeof activity.cost === "number") parts.push(formatCost(activity.cost));
+  if (typeof activity.cost === "number" && activity.cost > 0) parts.push(formatCost(activity.cost));
 
   let line = parts.join(" · ");
   const factList = facts(activity);

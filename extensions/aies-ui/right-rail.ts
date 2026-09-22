@@ -188,6 +188,7 @@ const STAGE_GLYPH: Record<Stage, string> = {
   REPAIR: GLYPH.running,
   WAIT: GLYPH.warning,
   BLOCKED: GLYPH.blocked,
+  FINALIZING: GLYPH.running,
   DONE: GLYPH.done,
 };
 

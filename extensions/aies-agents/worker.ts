@@ -154,6 +154,7 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
     finishChildObservation(observatory, agentId, {
       status: toAgentStatus(handoff?.status),
       result: summarizeWorkerHandoff(handoff),
+      paths: handoff?.changes ? handoff.changes.map((c) => c.file).filter(Boolean) : [],
       at: Date.now(),
     });
   }

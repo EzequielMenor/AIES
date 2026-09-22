@@ -28,6 +28,53 @@ export function formatTokens(value: number | null | undefined): string {
   return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
 }
 
+/** True for subscription or token-plan providers that have no observable per-request monetary cost. */
+export function isSubscriptionOrPlan(provider?: string | null): boolean {
+  if (!provider || typeof provider !== "string") return false;
+  const lower = provider.toLowerCase();
+  return (
+    lower.includes("token-plan") ||
+    lower.includes("tokenplan") ||
+    lower.includes("copilot") ||
+    lower.includes("subscription") ||
+    lower.includes("-coding")
+  );
+}
+
+/** True for models or local providers that are genuinely free of charge. */
+export function isFreeModel(modelId?: string | null, provider?: string | null): boolean {
+  if (provider && typeof provider === "string") {
+    const p = provider.toLowerCase();
+    if (p === "ollama" || p === "local" || p === "lmstudio" || p === "vllm" || p === "faux") return true;
+  }
+  if (!modelId || typeof modelId !== "string") return false;
+  const lower = modelId.toLowerCase();
+  return (
+    lower.endsWith(":free") ||
+    lower.includes("-free") ||
+    lower.includes("/free") ||
+    lower.startsWith("faux")
+  );
+}
+
+/**
+ * Filter cost to genuinely observed monetary values:
+ * - known cost > 0 -> returns the number
+ * - genuinely free model -> returns 0 (renders $0.00)
+ * - subscription, token plan, or unobservable provider -> returns null (renders —)
+ * - missing or invalid cost -> returns null (renders —)
+ */
+export function observableCost(
+  cost: number | null | undefined,
+  modelId?: string | null,
+  provider?: string | null,
+): number | null {
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return null;
+  if (cost > 0) return cost;
+  if (isSubscriptionOrPlan(provider)) return null;
+  return 0;
+}
+
 /**
  * Cost in dollars with two decimals (`$0.08`, `$0.10`). An unknown cost is an em
  * dash, never `$0.00`: a zero the workflow did not measure must not read as a

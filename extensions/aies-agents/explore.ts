@@ -127,6 +127,7 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
     finishChildObservation(observatory, agentId, {
       status: toAgentStatus(handoff?.status),
       result: summarizeExploreHandoff(handoff),
+      paths: handoff?.evidence ? handoff.evidence.map((e) => e.file).filter(Boolean) : [],
       at: Date.now(),
     });
   }

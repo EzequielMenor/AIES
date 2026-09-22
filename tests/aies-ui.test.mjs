@@ -151,7 +151,9 @@ describe("vocabulary", () => {
     assert.equal(deriveStage(snap(blockedVerify)), "BLOCKED");
 
     const passed = applyVerificationReport(createState(T0), { status: "pass", valid: true, attempts: 1 });
-    assert.equal(deriveStage(snap(passed)), "DONE");
+    assert.equal(deriveStage(snap(passed)), "FINALIZING");
+    assert.equal(deriveStage({ ...snap(passed), doneEmitted: true }), "DONE");
+    assert.equal(deriveStage({ ...snap(passed), runEndedAt: T0 + 5000 }), "DONE");
   });
 
   it("reads pressure, compaction and the verification indicator", () => {
@@ -414,13 +416,13 @@ describe("activity", () => {
   it("renders live explore, worker and verify cards", () => {
     assert.deepEqual(renderActivityCard({ role: "explore", task: "", startedAt: T0 }, "EXPLORE", T0 + 12_000), [
       "◆ Explore",
-      "  Explorando el repositorio…",
+      "  Revisando el proyecto y preparando el cambio",
       "  00:12",
     ]);
 
     assert.deepEqual(renderActivityCard({ role: "worker", task: "", startedAt: T0 }, "WORK", T0 + 34_000), [
       "◆ Worker",
-      "  Implementando el work unit…",
+      "  Implementando el cambio y sus tests",
       "  00:34",
     ]);
 
@@ -476,9 +478,7 @@ describe("activity", () => {
 
     const text = lines.join("\n");
     assert.match(text, /Editando calculator\.js/u);
-    assert.match(text, /calculator\.js/u);
     assert.match(text, /00:31/u);
-    assert.match(text, /Qwen 3\.8 Flash/u);
     assert.match(text, /34k tokens/u);
     assert.match(text, /\$0\.03/u);
   });
@@ -520,7 +520,7 @@ describe("activity", () => {
     const activity = { role: "explore", task: "", startedAt: T0 };
     assert.deepEqual(renderActivityCard(activity, "EXPLORE", T0 + 12_000, { width: 40 }), [
       "◆ Explore",
-      "  Explorando el repositorio…",
+      "  Revisando el proyecto y preparando el…",
       "  00:12",
     ]);
   });
@@ -545,7 +545,7 @@ describe("activity", () => {
     assert.equal(worker[1], "  Implement first-run guidance");
 
     const withoutTicket = renderActivityCard({ role: "worker", task: "Implement the parent English prompt", startedAt: T0 }, "WORK", T0 + 5_000);
-    assert.equal(withoutTicket[1], "  Implement the parent English prompt");
+    assert.equal(withoutTicket[1], "  Implementando el cambio y sus tests");
 
     const verify = renderActivityCard(
       { role: "verify", task: "Verify the parent prompt", startedAt: T0, criteriaTotal: 4 },

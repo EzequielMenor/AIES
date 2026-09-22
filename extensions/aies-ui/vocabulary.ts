@@ -8,7 +8,7 @@ import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import type { SemanticColor } from "./paint.ts";
 
 /** Where the work is. Answer exactly one of these; never a second dimension. */
-export type Stage = "IDLE" | "EXPLORE" | "WORK" | "VERIFY" | "REPAIR" | "WAIT" | "BLOCKED" | "DONE";
+export type Stage = "IDLE" | "EXPLORE" | "WORK" | "VERIFY" | "REPAIR" | "WAIT" | "BLOCKED" | "FINALIZING" | "DONE";
 
 /**
  * Autonomy stop reasons that mean the workflow stopped on a real blocker. The
@@ -96,7 +96,12 @@ export function deriveStage(snapshot: AiesSnapshot): Stage {
 
   const activeRole = snapshot.delegations?.activeRole;
   if (stopReason === "completed") return "DONE";
-  if (verification?.status === "pass" && verification.valid && !activeRole) return "DONE";
+  if (snapshot.doneEmitted || (typeof snapshot.runEndedAt === "number" && snapshot.runEndedAt > 0)) {
+    return "DONE";
+  }
+  if (verification?.status === "pass" && verification.valid && !activeRole) {
+    return "FINALIZING";
+  }
 
   if (activeRole === "verify") return "VERIFY";
   if (activeRole === "worker") return verification?.status === "fail" ? "REPAIR" : "WORK";
@@ -158,6 +163,7 @@ export const STAGE_TONE: Record<Stage, SemanticColor> = {
   WORK: "running",
   REPAIR: "running",
   VERIFY: "running",
+  FINALIZING: "running",
   WAIT: "warning",
   BLOCKED: "error",
   DONE: "success",

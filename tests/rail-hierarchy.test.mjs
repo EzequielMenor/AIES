@@ -112,7 +112,8 @@ function stageStates() {
     REPAIR: repairing,
     WAIT: applyAutonomySync(createState(T0), { enabled: true, stopReason: "user_required" }),
     BLOCKED: applyAutonomySync(createState(T0), { enabled: true, stopReason: "blocked" }),
-    DONE: applyVerificationReport(createState(T0), { status: "pass", valid: true, attempts: 1 }),
+    FINALIZING: applyVerificationReport(createState(T0), { status: "pass", valid: true, attempts: 1 }),
+    DONE: applyAutonomySync(createState(T0), { enabled: true, stopReason: "completed" }),
   };
 }
 

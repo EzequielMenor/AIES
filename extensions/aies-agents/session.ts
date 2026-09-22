@@ -63,17 +63,23 @@ export interface ObservableChildSession {
   getSessionStats(): unknown;
 }
 
+import { observableCost } from "../aies-ui/format.ts";
+
 /** The lifecycle boundaries that sample the child's own usage once. */
 const USAGE_EVENT_TYPES = new Set(["turn_end", "agent_settled", "agent_end"]);
 
 /** Read the real usage fields off `SessionStats`: `tokens.total` and `cost`. */
-function readChildUsage(stats: unknown): { totalTokens: number; cost: number | null } {
+function readChildUsage(
+  stats: unknown,
+  model?: { id?: string; provider?: string },
+): { totalTokens: number; cost: number | null } {
   const record = (stats ?? {}) as { tokens?: { total?: unknown }; cost?: unknown };
   const total = record.tokens?.total;
-  const cost = record.cost;
+  const rawCost = typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : null;
+  const cost = observableCost(rawCost, model?.id, model?.provider);
   return {
     totalTokens: typeof total === "number" && Number.isFinite(total) ? total : 0,
-    cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    cost,
   };
 }
 
@@ -88,6 +94,7 @@ export function attachChildObservatory(
   session: ObservableChildSession,
   observatory: Pick<AgentObservatory, "observe" | "updateUsage">,
   agentId: string,
+  model?: { id?: string; provider?: string },
 ): () => void {
   const listener = (event: ObservableChildEvent): void => {
     try {
@@ -99,7 +106,7 @@ export function attachChildObservatory(
         return;
       }
       if (typeof event?.type === "string" && USAGE_EVENT_TYPES.has(event.type)) {
-        observatory.updateUsage(agentId, readChildUsage(session.getSessionStats()));
+        observatory.updateUsage(agentId, readChildUsage(session.getSessionStats(), model));
       }
     } catch {
       // Observation is presentation only: it must never fail the child run.
@@ -244,7 +251,7 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
   });
 
   const unsubscribe =
-    observatory && agentId ? attachChildObservatory(session, observatory, agentId) : undefined;
+    observatory && agentId ? attachChildObservatory(session, observatory, agentId, model) : undefined;
 
   let promptText = `TASK: ${task}`;
   if (context && context.trim()) {

@@ -150,29 +150,34 @@ describe("AIES-010C mechanical activity wording", () => {
     assert.equal(describeActivity("grep", { pattern: "observatory" }), "Buscando observatory");
     assert.equal(describeActivity("find", { path: "tests/agent.test.mjs" }), "Buscando tests/agent.test.mjs");
     assert.equal(describeActivity("ls", { path: "extensions/aies-ui" }), "Listando extensions/aies-ui");
-    assert.equal(describeActivity("ls", {}), "Listando .");
+    assert.equal(describeActivity("ls", {}), "Consultando archivo");
   });
 
   it("words edit and write as an edit of the target file", () => {
     assert.equal(describeActivity("edit", { filePath: "extensions/x.ts" }), "Editando extensions/x.ts");
     assert.equal(describeActivity("write", { file_path: "tests/y.mjs" }), "Editando tests/y.mjs");
-    assert.equal(describeActivity("edit", {}), "Editando");
+    assert.equal(describeActivity("edit", {}), "Modificando archivos");
   });
 
-  it("words bash as the first command line and verify as a verdict check", () => {
-    assert.equal(describeActivity("bash", { command: "npm test\nnpm run build" }), "Ejecutando npm test");
+  it("words bash as human categories and verify as a verdict check", () => {
+    assert.equal(describeActivity("bash", { command: "npm test\nnpm run build" }), "Ejecutando tests");
+    assert.equal(describeActivity("bash", { command: "git status" }), "Comprobando estado Git");
+    assert.equal(describeActivity("bash", { command: "sed -i 's/a/b/' file.txt" }), "Modificando archivos");
+    assert.equal(describeActivity("bash", { command: "cat file.txt" }), "Leyendo archivos");
+    assert.equal(describeActivity("bash", { command: "grep pattern file.txt" }), "Buscando referencias");
+    assert.equal(describeActivity("bash", { command: "mkdir fixtures && touch fixtures/a.json" }), "Preparando fixture");
     assert.equal(describeActivity("aies_verify_complete", { status: "pass" }), "Comprobando el veredicto");
   });
 
   it("degrades an unknown tool to a mechanical line and an absent tool to nothing", () => {
-    assert.equal(describeActivity("mcp__x__y", {}), "Usando mcp__x__y");
+    assert.equal(describeActivity("mcp__x__y", {}), "Ejecutando comando");
     assert.equal(describeActivity("", {}), null);
     assert.equal(describeActivity(undefined, {}), null);
   });
 
   it("never lets a raw multi-line command reach the wording", () => {
     const text = describeActivity("bash", { command: "line one\nline two\tstuff" });
-    assert.equal(text, "Ejecutando line one");
+    assert.equal(text, "Ejecutando comando");
     assert.equal(text.includes("\n"), false);
   });
 
@@ -285,10 +290,10 @@ describe("AIES-010C activity and usage observation", () => {
 
     const [record] = obs.snapshot();
     assert.equal(record.toolCount, 2);
-    assert.equal(record.currentActivity, "Ejecutando npm test");
+    assert.equal(record.currentActivity, "Ejecutando tests");
     assert.deepEqual(
       record.activities.map((entry) => entry.text),
-      ["Ejecutando npm test", "Leyendo a/b.ts"],
+      ["Ejecutando tests", "Leyendo a/b.ts"],
     );
     assert.deepEqual(
       record.activities.map((entry) => entry.at),

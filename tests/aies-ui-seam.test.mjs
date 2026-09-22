@@ -618,8 +618,10 @@ describe("AIES UI seam", () => {
     assert.equal(entries[0].data.activity.role, "verify");
     assert.equal(entries[0].data.activity.outcome, "done");
 
-    assert.equal(host.mountFooter(29).text(), "✧ AIES · DONE · ctx 10k");
+    assert.equal(host.mountFooter(29).text(), "✧ AIES · FINALIZING · ctx 10k");
     assert.equal(host.widgets.some((widget) => widget.cleared === true), true, "the finished card must not linger");
+
+    await host.emit("turn_end", { message: { role: "assistant" } });
     assert.equal(host.mountFooter(29).text(), "✧ AIES · DONE · ctx 10k");
   });
 

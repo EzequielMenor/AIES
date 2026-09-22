@@ -323,6 +323,7 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
     finishChildObservation(observatory, agentId, {
       status: verifyAgentStatus(result),
       result: summarizeVerifyResult(result),
+      paths: options.changedPaths ?? [],
       at: Date.now(),
     });
   }
