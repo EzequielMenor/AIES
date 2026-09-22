@@ -800,11 +800,13 @@ authority:
 
 ```
 themes/aies.json             the profile-local theme, selected by `profile/settings.json`
-extensions/aies-models/      `/aies-models`: model and effort preferences, no routing
+extensions/aies-models/      `/aies-models`: provider-first, searchable model and effort preferences, no routing
   capabilities.ts            available-model projection and `thinkingLevelMap` filtering
+  providers.ts               provider sections, credential health and the bounded non-selectable summary
+  search.ts                  pure subsequence matcher (the picker cannot import `@earendil-works/pi-tui`)
   config.ts                  isolated Parent/child persistence
-  overlay.ts                 pure keyboard-first picker state machine
-  headless.ts                bounded print/JSON/RPC projection
+  overlay.ts                 pure keyboard-first picker state machine (`role -> provider -> model -> thinking`)
+  headless.ts                bounded print/JSON/RPC projection with the detailed non-selectable block
   index.ts                   the command, the Pi model/thinking setters and the TUI adapter
 ```
 
@@ -817,9 +819,14 @@ extensions/aies-models/      `/aies-models`: model and effort preferences, no ro
   starts from built-in defaults and Pi creates its own `aies.json` only after a
   user saves a child role; the repository file stays a documented defaults
   fixture.
-- **Registry-only model choices.** `/aies-models` lists only what
-  `ctx.modelRegistry.getAvailable()` reports at command time. Nothing is
-  hardcoded, and a model without configured auth never appears.
+- **Provider-first, registry-backed model choices.** `/aies-models` projects the
+  registry through the public `getAll()`, `getAvailable()`,
+  `getProviderAuthStatus()` and `getRegisteredProviderIds()` surfaces. Only the
+  models the registry reports as available are selectable; the ~40 disconnected
+  vendors are represented by one bounded count instead of a flat list, and a
+  provider whose stored credential was rejected by `extensions/aies-providers/`
+  stays unselectable even though the registry still advertises its models. Nothing
+  is hardcoded.
 - **Thinking-level metadata.** Selectable levels come from each model's public
   `thinkingLevelMap`: a non-reasoning model offers only `off`, ordinary levels
   through `high` follow the provider default, `xhigh`/`max` appear only when the
@@ -836,6 +843,31 @@ extensions/aies-models/      `/aies-models`: model and effort preferences, no ro
   `ctx.modelRegistry`, so a saved preference applies to the next child and never
   to an active one. Resolution order stays env (`AIES_<ROLE>_MODEL`) >
   `aies.json` > parent model.
+
+### Provider credential health (`extensions/aies-providers/`)
+
+Pi decides availability from credential *presence* only, so a present-but-wrong
+key still advertises its models; the only sound signal that a credential was
+*rejected* is the failed turn. This extension owns the second half of the
+`/aies-models` policy — `connected + credential usable -> selectable`, otherwise
+not selectable — and nothing else.
+
+```
+extensions/aies-providers/   provider credential health, no command and no widget
+  health.ts                  pure credential-rejection classifier and fail-open record matching
+  store.ts                   key-preserving atomic persistence under the `providerHealth` key of `aies.json`
+  index.ts                   the single `turn_end` observer: no startup work, no network
+```
+
+- **One observation point.** `turn_end` with `message.stopReason === "error"` and
+  the provider body in `message.errorMessage`; Pi fires neither
+  `after_provider_response` nor `error` on a 401. The classifier accepts only
+  401/403 and explicit authentication/authorization tokens, never rate limits,
+  5xx, network faults or aborts.
+- **Digest, not secret.** A record stores a truncated SHA-256 digest of the
+  rejected credential, so a re-login changes the digest and the record self-heals;
+  the secret is never stored, logged or rendered. Matching is fail-open: an
+  unresolvable credential records nothing and suppresses no provider.
 
 ### AIES tool rendering
 

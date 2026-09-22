@@ -152,6 +152,75 @@ the catalog. `lifecycle: "lazy"` means no connection is made at startup, and
 credentials are stored by the adapter in the OS credential store, never in this
 repository.
 
+## Command Code (GOAT plan)
+
+`extensions/aies-provider-commandcode/` registers the `commandcode` provider, so the
+whole Command Code catalog is selectable from `/model`, `/aies-models` and
+`aies --list-models`:
+
+```bash
+aies
+/login commandcode               # the ordinary path: the key lives in the AIES profile
+```
+
+`/login commandcode` is the ordinary, persistent path. Pi prompts for the key as
+a secret, never echoes it, and writes it into `$AIES_HOME/agent/auth.json` as an
+`api_key` entry with mode `0600`, so it survives restarts with no shell setup.
+`COMMANDCODE_API_KEY` remains supported for CI, headless runs and testing, where a
+fresh profile has no `auth.json`; a stored credential always wins over it. AIES
+never reads or forwards the key itself: the extension declares
+`apiKey: "$COMMANDCODE_API_KEY"` and Pi resolves it per request.
+
+The catalog loads either way. With no credential at all Pi still registers the
+provider but reports zero available `commandcode` models — the models are simply
+not selectable, which is expected and is now surfaced by `/aies-models` as a
+`no conectado` provider instead of being invisible.
+
+| Item | Value |
+|---|---|
+| Provider id | `commandcode` (models are `commandcode/<id>`) |
+| Base URL | `https://api.commandcode.ai/provider/v1` |
+| Models | 76 registered: 68 on `openai-completions`, 8 Claude rows on `anthropic-messages` |
+| Diagnostic | `/aies-commandcode` — catalog size per transport, base URL, the registry auth source and `disponibles n/76` |
+
+### The catalog is static, on purpose
+
+Pi can fetch a provider catalog at load time; AIES does not, because startup must
+be deterministic and zero-network (`scripts/check-isolation.sh` proves it). The list
+lives in the repository as `extensions/aies-provider-commandcode/models.json`:
+
+```bash
+# maintenance only — requires network, never run by tests, hooks or the launcher
+node scripts/refresh-commandcode-models.mjs
+node scripts/refresh-commandcode-models.mjs --models-json saved.json --docs-html saved.html  # offline rerun
+```
+
+What the generator encodes, and what it cannot know:
+
+- **ids** are copied verbatim from `GET /provider/v1/models`, including the vendor
+  prefix (`deepseek/deepseek-v4-flash`) that open-weight families use and the bare
+  form the first-party families use. The one id the endpoint spells with a snapshot
+  date (`claude-haiku-4-5-20251001`) keeps the endpoint form, not the docs form.
+- **`api`** is `anthropic-messages` only for models served on `/messages`, and
+  `openai-completions` for the rest. 60 of them also advertise `/responses`, which
+  AIES does not use.
+- **`cost`** is the base list price per 1M tokens published on the GOAT plan page.
+  Time-limited deals are ignored on purpose: the catalog stores the list rate
+  (e.g. MiniMax M3 at `0.60/2.40`, not the discounted `0.30/1.20`). The two free
+  models publish no list rate, so they stay at `0` and cost tracking under-reports
+  them. Long-context price steps are collapsed into the standard tier.
+- **`maxTokens`** is an assumption, not a vendor limit: neither the endpoint nor the
+  docs publish a maximum output length, so the generator writes
+  `clamp(floor(contextWindow / 4), 8192, 64000)`. The assumption is backed by a
+  measured override map in the generator, because the clamp proved wrong for at
+  least one model: `poolside/laguna-s-2.1-free` advertises a `64000` clamp but the
+  API caps output at `32768`, so the catalog stores the measured value. Without an
+  override the failure mode is a provider HTTP 400 that names the cap
+  (`max_tokens (64000): Input should be less than or equal to 32768`).
+- **`input: ["text", "image"]`** only where the docs mark the model as vision.
+- `gpt-6-astra` appears on the plan page but is not served by the provider API, so
+  it is not registered; a refresh prints those differences instead of guessing.
+
 ## Repository layout
 
 | Path | Role |
@@ -167,6 +236,9 @@ repository.
 | `extensions/aies-identity.ts` | profile visibility: startup notice and `/aies-info` |
 | `extensions/aies-runtime/` | session metrics: footer line, `/aies-status`, no behavior changes |
 | `extensions/aies-agents/` | agent delegation: the `aies_delegate` tool, the three child runners, routing and the verification record |
+| `extensions/aies-provider-commandcode/` | the `commandcode` provider and its committed static model catalog |
+| `extensions/aies-providers/` | provider credential health: a `turn_end` observer that records a rejected credential, no command |
+| `scripts/refresh-commandcode-models.mjs` | regenerates that catalog; manual, the only Command Code script that needs network |
 | `tests/isolation.test.mjs` | deterministic isolation checks (no credentials) |
 | `tests/observability.test.mjs` | metric rules and rendering, driven through a fake `ExtensionAPI` |
 | `tests/observability-runtime.test.mjs` | the observer inside a real Pi process, over RPC |

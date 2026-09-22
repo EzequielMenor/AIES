@@ -698,7 +698,7 @@ Six primitives.
 |---|---|---|
 | `/aies-status` | the human view of the session; `detalle` (or `all`) prints the full telemetry | normal |
 | `/agents` | the session's children and the selected record's structured detail (AIES-010C) | normal |
-| `/aies-models` | pick the model and effort for Parent, Explore, Worker and Verify (AIES-010D); a keyboard-first overlay, or bounded text headless | normal |
+| `/aies-models` | pick the model and effort for Parent, Explore, Worker and Verify (AIES-010D); a provider-first, searchable keyboard overlay, or bounded text headless | normal |
 | `/aies-ticket [id]` | activate or inspect the Linear ticket | normal |
 | `/aies-run [id\|stop\|status]` | bounded autonomy; `status` prints the autonomy view | normal |
 | `/aies-info` | resolved profile paths, mode, extension path | diagnostic |
@@ -706,10 +706,17 @@ Six primitives.
 `/aies-info` stays registered but is deliberately demoted: it is a
 diagnostic/dev command and must not compete with `/aies-status`. `/agents` is the
 one command AIES-010C adds: it opens the ephemeral observatory and intervenes in
-nothing. `/aies-models` is the one command AIES-010D adds: it lists only the
-models `ctx.modelRegistry.getAvailable()` reports, offers only the thinking levels
-each model's metadata supports, and changes the session model or a future child's
-preference without ever interrupting an active child. No further command is added
+nothing. `/aies-models` is the one command AIES-010D adds: it opens a
+provider-first picker (`role -> provider -> model -> thinking`) with live type-ahead
+search in the model step, offers only the thinking levels each model's metadata
+supports, and changes the session model or a future child's preference without
+ever interrupting an active child. It projects the registry through `getAll()`,
+`getAvailable()`, `getProviderAuthStatus()` and `getRegisteredProviderIds()`: only
+usable models are selectable, the disconnected vendors collapse to one bounded `N
+providers no utilizables` line, and a provider whose stored credential was rejected
+reads `credencial rechazada`. A headless host renders the same projection as
+bounded text and keeps a per-provider `No seleccionables` block for diagnosis. No
+further command is added
 for context, verify, permissions, Linear or autonomy: the UI reduces the need for
 commands instead of multiplying them.
 
@@ -726,12 +733,14 @@ commands printing the same report is the duplication this phase removes.
   role runner's resolved model through the public `model.ts` path, and they appear
   in the activity card metric line and in the `/agents` detail. AIES never invents
   a model it cannot read.
-- **Preferences and theme.** `/aies-models` reads only the available registry,
-  validates each effort against the model's `thinkingLevelMap`, and persists the
-  Parent default through Pi's isolated `SettingsManager` (`settings.json`) and
-  each child role into the isolated `aies.json`; a saved preference applies to the
-  next child, never to an active one. The visual theme is the profile-local `aies`
-  theme selected in `settings.json` (§2, §18).
+- **Preferences and theme.** `/aies-models` projects the registry into provider
+  sections and lists only the usable models as selectable; the non-selectable
+  providers are shown as evidence, never offered. It validates each effort against
+  the model's `thinkingLevelMap` and persists the Parent default through Pi's
+  isolated `SettingsManager` (`settings.json`) and each child role into the
+  isolated `aies.json`; a saved preference applies to the next child, never to an
+  active one. The visual theme is the profile-local `aies` theme selected in
+  `settings.json` (§2, §18).
 - **Time.** One shared `formatDuration`: `00:14`, `02:31`, `1:04:22`. Used by the
   activity card, the status panel and `/aies-status`; below 80 columns it also
   appears in the footer fallback.
@@ -772,11 +781,13 @@ extensions/aies-runtime/       the only writer of the footer, the header and the
   state.ts                     the runtime state and its transitions
   usage.ts                     aggregateUsage: Main / Agents / Total
   quiet-tools.ts               the Pi boundary for the quiet generic tools
-extensions/aies-models/        /aies-models: registry-backed model and effort preferences (no routing)
+extensions/aies-models/        /aies-models: provider-first, searchable model and effort preferences (no routing)
   capabilities.ts              available-model projection + thinkingLevelMap filtering
+  providers.ts                 provider sections, credential health and the bounded non-selectable summary
+  search.ts                    pure subsequence matcher (the picker cannot import @earendil-works/pi-tui)
   config.ts                    isolated Parent/child persistence
-  overlay.ts                   pure keyboard-first picker state machine
-  headless.ts                  bounded print/JSON/RPC projection
+  overlay.ts                   pure keyboard-first picker state machine (role -> provider -> model -> thinking)
+  headless.ts                  bounded print/JSON/RPC projection, detailed non-selectable block
   index.ts                     the command, the Pi model/thinking setters and the TUI adapter
 extensions/aies-agents/        the child roles and the registry that observes them
   observatory.ts               the ephemeral, session-local Agent Observatory registry
@@ -1006,7 +1017,8 @@ rich fallback, the agents mini list lives inside the dock instead of a duplicate
 widget, and routine successful tools own a one-line shell. The rail, dock and
 summaries derive from one theme-backed vocabulary and add the run-local Todos
 checklist, while `/aies-models` picks registry-backed models and capability-valid
-effort for Parent and for future children. Pi 0.87.0 still exposes no public
+effort for Parent and for future children, now provider-first and searchable over
+the whole registry. Pi 0.87.0 still exposes no public
 passive side-rail API, so the dock is the supported surface; from 120 columns on a
 supported fullscreen host, one isolated, user-authorized shim (a fail-closed
 version floor plus a lazy structural probe of the host's own node) adds an optional
