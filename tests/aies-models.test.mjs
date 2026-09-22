@@ -22,6 +22,7 @@ import {
   isThinkingLevelSupported,
   normalizeThinkingLevel,
   projectModelOption,
+  projectModelOptions,
   supportedThinkingLevels,
 } from "../extensions/aies-models/capabilities.ts";
 import {
@@ -160,6 +161,15 @@ describe("available model projection", () => {
     );
   });
 
+  it("projects, dedupes and sorts a raw model array for any caller", () => {
+    const first = model({ id: "b", provider: "faux", name: "Bravo" });
+    const second = model({ id: "a", provider: "faux", name: "Alpha" });
+    const options = projectModelOptions([first, { ...first }, second, { name: "no ids" }]);
+    assert.deepEqual(options.map((entry) => entry.value), ["faux/a", "faux/b"]);
+    assert.deepEqual(projectModelOptions("not an array"), []);
+    assert.deepEqual(projectModelOptions(undefined), []);
+  });
+
   it("labels the provider and model clearly and carries capability levels", () => {
     const projected = option({ id: "deep", name: "Deep", reasoning: true });
     assert.equal(projected.provider, "faux");
@@ -176,12 +186,24 @@ describe("available model projection", () => {
 });
 
 describe("overlay keyboard flow", () => {
+  const models = [
+    option({ id: "m1", reasoning: true }),
+    option({ id: "m2", reasoning: true }),
+    option({ id: "m3", reasoning: true }),
+  ];
+  const fauxSection = {
+    id: "faux",
+    name: "Faux",
+    state: "usable",
+    models,
+    totalModels: 3,
+  };
   const context = {
-    models: [
-      option({ id: "m1", reasoning: true }),
-      option({ id: "m2", reasoning: true }),
-      option({ id: "m3", reasoning: true }),
-    ],
+    usable: [fauxSection],
+    scopedUsable: [fauxSection],
+    hasScoped: false,
+    notUsable: { count: 0, names: [], extra: 0 },
+    assignments: [],
   };
 
   it("decodes arrows, j/k, h/l, confirm, quit and esc", () => {
@@ -213,12 +235,14 @@ describe("overlay keyboard flow", () => {
     assert.equal(state.roleIndex, 0);
   });
 
-  it("advances role -> model -> thinking and confirms a selection", () => {
+  it("advances role -> provider -> model -> thinking and confirms a selection", () => {
     let state = createOverlayState();
     state = reduceOverlayKey(state, "enter", context);
-    assert.equal(state.step, "model");
+    assert.equal(state.step, "provider");
     assert.equal(state.role, "parent");
-    state = reduceOverlayKey(state, "j", context);
+    state = reduceOverlayKey(state, "enter", context);
+    assert.equal(state.step, "model");
+    state = reduceOverlayKey(state, "down", context);
     assert.equal(state.modelIndex, 1);
     state = reduceOverlayKey(state, "enter", context);
     assert.equal(state.step, "thinking");
@@ -232,9 +256,12 @@ describe("overlay keyboard flow", () => {
     let state = createOverlayState();
     state = reduceOverlayKey(state, "enter", context);
     state = reduceOverlayKey(state, "enter", context);
+    state = reduceOverlayKey(state, "enter", context);
     assert.equal(state.step, "thinking");
     state = reduceOverlayKey(state, "escape", context);
     assert.equal(state.step, "model");
+    state = reduceOverlayKey(state, "escape", context);
+    assert.equal(state.step, "provider");
     state = reduceOverlayKey(state, "escape", context);
     assert.equal(state.step, "role");
     state = reduceOverlayKey(state, "escape", context);
@@ -242,9 +269,13 @@ describe("overlay keyboard flow", () => {
   });
 
   it("renders a bounded, keyboard-first view for every step", () => {
-    for (const step of ["role", "model"]) {
+    for (const step of ["role", "provider", "model"]) {
       let state = createOverlayState();
-      if (step === "model") state = reduceOverlayKey(state, "enter", context);
+      if (step === "provider") state = reduceOverlayKey(state, "enter", context);
+      if (step === "model") {
+        state = reduceOverlayKey(state, "enter", context);
+        state = reduceOverlayKey(state, "enter", context);
+      }
       const view = renderOverlayState(state, context);
       assert.ok(view.lines.length > 0);
       assert.ok(view.lines.some((line) => line.includes("›")));
@@ -255,13 +286,44 @@ describe("overlay keyboard flow", () => {
   it("exposes the four preference roles in product order", () => {
     assert.deepEqual(ROLE_ORDER, ["parent", "explore", "worker", "verify"]);
   });
+
+  it("renders each role's current model on the role step, aligned and with sin preferencia", () => {
+    const assignments = [
+      { role: "parent", model: "commandcode/Qwen3.8-Flash", thinkingLevel: "xhigh" },
+      { role: "worker", model: "faux/m2" },
+    ];
+    const roleView = renderOverlayState(createOverlayState(), { ...context, assignments });
+    assert.equal(roleView.title, "Modelo AIES · elegí el rol");
+    assert.deepEqual(roleView.lines, [
+      "› Parent   · commandcode/Qwen3.8-Flash · xhigh",
+      "  Explore  · sin preferencia",
+      "  Worker   · faux/m2",
+      "  Verify   · sin preferencia",
+    ]);
+  });
+
+  it("does not advertise j, k or q in the model step help", () => {
+    let state = reduceOverlayKey(createOverlayState(), "confirm", context);
+    state = reduceOverlayKey(state, "confirm", context);
+    const view = renderOverlayState(state, context);
+    assert.equal(view.help.includes("j/k"), false, view.help);
+    assert.equal(view.help.includes("q salir"), false, view.help);
+    assert.equal(view.help.includes("h/l"), false, view.help);
+    assert.ok(view.help.includes("tipear filtra"));
+    assert.ok(view.help.includes("Backspace borra"));
+  });
 });
 
 describe("headless projection", () => {
   it("prints bounded readable text without any custom UI", () => {
     const models = Array.from({ length: 60 }, (_value, index) => option({ id: `m${index}`, name: `Model ${index}` }));
     const text = renderHeadlessModels({
-      models,
+      projection: {
+        usable: [{ id: "faux", name: "Faux", state: "usable", models, totalModels: models.length }],
+        models,
+        attention: [],
+        hiddenDisconnected: 0,
+      },
       preferences: { parent: { model: "faux/m0", thinkingLevel: "high" } },
       maxLines: 10,
       maxChars: 500,
@@ -444,10 +506,11 @@ describe("command wiring", () => {
           );
           assert.ok(component, "the overlay factory must return a component");
           return new Promise((resolve) => {
-            // Confirm the preselected model + default thinking level.
-            component.handleInput("\r"); // role -> model
-            component.handleInput("\r"); // model -> thinking
-            component.handleInput("\r"); // thinking -> done
+            // Confirm through role -> provider -> model -> thinking -> done.
+            component.handleInput("\r");
+            component.handleInput("\r");
+            component.handleInput("\r");
+            component.handleInput("\r");
             resolve({ role: "worker", option: option({ id: "faux-1" }), thinkingLevel: "high" });
           });
         },

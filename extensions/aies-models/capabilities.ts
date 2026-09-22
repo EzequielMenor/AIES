@@ -130,19 +130,11 @@ export function projectModelOption(model: unknown): ModelOption | undefined {
 }
 
 /**
- * Project every model the registry currently reports as available. Only
- * `getAvailable()` is consulted, so a model without configured auth can never
- * appear; a missing or throwing registry degrades to an empty list.
+ * Project every model in a raw array the registry returned, deduping by
+ * `provider/id` and sorting by provider then display name. Non-array input (a
+ * hostile or partial registry) degrades to an empty list rather than throwing.
  */
-export function availableModelOptions(registry: unknown): ModelOption[] {
-  let raw: unknown;
-  try {
-    const getAvailable = asRecord(registry)?.getAvailable;
-    if (typeof getAvailable !== "function") return [];
-    raw = (getAvailable as () => unknown).call(registry);
-  } catch {
-    return [];
-  }
+export function projectModelOptions(raw: unknown): ModelOption[] {
   if (!Array.isArray(raw)) return [];
 
   const options: ModelOption[] = [];
@@ -157,4 +149,21 @@ export function availableModelOptions(registry: unknown): ModelOption[] {
     (left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name),
   );
   return options;
+}
+
+/**
+ * Project every model the registry currently reports as available. Only
+ * `getAvailable()` is consulted, so a model without configured auth can never
+ * appear; a missing or throwing registry degrades to an empty list.
+ */
+export function availableModelOptions(registry: unknown): ModelOption[] {
+  let raw: unknown;
+  try {
+    const getAvailable = asRecord(registry)?.getAvailable;
+    if (typeof getAvailable !== "function") return [];
+    raw = (getAvailable as () => unknown).call(registry);
+  } catch {
+    return [];
+  }
+  return projectModelOptions(raw);
 }
