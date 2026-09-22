@@ -556,7 +556,7 @@ describe("AIES UI seam", () => {
     assert.ok(tall > widget.lines().length, "a shrink must reflow the spacer away");
   });
 
-  it("lets the physical rail own live activity and returns the inline card without it", async () => {
+  it("shows the inline card above the input even while the physical rail owns the status dock", async () => {
     const original = () => ({ type: "vstack", entries: [] });
     const root = { [LAYOUT_NODE]: original };
     const tui = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
@@ -572,20 +572,23 @@ describe("AIES UI seam", () => {
     const panel = host.mountWidget("aies-panel", 160, tui);
     root[LAYOUT_NODE](); // the host layout pass makes the rail report itself as showing
 
+    // The rail owns the status dock: the below-editor panel yields to it.
+    assert.deepEqual(panel.lines(), [], "the rail owns the status dock; the card is a separate surface");
+
+    // The live child card is not the dock: it renders above the input regardless.
     await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement" } });
-    assert.equal(
+    assert.ok(
       host.widgets.some((widget) => widget.key === "aies-activity" && widget.factory),
-      false,
-      "the rail owns live activity at wide width; no simultaneous transcript card",
+      "the live child card must render above the input even while the rail is showing",
     );
 
-    // Below the rail breakpoint the inline card is the fallback again.
+    // Below the rail breakpoint the same inline card remains the fallback.
     tui.terminal.columns = RIGHT_RAIL_MIN_WIDTH - 20;
     root[LAYOUT_NODE]();
     await host.emit("tool_call", { toolName: "aies_delegate", input: { role: "worker", task: "Implement again" } });
     assert.ok(
       host.widgets.some((widget) => widget.key === "aies-activity" && widget.factory),
-      "without the rail the inline activity card returns",
+      "without the rail the inline activity card remains",
     );
 
     await host.emit("session_shutdown", { reason: "quit" });

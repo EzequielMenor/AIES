@@ -272,11 +272,12 @@ describe("AIES-010C run usage (pure)", () => {
     assert.notEqual(s.runUsage.total.totalTokens, 1_000 + 200 + 200 + 300 + 300);
   });
 
-  it("propagates an unknown Parent cost to Main and Total", () => {
+  it("propagates an unknown Parent cost to Main and keeps the observed Agents in Total", () => {
     const s = applyRunUsage(createState(T0), bucket(10, null), [bucket(5, 0.5)], T0);
 
     assert.equal(s.runUsage.main.cost, null);
-    assert.equal(s.runUsage.total.cost, null);
+    assert.equal(s.runUsage.agents.cost, 0.5);
+    assert.equal(s.runUsage.total.cost, 0.5, "Total sums only the observed bucket");
   });
 
   it("keeps the last known Main when Pi cannot return a Parent sample", () => {
@@ -291,11 +292,21 @@ describe("AIES-010C run usage (pure)", () => {
     assert.equal(s.runUsage.total.totalTokens, 250);
   });
 
-  it("propagates an unknown child cost to Agents and Total", () => {
+  it("propagates an unknown child cost to Agents and keeps the observed Main in Total", () => {
     const s = applyRunUsage(createState(T0), bucket(10, 1), [bucket(5, 0.5), bucket(2, null)], T0);
 
     assert.equal(s.runUsage.agents.cost, null);
-    assert.equal(s.runUsage.total.cost, null);
+    assert.equal(s.runUsage.main.cost, 1);
+    assert.equal(s.runUsage.total.cost, 1, "Total excludes the unknown Agents bucket");
+  });
+
+  it("recovers the Main cost when the run baseline was sampled without cost", () => {
+    let s = applyRunStart(createState(T0), T0);
+    s = applyRunUsage(s, bucket(1_000, null), [], T0);
+    assert.equal(s.runUsage.main.cost, null, "a baseline with no cost cannot report a run cost yet");
+
+    s = applyRunUsage(s, bucket(1_500, 0.4), [], T0 + 1);
+    near(s.runUsage.main.cost, 0.4, "an unobserved baseline contributes zero, so the run recovers its cost");
   });
 
   it("never lowers a run number when the cumulative Parent usage floors", () => {
@@ -519,7 +530,7 @@ describe("AIES-010C run telemetry wiring", () => {
     await host.emit("session_shutdown", { reason: "quit" });
     const runUsage = persisted(host).runUsage;
     assert.equal(runUsage.main.totalTokens, 650, "incremental reduction keeps the cumulative total");
-    assert.equal(runUsage.main.cost, null, "one unknown cost keeps Main cost unknown");
+    near(runUsage.main.cost, 0.6, "an unknown-cost entry is excluded, not latched");
   });
 
   it("resets the usage cache on a session start so a new session starts from zero", async () => {
@@ -547,6 +558,39 @@ describe("AIES-010C run telemetry wiring", () => {
     });
     await host.emit("session_start", { reason: "startup" });
     assert.deepEqual(await host.emit("tool_result", { toolName: "read", content: "x" }), [undefined]);
+  });
+
+  it("recovers the Parent cost after a missing sample instead of latching it unknown", async () => {
+    const host = createHost();
+    await host.emit("session_start", { reason: "startup" });
+
+    host.options.entries.push(assistantEntry(1_000, 0.5));
+    await host.emit("tool_result", { toolName: "read", content: "a" });
+
+    // One sample with no cost must not latch the whole reading to unknown.
+    host.options.entries.push(assistantEntry(100, undefined));
+    await host.emit("tool_result", { toolName: "read", content: "b" });
+
+    // A later sample with a cost restores a known, partial sum.
+    host.options.entries.push(assistantEntry(200, 0.2));
+    await host.emit("tool_result", { toolName: "read", content: "c" });
+    await host.emit("session_shutdown", { reason: "quit" });
+
+    const runUsage = persisted(host).runUsage;
+    near(runUsage.main.cost, 0.7, "0.5 + 0.2, with the cost-less entry excluded rather than latched");
+  });
+
+  it("keeps the 1s cadence while a run is active even without a child", async () => {
+    const controller = new ContinuationController();
+    setActiveContinuationController(controller);
+    const host = createHost();
+    await host.emit("session_start", { reason: "startup" });
+    assert.equal(timers.lastInterval().ms, 5000, "an idle session samples slowly");
+
+    controller.enable("EZE-9");
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+    assert.equal(timers.lastInterval().ms, 1000, "a live run must repaint at least every second");
+    await host.emit("session_shutdown", { reason: "quit" });
   });
 });
 

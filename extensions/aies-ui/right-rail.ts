@@ -32,9 +32,9 @@
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import type { AgentsSnapshot } from "./agents.ts";
 import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { activeRunElapsed, agentFact, sectionHeading, statusBox, statusTitle } from "./panel.ts";
-import { PLAIN_PAINT, type Paint } from "./paint.ts";
-import { deriveStage, isCompacting, isContextPressure, SPACING } from "./vocabulary.ts";
+import { activeRunElapsed, agentFact, sectionHeading, statusBox, statusTitle, type StatusRow } from "./panel.ts";
+import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
+import { deriveStage, GLYPH, isCompacting, isContextPressure, SPACING, STAGE_TONE, type Stage } from "./vocabulary.ts";
 import { deriveTodos, renderTodos } from "./todos.ts";
 
 /** The fullscreen width at which the physical rail is worth its columns. */
@@ -168,9 +168,47 @@ export interface RightRailOptions {
 /** Rows the rail's Agents section shows before collapsing the rest. */
 const MAX_RAIL_AGENTS = 3;
 
+/**
+ * The longest Status label (`Proveedor`) fixes the value column: every label is
+ * padded to it plus one space, so all values start at the same column and the
+ * token/cost buckets below align with them.
+ */
+const LABEL_COLUMN = "Proveedor".length + 1;
+
+/**
+ * The one glyph per workflow stage. It reuses the shared glyph vocabulary rather
+ * than inventing a symbol: `STAGE_TONE` carries the mood, the glyph its lifecycle
+ * family, and the label the exact step.
+ */
+const STAGE_GLYPH: Record<Stage, string> = {
+  IDLE: GLYPH.idle,
+  EXPLORE: GLYPH.running,
+  WORK: GLYPH.running,
+  VERIFY: GLYPH.running,
+  REPAIR: GLYPH.running,
+  WAIT: GLYPH.warning,
+  BLOCKED: GLYPH.blocked,
+  DONE: GLYPH.done,
+};
+
+/** The semantic tone of a child's lifecycle state, from the one status vocabulary. */
+function agentStatusTone(status: AgentRecord["status"]): SemanticColor {
+  switch (status) {
+    case "running":
+      return "running";
+    case "completed":
+      return "success";
+    case "failed":
+      return "error";
+    case "blocked":
+      return "warning";
+    default:
+      return "dim";
+  }
+}
+
 /** One ordered agent row plus whether it represents an active child. */
-interface RailAgentRow {
-  text: string;
+interface RailAgentRow extends StatusRow {
   active: boolean;
   /** The `en espera` placeholder, which is not a hidden agent. */
   placeholder?: boolean;
@@ -192,7 +230,9 @@ function railElapsed(record: AgentRecord, now: number): string | undefined {
  */
 function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): RailAgentRow[] {
   const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  if (records.length === 0) return [{ text: paint.fg("dim", "en espera"), active: false, placeholder: true }];
+  if (records.length === 0) {
+    return [{ text: "en espera", painted: paint.fg("dim", "en espera"), active: false, placeholder: true }];
+  }
 
   const ordered = [...records].sort((left, right) => {
     if (left.status === "running" && right.status !== "running") return -1;
@@ -203,43 +243,60 @@ function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): Rai
   return ordered.map((record) => {
     const elapsed = railElapsed(record, now);
     const fact = elapsed ? `${agentFact(record)} · ${elapsed}` : agentFact(record);
-    return { text: fact, active: record.status === "running" };
+    // Each child is painted with the tone of its own lifecycle state.
+    return { text: fact, painted: paint.fg(agentStatusTone(record.status), fact), active: record.status === "running" };
   });
 }
 
-/** A `label  value` row, omitted entirely when the value is empty. */
-function railFact(label: string, value: string | undefined): string | undefined {
+/**
+ * A `label  value` row: the label is muted, the value keeps its own tone, and
+ * the label column is padded to the longest label so every value starts at the
+ * same column. A row whose value is empty is omitted, never invented.
+ */
+function railFact(
+  paint: Paint,
+  label: string,
+  value: string | undefined,
+  tone: SemanticColor = "text",
+): StatusRow | undefined {
   const text = singleLine(value ?? "");
-  return text ? `${label.padEnd(SPACING.label)}${text}` : undefined;
+  if (!text) return undefined;
+  const labelCell = label.padEnd(LABEL_COLUMN);
+  return { text: `${labelCell}${text}`, painted: `${paint.fg("muted", labelCell)}${paint.fg(tone, text)}` };
 }
 
 /**
  * Tokens and cost as vertical Main/Agents/Total groups. A rail is too narrow for
  * the dock's single line, so the three buckets never truncate into one another.
+ * An unobserved bucket renders an em dash, never a fabricated zero, and the
+ * sections stay hidden until a run is in flight or real data arrived.
  */
-function railUsageRows(snapshot: AgentsSnapshot): string[] {
+function railUsageRows(snapshot: AgentsSnapshot, paint: Paint): StatusRow[] {
   const usage = snapshot.runUsage;
   if (!usage) return [];
-  const rows: string[] = [];
-  const bucket = (name: string, value: string) => `  ${name.padEnd(8)}${value}`;
 
-  if (usage.total.totalTokens > 0) {
-    rows.push("Tokens");
-    rows.push(bucket("Main", formatTokens(usage.main.totalTokens)));
-    rows.push(bucket("Agents", formatTokens(usage.agents.totalTokens)));
-    rows.push(bucket("Total", formatTokens(usage.total.totalTokens)));
-  }
+  const hasObservedTokens = usage.total.totalTokens > 0;
+  const hasObservedCost = usage.main.cost !== null || usage.agents.cost !== null;
+  const runInFlight = usage.active === true || usage.startedAt !== undefined;
+  if (!runInFlight && !hasObservedTokens && !hasObservedCost) return [];
 
-  const hasKnownCost = usage.main.cost !== null || usage.agents.cost !== null || usage.total.cost !== null;
-  const hasNonZeroCost = [usage.main.cost, usage.agents.cost, usage.total.cost].some(
-    (value) => typeof value === "number" && value > 0,
-  );
-  if (hasKnownCost && (hasNonZeroCost || usage.agents.totalTokens > 0)) {
-    rows.push("Coste");
-    rows.push(bucket("Main", formatCost(usage.main.cost)));
-    rows.push(bucket("Agents", formatCost(usage.agents.cost)));
-    rows.push(bucket("Total", formatCost(usage.total.cost)));
-  }
+  const rows: StatusRow[] = [];
+  const heading = (name: string): StatusRow => ({ text: name, painted: paint.fg("accent", name) });
+  const bucket = (name: string, value: string): StatusRow => {
+    const labelCell = `  ${name.padEnd(LABEL_COLUMN - 2)}`;
+    return { text: `${labelCell}${value}`, painted: `${paint.fg("muted", labelCell)}${paint.fg("text", value)}` };
+  };
+  const tokenCell = (tokens: number) => (tokens > 0 ? formatTokens(tokens) : "—");
+
+  rows.push(heading("Tokens"));
+  rows.push(bucket("Main", tokenCell(usage.main.totalTokens)));
+  rows.push(bucket("Agents", tokenCell(usage.agents.totalTokens)));
+  rows.push(bucket("Total", tokenCell(usage.total.totalTokens)));
+
+  rows.push(heading("Coste"));
+  rows.push(bucket("Main", formatCost(usage.main.cost)));
+  rows.push(bucket("Agents", formatCost(usage.agents.cost)));
+  rows.push(bucket("Total", formatCost(usage.total.cost)));
   return rows;
 }
 
@@ -247,32 +304,36 @@ function railUsageRows(snapshot: AgentsSnapshot): string[] {
 function railStatusRows(
   snapshot: AgentsSnapshot,
   now: number,
+  paint: Paint,
   project: string | undefined,
   branch: string | undefined,
   runEndedAt: number | undefined,
-): string[] {
+): StatusRow[] {
   const ticket = snapshot.ticket?.active && snapshot.ticket.identifier ? singleLine(snapshot.ticket.identifier) : undefined;
   const model = singleLine(snapshot.model?.label ?? snapshot.model?.id ?? "") || undefined;
   const provider = singleLine(snapshot.model?.provider ?? "") || undefined;
   const pressure = isContextPressure(snapshot) ? " !" : "";
   const compacting = isCompacting(snapshot) ? " · compactando…" : "";
   const elapsed = activeRunElapsed(snapshot, now, runEndedAt);
+  const stage = deriveStage(snapshot);
 
   const rows = [
-    railFact("Proyecto", project),
+    railFact(paint, "Proyecto", project),
     // The branch row always exists: with no source it reads as a dash, never
     // vanishing and leaving the reader to wonder whether it was measured.
-    railFact("Rama", branch ?? "—"),
-    railFact("Ticket", ticket),
-    railFact("Etapa", deriveStage(snapshot)),
-    railFact("Modelo", model),
-    railFact("Proveedor", provider),
-    railFact("Contexto", `${formatTokens(snapshot.contextTokens)}${pressure}${compacting}`),
+    railFact(paint, "Rama", branch ?? "—"),
+    railFact(paint, "Ticket", ticket, "accent"),
+    // The stage is the one highlighted value: its tone and glyph make IDLE,
+    // EXPLORE, WORK, VERIFY and DONE read apart at a glance.
+    railFact(paint, "Etapa", `${STAGE_GLYPH[stage]} ${stage}`, STAGE_TONE[stage]),
+    railFact(paint, "Modelo", model),
+    railFact(paint, "Proveedor", provider),
+    railFact(paint, "Contexto", `${formatTokens(snapshot.contextTokens)}${pressure}${compacting}`),
     // No run, no clock: IDLE stays a dash instead of a session timer.
-    railFact("Tiempo", elapsed ?? "—"),
-  ].filter((row): row is string => Boolean(row));
+    railFact(paint, "Tiempo", elapsed ?? "—"),
+  ].filter((row): row is StatusRow => Boolean(row));
 
-  return [...rows, ...railUsageRows(snapshot)];
+  return [...rows, ...railUsageRows(snapshot, paint)];
 }
 
 function usableHeight(value: number | undefined): number | undefined {
@@ -305,8 +366,11 @@ export function renderRightRail(
     shortSha: options.shortSha,
   });
 
-  const lines: string[] = [sectionHeading("Status", paint, "accent"), ...railStatusRows(snapshot, now, project, branch, options.runEndedAt)];
-  lines.push(sectionHeading("Agents", paint, "accent"));
+  const lines: Array<string | StatusRow> = [
+    { text: "Status", painted: sectionHeading("Status", paint, "accent") },
+    ...railStatusRows(snapshot, now, paint, project, branch, options.runEndedAt),
+  ];
+  lines.push({ text: "Agents", painted: sectionHeading("Agents", paint, "accent") });
 
   // Agent budget: at most `MAX_RAIL_AGENTS` ordered rows, active children first.
   const ordered = railAgentRows(snapshot, now, paint);
@@ -320,13 +384,13 @@ export function renderRightRail(
   let remaining = height === undefined ? Number.POSITIVE_INFINITY : height - lines.length;
 
   for (const row of active) {
-    lines.push(row.text);
+    lines.push(row);
     remaining -= 1;
   }
   let shownFinished = 0;
   for (const row of finished) {
     if (remaining - SPACING.gap <= 0) break;
-    lines.push(row.text);
+    lines.push(row);
     remaining -= 1;
     shownFinished += 1;
   }
@@ -337,7 +401,12 @@ export function renderRightRail(
   // Todos last: with room the full checklist, otherwise the `Todos · n/m` line.
   lines.push("");
   const todoBudget = height === undefined ? undefined : Math.max(0, remaining - 1);
-  lines.push(...renderTodos(deriveTodos(snapshot), { paint, maxRows: todoBudget }));
+  const todos = deriveTodos(snapshot);
+  const paintedTodos = renderTodos(todos, { paint, maxRows: todoBudget });
+  // The same pure section rendered plain lets the frame measure each column while
+  // the painted rows keep their color, so a themed Todos block stays aligned.
+  const plainTodos = renderTodos(todos, { paint: PLAIN_PAINT, maxRows: todoBudget });
+  lines.push(...paintedTodos.map((painted, index) => ({ text: plainTodos[index] ?? painted, painted })));
 
   return statusBox(statusTitle(snapshot), lines, width, paint);
 }

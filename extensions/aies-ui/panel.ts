@@ -93,16 +93,24 @@ function title(snapshot: AgentsSnapshot): string {
 }
 
 /**
- * Elapsed time of the run in flight. It reads only the recorded run start so an
- * idle dock never turns the whole session into a run clock; with no run there is
- * no timer at all. `endAt`, when supplied, freezes the reading at the run's own
- * end so a finished run keeps its final duration instead of growing forever.
+ * Elapsed time of the current stage, in flight. While a delegation is active it
+ * measures that stage from its own start; otherwise it measures the run from the
+ * recorded run start. It never falls back to the session start, so an idle dock
+ * shows nothing. `endAt`, when supplied, freezes a finished run at its own end so
+ * it keeps its final duration instead of growing forever.
  */
 export function activeRunElapsed(snapshot: AgentsSnapshot, now: number, endAt?: number): string | undefined {
-  const startedAt = runStartedAt(snapshot);
+  const runStart = runStartedAt(snapshot);
+  if (typeof endAt === "number" && Number.isFinite(endAt)) {
+    if (runStart === undefined) return undefined;
+    return formatDuration(Math.max(0, Math.min(endAt, now) - runStart));
+  }
+
+  const delegations = snapshot.delegations;
+  const stageStart = delegations?.activeStartedAt;
+  const startedAt = typeof stageStart === "number" && Number.isFinite(stageStart) ? stageStart : runStart;
   if (startedAt === undefined) return undefined;
-  const end = typeof endAt === "number" && Number.isFinite(endAt) ? Math.min(endAt, now) : now;
-  return formatDuration(Math.max(0, end - startedAt));
+  return formatDuration(Math.max(0, now - startedAt));
 }
 
 /**
@@ -148,14 +156,47 @@ export function statusTitle(snapshot: AgentsSnapshot): string {
   return title(snapshot);
 }
 
+/**
+ * One framed content row. `text` is the plain, aligned cell used to measure and
+ * clip the row; `painted` is the finished cell to emit (defaults to `text`), so a
+ * caller can color a row by segment without the color's escape length changing
+ * the column layout.
+ */
+export interface StatusRow {
+  text: string;
+  painted?: string;
+}
+
+/** Clip a plain cell to `width` without collapsing its intentional column padding. */
+function cellClip(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (text.length <= width) return text;
+  if (width === 1) return "…";
+  return `${text.slice(0, width - 1)}…`;
+}
+
+/** Frame one content row: measure the plain text, emit its painted form when it fits. */
+function framedRow(row: StatusRow, inner: number): string {
+  const plain = cellClip(row.text, inner);
+  if (plain !== row.text || typeof row.painted !== "string") {
+    return `│ ${plain.padEnd(inner)} │`;
+  }
+  return `│ ${row.painted}${" ".repeat(Math.max(0, inner - plain.length))} │`;
+}
+
 /** Box a title and its bounded rows; exported for the rail's reused framing. */
-export function statusBox(titleText: string, rows: string[], width: number, paint: Paint): string[] {
+export function statusBox(
+  titleText: string,
+  rows: Array<string | StatusRow>,
+  width: number,
+  paint: Paint,
+): string[] {
   const inner = width - 4;
   const label = ` ${clip(titleText, Math.max(1, width - 6))} `;
   const top = `╭─${label}${"─".repeat(Math.max(0, width - 3 - label.length))}╮`;
   return [
     paint.fg("accent", top),
-    ...rows.map((row) => `│ ${clip(row, inner).padEnd(inner)} │`),
+    ...rows.map((row) => (typeof row === "string" ? `│ ${clip(row, inner).padEnd(inner)} │` : framedRow(row, inner))),
     paint.fg("accent", `╰${"─".repeat(width - 2)}╯`),
   ];
 }

@@ -627,8 +627,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         usageCache.totalTokens += usage.totalTokens;
       }
       const total = usage.cost && typeof usage.cost === "object" ? (usage.cost as { total?: unknown }).total : undefined;
-      if (typeof total === "number" && Number.isFinite(total)) usageCache.cost += total;
-      else usageCache.costKnown = false;
+      if (typeof total === "number" && Number.isFinite(total)) {
+        usageCache.cost += total;
+        usageCache.costKnown = true;
+      }
+      // An entry with no cost is skipped, never latched: the observed costs still
+      // sum, and a later entry that reports a cost restores a known reading.
     }
     // Every entry up to the current length is now reduced exactly once, including
     // the ones skipped by the guards above.
@@ -947,11 +951,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     if (!ui || typeof ui.setWidget !== "function") return;
 
     const activity = state.activity;
-    // Visual ownership: while the physical rail is showing at a wide terminal it
-    // owns live child activity, so the transcript must not also show the inline
-    // card. Wherever the rail is unavailable it remains the fallback.
-    const railShowing = railHandle?.showing() === true;
-    const wanted = !railShowing && activity ? isActivityVisible(activity, Date.now()) : false;
+    // The card above the input is the live child's fixed trace and the rail's
+    // sibling, not its replacement: it renders whenever a child is running, even
+    // while the physical rail is showing at a wide terminal. The rail may echo the
+    // same child in its Agents section; that is a different surface. The finish
+    // edge still clears it, and `isActivityVisible` owns that lifecycle.
+    const wanted = activity ? isActivityVisible(activity, Date.now()) : false;
 
     if (wanted) {
       if (widgetRegistered) return;
@@ -1246,8 +1251,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
    * re-arm it only when the wanted period differs from the current one.
    */
   function armClock(ctx: ExtensionContext): void {
+    // A child, a live delegation stage and an active run all move telemetry, so
+    // all three keep the fast cadence. Only a truly idle session may slow down.
+    const delegationActive = state.delegations.activeStartedAt !== undefined;
+    const runActive = state.runUsage.active === true;
     const childActive = state.activity !== undefined && typeof state.activity.finishedAt !== "number";
-    const wanted = childActive ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS;
+    const wanted = delegationActive || runActive || childActive ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS;
     if (clock && clockPeriod === wanted) return;
 
     stopClock();

@@ -298,7 +298,7 @@ describe("right rail product composition", () => {
 
     assert.match(text, /Proyecto\s+AIES/u);
     assert.match(text, /Ticket\s+EZE-417/u);
-    assert.match(text, /Etapa\s+WORK/u);
+    assert.match(text, /Etapa\s+◆ WORK/u);
     assert.match(text, /Modelo\s+Qwen 3\.8 Flash/u);
     assert.match(text, /Proveedor\s+openrouter/u);
     assert.match(text, /Contexto\s+42k/u);

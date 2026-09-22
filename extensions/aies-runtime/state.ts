@@ -346,7 +346,7 @@ function emptyRunUsage(): RunUsageState {
   return {
     baseline: null,
     main: { totalTokens: 0, cost: null },
-    agents: { totalTokens: 0, cost: 0 },
+    agents: { totalTokens: 0, cost: null },
     total: { totalTokens: 0, cost: null },
     active: false,
     startedAt: undefined,
@@ -730,7 +730,8 @@ export function applyRunStart(state: AiesState, now: number): AiesState {
   next.runUsage = {
     baseline: null,
     main: { totalTokens: 0, cost: null },
-    agents: { totalTokens: 0, cost: 0 },
+    // No child has been observed yet: the Agents cost is unknown, not zero.
+    agents: { totalTokens: 0, cost: null },
     total: { totalTokens: 0, cost: null },
     active: true,
     startedAt: now,
@@ -768,16 +769,25 @@ export function applyRunUsage(
     main = { ...current.main };
   } else {
     const parent = normalizeUsage(parentUsage);
-    baseline = current.active && current.baseline === null ? parent : current.baseline;
+    // An all-zero cumulative sample is not an observation. A session with no
+    // assistant usage reports `{ totalTokens: 0, cost: 0 }`, and treating that as
+    // an observed zero fabricates a `$0.00` at IDLE. A genuinely observed zero
+    // cost always arrives with a nonzero token count, so only the all-zero case
+    // is degraded to an unknown cost.
+    const observed: UsageBucket =
+      parent.totalTokens === 0 && parent.cost === 0 ? { totalTokens: 0, cost: null } : parent;
+    baseline = current.active && current.baseline === null ? observed : current.baseline;
     main = baseline
       ? {
-          totalTokens: Math.max(0, parent.totalTokens - baseline.totalTokens),
+          totalTokens: Math.max(0, observed.totalTokens - baseline.totalTokens),
           cost:
-            parent.cost !== null && baseline.cost !== null
-              ? Math.max(0, parent.cost - baseline.cost)
+            observed.cost !== null
+              // An unknown baseline observed no cost, so it contributes zero and
+              // cannot permanently withhold the run's own observed cost.
+              ? Math.max(0, observed.cost - (baseline.cost ?? 0))
               : null,
         }
-      : parent;
+      : observed;
   }
 
   const childBuckets = (agentsSnapshot ?? []).map((record) => ({
@@ -786,11 +796,21 @@ export function applyRunUsage(
   }));
   const aggregate = aggregateUsage(main, childBuckets);
 
+  // "No observed child" is unknown, never a fabricated zero. `aggregateUsage`
+  // keeps its historical contract for its direct callers, so the run store
+  // corrects the empty-registry case here, and Total sums only observed buckets.
+  const agents: UsageBucket = childBuckets.length === 0
+    ? { totalTokens: aggregate.agents.totalTokens, cost: null }
+    : aggregate.agents;
+
   next.runUsage = {
     baseline,
     main: aggregate.main,
-    agents: aggregate.agents,
-    total: aggregate.total,
+    agents,
+    total: {
+      totalTokens: aggregate.total.totalTokens,
+      cost: partialCost(aggregate.main.cost, agents.cost),
+    },
     active: current.active,
     startedAt: current.startedAt,
   };
@@ -846,6 +866,19 @@ function usageBucketOf(value: unknown): UsageBucket | null {
   const totalTokens = positive(source.totalTokens);
   if (totalTokens === null && !("cost" in source)) return null;
   return { totalTokens: totalTokens ?? 0, cost: finiteCost(source.cost) };
+}
+
+/** Sum only the observed costs; `null` when neither was observed. */
+function partialCost(...costs: Array<number | null>): number | null {
+  let total = 0;
+  let observed = false;
+  for (const cost of costs) {
+    if (typeof cost === "number" && Number.isFinite(cost)) {
+      total += cost;
+      observed = true;
+    }
+  }
+  return observed ? total : null;
 }
 
 /** The persisted projection of the state; everything the UI shows derives from it. */
@@ -1119,10 +1152,10 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     : undefined) as Record<string, unknown> | undefined;
   if (rawRunUsage) {
     const main = usageBucketOf(rawRunUsage.main) ?? { totalTokens: 0, cost: null };
-    const agents = usageBucketOf(rawRunUsage.agents) ?? { totalTokens: 0, cost: 0 };
+    const agents = usageBucketOf(rawRunUsage.agents) ?? { totalTokens: 0, cost: null };
     const total = usageBucketOf(rawRunUsage.total) ?? {
       totalTokens: main.totalTokens + agents.totalTokens,
-      cost: main.cost !== null && agents.cost !== null ? main.cost + agents.cost : null,
+      cost: partialCost(main.cost, agents.cost),
     };
     state.runUsage = {
       baseline: usageBucketOf(rawRunUsage.baseline),
