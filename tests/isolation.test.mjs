@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -73,10 +73,21 @@ function parseInfo(stdout) {
   return info;
 }
 
-/** Runs pi in RPC mode through the launcher and returns the decoded records. */
-function rpc(env, commands, extraArgs = []) {
+/**
+ * Runs pi in RPC mode through the launcher and returns the decoded records.
+ *
+ * `options.cwd` is optional and additive: existing call sites keep inheriting
+ * the process working directory when they omit it, while the catalog tests can
+ * launch the child from an unrelated directory.
+ */
+function rpc(env, commands, extraArgs = [], options = {}) {
   const input = `${commands.map((command) => JSON.stringify(command)).join("\n")}\n`;
-  const result = spawnSync(AIES, ["--mode", "rpc", ...extraArgs], { env, input, encoding: "utf8" });
+  const result = spawnSync(AIES, ["--mode", "rpc", ...extraArgs], {
+    env,
+    input,
+    encoding: "utf8",
+    cwd: options.cwd,
+  });
 
   const records = [];
   for (const line of result.stdout.split("\n")) {
@@ -230,6 +241,198 @@ describe("AIES isolation", () => {
 
     const leaked = commands.filter((command) => command.sourceInfo?.path?.startsWith(PI_PROFILE));
     assert.deepEqual(leaked, [], `commands leaked from the ambient Pi profile: ${JSON.stringify(leaked)}`);
+  });
+
+  it("registers the Command Code provider from the profile extension, offline", () => {
+    // A dummy value is enough: pi only needs auth to be *configured* for the
+    // provider's models to count as available. Nothing here talks to the network.
+    const { records } = rpc(
+      { ...env, COMMANDCODE_API_KEY: "aies-isolation-check-not-a-key" },
+      [
+        { id: "1", type: "get_commands" },
+        { id: "2", type: "get_available_models" },
+      ],
+      ["--no-session"],
+    );
+
+    const provider = responseFor(records, "get_commands")
+      .commands
+      .find((command) => command.name === "aies-commandcode");
+    assert.ok(provider, "the Command Code provider extension is not loaded");
+    assert.equal(provider.sourceInfo.baseDir, agentDir);
+    assert.equal(
+      provider.sourceInfo.origin,
+      "top-level",
+      "the provider is a top-level profile extension, not a package",
+    );
+
+    const catalog = JSON.parse(
+      readFileSync(join(REPO, "extensions", "aies-provider-commandcode", "models.json"), "utf8"),
+    );
+    const registered = responseFor(records, "get_available_models")
+      .models
+      .filter((model) => model.provider === "commandcode");
+
+    assert.equal(
+      registered.length,
+      catalog.length,
+      "pi must see exactly the models in the committed static catalog",
+    );
+    assert.deepEqual(
+      registered.map((model) => model.id).sort(),
+      catalog.map((model) => model.id).sort(),
+    );
+    for (const model of registered) {
+      assert.equal(model.baseUrl, "https://api.commandcode.ai/provider/v1");
+    }
+
+    // Both transports come from the single registerProvider call.
+    const anthropic = registered.filter((model) => model.api === "anthropic-messages").map((model) => model.id);
+    assert.deepEqual(
+      [...anthropic].sort(),
+      catalog.filter((model) => model.api === "anthropic-messages").map((model) => model.id).sort(),
+    );
+    assert.ok(anthropic.length > 0, "no model kept the Anthropic transport");
+    assert.ok(anthropic.length < registered.length, "no model kept the OpenAI transport");
+  });
+
+  describe("Command Code stored credentials", () => {
+    const CATALOG_FILE = join(REPO, "extensions", "aies-provider-commandcode", "models.json");
+    const CATALOG = JSON.parse(readFileSync(CATALOG_FILE, "utf8"));
+    const COMMANDCODE_BASE_URL = "https://api.commandcode.ai/provider/v1";
+    // Measured against Pi 0.87.0: the committed catalog serves this many models.
+    const CATALOG_SIZE = 76;
+
+    const availableCommandCodeModels = (records) =>
+      responseFor(records, "get_available_models").models.filter((model) => model.provider === "commandcode");
+
+    /**
+     * Bootstraps a fresh isolated profile and stores a dummy Command Code
+     * credential at `<agentDir>/auth.json`, the ordinary `/login commandcode`
+     * path. The value is obviously not a key and never leaves this temp home.
+     */
+    function storedCredentialHome() {
+      const stored = mkdtempSync(join(tmpdir(), "aies-commandcode-stored-"));
+      const storedEnv = isolatedEnv(stored);
+      delete storedEnv.COMMANDCODE_API_KEY;
+      runAies(storedEnv, ["--aies-info"]);
+
+      const authFile = join(stored, "agent", "auth.json");
+      writeFileSync(
+        authFile,
+        JSON.stringify({ commandcode: { type: "api_key", key: "aies-isolation-check-not-a-key" } }),
+        { mode: 0o600 },
+      );
+      return { stored, storedEnv, authFile };
+    }
+
+    it("discovers a persisted credential with no environment variable", () => {
+      const { stored, storedEnv, authFile } = storedCredentialHome();
+      try {
+        assert.ok(existsSync(authFile), "the stored credential must exist in the isolated profile");
+        assert.equal(storedEnv.COMMANDCODE_API_KEY, undefined);
+
+        const { status, records } = rpc(storedEnv, [{ id: "1", type: "get_available_models" }], ["--no-session"]);
+        assert.equal(status, 0, "the stored-credential run must exit cleanly");
+
+        const registered = availableCommandCodeModels(records);
+        assert.equal(registered.length, CATALOG_SIZE, "a stored credential must surface the whole catalog");
+        assert.equal(registered.length, CATALOG.length);
+        assert.deepEqual(
+          registered.map((model) => model.id).sort(),
+          CATALOG.map((model) => model.id).sort(),
+        );
+        for (const model of registered) {
+          assert.equal(model.baseUrl, COMMANDCODE_BASE_URL);
+        }
+
+        // Both transports come from the single registerProvider call.
+        const anthropic = registered.filter((model) => model.api === "anthropic-messages");
+        assert.ok(anthropic.length > 0, "the Anthropic transport disappeared from the stored-credential path");
+        assert.ok(
+          anthropic.length < registered.length,
+          "the OpenAI transport disappeared from the stored-credential path",
+        );
+      } finally {
+        rmSync(stored, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps the provider registered but disconnected without a credential", () => {
+      const disconnected = mkdtempSync(join(tmpdir(), "aies-commandcode-disconnected-"));
+      const disconnectedEnv = isolatedEnv(disconnected);
+      delete disconnectedEnv.COMMANDCODE_API_KEY;
+      try {
+        runAies(disconnectedEnv, ["--aies-info"]);
+        assert.equal(
+          existsSync(join(disconnected, "agent", "auth.json")),
+          false,
+          "bootstrap must not fabricate a credential",
+        );
+
+        const { status, records } = rpc(
+          disconnectedEnv,
+          [
+            { id: "1", type: "get_commands" },
+            { id: "2", type: "get_available_models" },
+          ],
+          ["--no-session"],
+        );
+        assert.equal(status, 0, "the disconnected run must exit cleanly");
+
+        const provider = responseFor(records, "get_commands")
+          .commands
+          .find((command) => command.name === "aies-commandcode");
+        assert.ok(provider, "the provider extension must load even when disconnected");
+        assert.equal(provider.sourceInfo.origin, "top-level");
+        assert.equal(provider.sourceInfo.baseDir, join(disconnected, "agent"));
+
+        assert.equal(
+          availableCommandCodeModels(records).length,
+          0,
+          "an unauthenticated provider must contribute zero available models",
+        );
+      } finally {
+        rmSync(disconnected, { recursive: true, force: true });
+      }
+    });
+
+    it("resolves the catalog from an unrelated working directory", () => {
+      const { stored, storedEnv } = storedCredentialHome();
+      try {
+        const { status, records } = rpc(
+          storedEnv,
+          [{ id: "1", type: "get_available_models" }],
+          ["--no-session"],
+          { cwd: tmpdir() },
+        );
+        assert.equal(status, 0, "the unrelated-cwd run must exit cleanly");
+
+        const registered = availableCommandCodeModels(records);
+        assert.equal(registered.length, CATALOG_SIZE);
+        assert.deepEqual(
+          registered.map((model) => model.id).sort(),
+          CATALOG.map((model) => model.id).sort(),
+        );
+      } finally {
+        rmSync(stored, { recursive: true, force: true });
+      }
+    });
+
+    it("stays offline: every stored-credential run exits 0 under PI_OFFLINE", () => {
+      const { stored, storedEnv } = storedCredentialHome();
+      try {
+        assert.equal(storedEnv.PI_OFFLINE, "1", "the new tests must keep startup zero-network");
+        const { status } = rpc(storedEnv, [{ id: "1", type: "get_available_models" }], ["--no-session"]);
+        assert.equal(status, 0);
+      } finally {
+        rmSync(stored, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves the ambient Pi profile untouched", () => {
+      assert.deepEqual(fingerprintProfile(), baseline);
+    });
   });
 
   it("keeps global cross-harness skills out", () => {
