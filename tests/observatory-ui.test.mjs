@@ -469,6 +469,33 @@ describe("observatory UI seam", () => {
     await pending;
   });
 
+  it("stays read-only: non-navigation keys change nothing and send nothing", async () => {
+    const host = createHost();
+    await host.start();
+    observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
+    observatory.begin({ role: "verify", modelLabel: "Claude 4", at: START_MS + 1_000 });
+
+    const pending = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const { component } = host.customComponents.at(-1);
+    const before = component.render(100).join("\n");
+
+    // Enter, newline, space, tab and plain letters are not navigation or close:
+    // the read-only observer must neither move the selection, settle the modal
+    // nor reach a session, model or tool surface.
+    for (const key of ["\r", "\n", " ", "\t", "x", "s", "return"]) {
+      component.handleInput(key);
+    }
+
+    assert.equal(component.render(100).join("\n"), before, "non-navigation keys must not change the view");
+    assert.equal(host.customComponents.length, 1, "no key may settle or reopen the modal");
+    assert.deepEqual(host.sendMessages, [], "no key may send a message");
+    assert.deepEqual(host.notifications, [], "no key may notify");
+
+    component.handleInput("\x1b");
+    await pending;
+  });
+
   it("closes /agents on Esc and q, clears the repaint handle and reopens cleanly", async () => {
     const host = createHost();
     await host.start();

@@ -8,8 +8,8 @@
  * - `selectAgent` is the wrap-around index math the runtime binds keys to.
  *
  * Records are the observatory's immutable projection. A renderer never invents a
- * fact: an unavailable model, token count, cost or file list renders as `—`, and
- * a value is never estimated or recalculated. There is no transcript, no
+ * fact: an unavailable model, token count, cost, context or file list renders as
+ * `—`, and a value is never estimated or recalculated. There is no transcript, no
  * reasoning and no child prose beyond the mechanical activity wording already
  * carried by the record.
  *
@@ -22,7 +22,7 @@ import { shortPath, type AgentRecord } from "../aies-agents/observatory.ts";
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import { MODAL_FRAME_CHROME, MODAL_MAX_WIDTH, renderModalFrame, type ModalLine } from "./modal.ts";
 import { capitalize, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { PLAIN_PAINT, type Paint } from "./paint.ts";
+import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { GLYPH } from "./vocabulary.ts";
 
 /** Mechanical activity entries the detail block shows. */
@@ -31,7 +31,7 @@ const MAX_RECENT = 5;
 /** Paths the `/agents` detail row lists before it collapses the rest into `… N más`. */
 const MAX_DETAIL_PATHS = 3;
 
-const VIEW_LABEL_WIDTH = 13;
+const VIEW_LABEL_WIDTH = 16;
 
 /** The left column width of the wide, side-by-side layout. */
 const LIST_COLUMN_WIDTH = 30;
@@ -174,6 +174,18 @@ function countValue(value: unknown): string {
 }
 
 /**
+ * Context tokens for a child. The Observatory's `AgentRecord` and its per-child
+ * usage bucket expose no context field today, so this reads a structural
+ * `contextTokens` only if a future record adds one and otherwise returns empty,
+ * which the row renders as `—`. It is never derived from the Parent's context
+ * window: a child's context is a different measurement and must not be faked.
+ */
+function contextValue(record: AgentRecord): string {
+  const tokens = (record as AgentRecord & { contextTokens?: unknown }).contextTokens;
+  return tokensValue(tokens);
+}
+
+/**
  * The selected record's structured detail. Every telemetry row is always
  * present and an unmeasured value renders as `—`: a missing sample must not look
  * like a fact the renderer omitted.
@@ -190,9 +202,10 @@ function detailLines(record: AgentRecord, now: number, width: number): ModalLine
   add("tiempo", elapsedBetween(record, now) ?? "");
   add("tokens", tokensValue(record.totalTokens));
   add("coste", costValue(record.cost));
+  add("contexto", contextValue(record));
   add("herramientas", countValue(record.toolCount));
   add("archivos", changedPathsValue(Array.isArray(record.changedPaths) ? record.changedPaths : []));
-  add("resultado", textValue(record.result));
+  add("resultado final", textValue(record.result));
 
   const activities = Array.isArray(record.activities) ? record.activities.slice(0, MAX_RECENT) : [];
   if (activities.length > 0) {
@@ -222,17 +235,55 @@ function listWindow(count: number, index: number, max: number): number[] {
   return positions;
 }
 
+/** The semantic tone of a child's lifecycle, from the shared vocabulary palette. */
+function statusTone(status: AgentRecord["status"]): SemanticColor {
+  switch (status) {
+    case "completed":
+      return "success";
+    case "failed":
+      return "error";
+    case "blocked":
+      return "warning";
+    default:
+      return "running";
+  }
+}
+
+/**
+ * The human state label of a child, matching the panel/rail wording so a child
+ * reads the same way everywhere (`activo`/`completado`/`falló`/`bloqueado`).
+ */
+function statusLabel(status: AgentRecord["status"]): string {
+  switch (status) {
+    case "completed":
+      return "completado";
+    case "failed":
+      return "falló";
+    case "blocked":
+      return "bloqueado";
+    default:
+      return "activo";
+  }
+}
+
 /** The selectable list rows, each clipped to the column width. */
 function listLines(records: readonly AgentRecord[], index: number, width: number): ModalLine[] {
   return listWindow(records.length, index, AGENTS_VISIBLE_ROWS).map((position) => {
     const record = records[position];
     const marker = position === index ? "▸" : " ";
-    const text = hardClip(`${marker} ${statusGlyph(record)} ${agentLabel(record, position)}  ${record.status}`, width);
-    return { text, color: position === index ? "selection" : "dim" };
+    const chip = `${statusGlyph(record)} ${statusLabel(record.status)}`;
+    const text = hardClip(`${marker} ${agentLabel(record, position)}  ${chip}`, width);
+    return { text, color: position === index ? "selection" : statusTone(record.status) };
   });
 }
 
-/** Join two bounded columns row by row into single, width-safe rows. */
+/**
+ * Join two bounded columns row by row into single, width-safe rows. The shared
+ * frame paints exactly one tone per line, so a combined row takes the left list
+ * entry's tone (selection or the child's lifecycle) whenever a list line exists,
+ * and falls back to the detail tone only for the rows below the list. This is
+ * what keeps the left column's state chips painted without a second renderer.
+ */
 function composeColumns(
   left: readonly ModalLine[],
   right: readonly ModalLine[],
@@ -245,7 +296,10 @@ function composeColumns(
   for (let index = 0; index < count; index += 1) {
     const cell = hardClip(left[index]?.text ?? "", leftWidth);
     const padded = cell.length >= leftWidth ? cell : `${cell}${" ".repeat(leftWidth - cell.length)}`;
-    rows.push({ text: hardClip(`${padded}${" ".repeat(gap)}${right[index]?.text ?? ""}`, totalWidth), color: "text" });
+    rows.push({
+      text: hardClip(`${padded}${" ".repeat(gap)}${right[index]?.text ?? ""}`, totalWidth),
+      color: left[index]?.color ?? right[index]?.color ?? "text",
+    });
   }
   return rows;
 }

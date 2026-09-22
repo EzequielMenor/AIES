@@ -50,6 +50,24 @@ function listRowCount(lines) {
   return lines.filter((line) => /#\d+/u.test(line)).length;
 }
 
+/** A paint that records every (tone, text) pair the shared frame asks for. */
+function capturingPaint() {
+  const calls = [];
+  return {
+    calls,
+    fg(color, text) {
+      calls.push({ color, text });
+      return text;
+    },
+  };
+}
+
+/** The tone the frame painted the line that contains `needle`, or undefined. */
+function toneOf(paint, needle) {
+  const call = paint.calls.find((entry) => entry.text.includes(needle));
+  return call ? call.color : undefined;
+}
+
 describe("selectAgent", () => {
   const list = [record({ id: "a" }), record({ id: "b" }), record({ id: "c" })];
 
@@ -145,14 +163,15 @@ describe("renderAgentsView", () => {
     assert.match(rich, /tiempo\s+00:31/u);
     assert.match(rich, /tokens\s+34k/u);
     assert.match(rich, /coste\s+\$0\.03/u);
+    assert.match(rich, /contexto\s+—/u);
     assert.match(rich, /herramientas\s+4/u);
     assert.match(rich, /archivos\s+src\/calculator\.js/u);
-    assert.match(rich, /resultado\s+1 archivo modificado/u);
+    assert.match(rich, /resultado final\s+1 archivo modificado/u);
 
     const bare = renderAgentsView([record({ id: "worker-1", role: "worker", status: "running" })], 0, T0, {
       width: 100,
     }).join("\n");
-    for (const label of ["modelo", "proveedor", "tokens", "coste", "herramientas", "archivos", "resultado"]) {
+    for (const label of ["modelo", "proveedor", "tokens", "coste", "contexto", "herramientas", "archivos", "resultado"]) {
       const row = bare.split("\n").find((line) => line.includes(label));
       assert.ok(row, `missing ${label} row:\n${bare}`);
       assert.match(row, /—/u, `${label} must be — when unavailable: ${row}`);
@@ -178,7 +197,79 @@ describe("renderAgentsView", () => {
     ).join("\n");
 
     assert.match(lines, /Editando src\/app\.ts/u);
-    assert.match(lines, /resultado\s+hecho/u);
+    assert.match(lines, /resultado final\s+hecho/u);
+  });
+
+  it("always shows a contexto row as em dash because a child has no context sample", () => {
+    const text = renderAgentsView(
+      [
+        record({
+          id: "worker-1",
+          role: "worker",
+          status: "running",
+          modelLabel: "Qwen 3.8 Flash",
+          providerLabel: "openrouter",
+          totalTokens: 34_000,
+          cost: 0.03,
+          toolCount: 4,
+        }),
+      ],
+      0,
+      T0 + 1_000,
+      { width: 100 },
+    ).join("\n");
+    const row = text.split("\n").find((line) => line.includes("contexto"));
+    assert.ok(row, text);
+    assert.match(row, /contexto\s+—/u, row);
+  });
+
+  it("labels each agent state chip with the shared Spanish vocabulary", () => {
+    const list = [
+      record({ id: "worker-1", role: "worker", status: "running" }),
+      record({ id: "worker-2", role: "worker", status: "completed", startedAt: T0, finishedAt: T0 + 1_000 }),
+      record({ id: "worker-3", role: "worker", status: "blocked" }),
+      record({ id: "worker-4", role: "worker", status: "failed" }),
+    ];
+    const text = renderAgentsView(list, 0, T0 + 5_000, { width: 100 }).join("\n");
+
+    assert.match(text, /Worker #1\s+◇ activo/u);
+    assert.match(text, /Worker #2\s+✓ completado/u);
+    assert.match(text, /Worker #3\s+! bloqueado/u);
+    assert.match(text, /Worker #4\s+✗ falló/u);
+  });
+
+  it("paints each stacked list row with the selection or lifecycle tone", () => {
+    const paint = capturingPaint();
+    const list = [
+      record({ id: "worker-1", role: "worker", status: "running" }),
+      record({ id: "worker-2", role: "worker", status: "completed", startedAt: T0, finishedAt: T0 + 1_000 }),
+      record({ id: "worker-3", role: "worker", status: "blocked" }),
+      record({ id: "worker-4", role: "worker", status: "failed" }),
+    ];
+
+    renderAgentsView(list, 0, T0 + 5_000, { width: 50, paint });
+
+    assert.equal(toneOf(paint, "Worker #1"), "selection");
+    assert.equal(toneOf(paint, "Worker #2"), "success");
+    assert.equal(toneOf(paint, "Worker #3"), "warning");
+    assert.equal(toneOf(paint, "Worker #4"), "error");
+  });
+
+  it("keeps the lifecycle tone mapping in the side-by-side layout", () => {
+    const paint = capturingPaint();
+    const list = [
+      record({ id: "worker-1", role: "worker", status: "running" }),
+      record({ id: "worker-2", role: "worker", status: "completed", startedAt: T0, finishedAt: T0 + 1_000 }),
+      record({ id: "worker-3", role: "worker", status: "blocked" }),
+      record({ id: "worker-4", role: "worker", status: "failed" }),
+    ];
+
+    renderAgentsView(list, 2, T0 + 5_000, { width: 100, paint });
+
+    assert.equal(toneOf(paint, "Worker #1"), "running");
+    assert.equal(toneOf(paint, "Worker #2"), "success");
+    assert.equal(toneOf(paint, "Worker #3"), "selection");
+    assert.equal(toneOf(paint, "Worker #4"), "error");
   });
 
   it("composes list and detail side by side on a wide terminal", () => {
