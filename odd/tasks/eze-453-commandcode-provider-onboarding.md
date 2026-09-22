@@ -84,12 +84,12 @@ connected + credential rejected → not selectable, shown with the observed stat
 - [x] **T2 — `/aies-models` provider sections + provider step.** `providers.ts` projection; `role → provider → model → thinking`. Suite 915.
 - [x] **T3 — `/aies-commandcode` real auth status + headless bounding.** Registry-driven `auth`/`disponibles` lines; the headless `No seleccionables:` block no longer truncates away. Suite 928.
 - [x] **T4 — Isolation: stored-credential discovery.** 76 models resolve from `auth.json` with no env var, 0 when disconnected, catalog resolves from an unrelated `cwd`, still offline. Suite 933.
-- [ ] **T10 — `/aies-models` v2 UX (user-requested mid-ticket).** Live type-ahead search, Pi-style `all`/`scoped` Tab toggle, the role step shows each role's current model, and the overlay's non-selectable block collapses to one bounded summary line.
-- [ ] **T5 — Docs.** Minimal README provider section (`/login commandcode` as the ordinary path, env var as CI/headless) + a DECISIONS entry for the credential-health policy.
-- [ ] **T6 — Repository gates.** `npm test`, `npm run check:isolation`, `bash -n bin/aies scripts/*.sh`, `git diff --check`.
-- [ ] **T7 — Real smoke (EZE-453).** Isolated `AIES_HOME`: fresh profile → disconnected UX → `/login commandcode` → restart → auth persists → `/aies-models` → select a real model → minimal real request succeeds → Anthropic 401 not usable. No secret ever printed.
-- [ ] **T8 — EZE-436 real-use gate.** One disposable small fixture driving Explore → Worker → Verify; check the active-agent card, live elapsed/tokens/cost, `/agents` child data, card teardown, single DONE output.
-- [ ] **T9 — Git discipline + Linear.** Stage only EZE-453 files, preserve concurrent changes byte-for-byte, work-unit Conventional Commits, EZE-453 → Done.
+- [x] **T10 — `/aies-models` v2 UX (user-requested mid-ticket).** Live type-ahead search, Pi-style `all`/`scoped` Tab toggle, the role step shows each role's current model, and the overlay's non-selectable block collapses to one bounded summary line.
+- [x] **T5 — Docs.** Minimal README provider section (`/login commandcode` as the ordinary path, env var as CI/headless) + a DECISIONS entry for the credential-health policy.
+- [x] **T6 — Repository gates.** `npm test`, `npm run check:isolation`, `bash -n bin/aies scripts/*.sh`, `git diff --check`.
+- [x] **T7 — Real smoke (EZE-453).** Isolated `AIES_HOME`: fresh profile → disconnected UX → `/login commandcode` → restart → auth persists → `/aies-models` → select a real model → minimal real request succeeds → Anthropic 401 not usable. No secret ever printed.
+- [ ] **T8 (BLOQUEADO → EZE-454) — EZE-436 real-use gate.** One disposable small fixture driving Explore → Worker → Verify; check the active-agent card, live elapsed/tokens/cost, `/agents` child data, card teardown, single DONE output.
+- [x] **T9 — Git discipline + Linear.** Stage only EZE-453 files, preserve concurrent changes byte-for-byte, work-unit Conventional Commits, EZE-453 → Done.
 
 ## User feedback round (mid-ticket)
 
@@ -124,4 +124,54 @@ section, no change to the ambient Pi installation, no `git add .`, no
 
 | Task | Outcome | Commit |
 |---|---|---|
-| — | — | — |
+| T1 | Credential-health core: pure classifier, isolated atomic store, one `turn_end` observer. 38 tests, TDD red→green. | `8fa21ce` |
+| T2 | Provider projection + provider-first picker. Suite 915. | `cd9ff06` |
+| T3 | `/aies-commandcode` reads `getProviderAuthStatus` instead of `process.env`; the headless `No seleccionables:` block no longer truncates away at 12 lines. Suite 928. | `cd9ff06` |
+| T4 | Stored credential with **no** env var resolves 76 models; 0 when disconnected; catalog resolves from an unrelated `cwd`; still offline. Suite 933. | `d721304` |
+| T10 | Type-ahead search, `all`/`scoped` Tab toggle, per-role current model, one-line non-usable summary. Suite 982. | `cd9ff06` |
+| — | Measured `maxTokens` override: the provider API rejected 64000 for `poolside/laguna-s-2.1-free` with a real cap of 32768. Per-model override, not a global clamp change. Suite 995. | `d721304` |
+| T5 | README auth ordering corrected, `aies-providers` documented, D26 consequence amended, D27/D28 added. | `8907e5f` |
+| T6 | `npm test` 982/196 → 995/204 green; `npm run check:isolation` green with a temp `PI_CODING_AGENT_DIR`; `bash -n` silent; `git diff --check` clean; `~/.pi/agent/{settings,auth,models}.json` hashes identical before and after. | — |
+| T7 | Real smoke passed. See below. | — |
+| T8 | **Not conclusive.** Blocked by a pre-existing defect, filed as EZE-454. | — |
+| T9 | Five work-unit commits, explicit paths only, zero overlap with the concurrent EZE-436 unit. | `d721304`…`b6bacbb` |
+
+### T7 — real smoke, isolated `AIES_HOME`, tmux PTY, Pi 0.87.0
+
+| # | Step | Result |
+|---|---|---|
+| 1-2 | Fresh profile, AIES opened with no CommandCode auth | `auth.json` empty (2 bytes); dock auto-selected `anthropic / Claude Opus 4.8` |
+| 3 | Disconnected UX | `/aies-models` provider step: `2 providers no utilizables · commandcode, llama.cpp` |
+| 4 | Authenticate through the supported flow | `/login commandcode` → Pi listed `commandcode  Command Code · API key` → secret prompt `Login to Command Code / Enter API key` → Pi confirmed `Saved API key for Command Code. Credentials saved to /tmp/aies-eze453-smoke/agent/auth.json` |
+| 5-6 | Close and reopen | `C-d`, clean exit with a resume hint; relaunched |
+| 7 | Auth persists with **no** env var | `ENVVAR_AUSENTE` asserted in the same shell, then `› Command Code (76)` usable |
+| 8-9 | `/aies-models` | 76 CommandCode models selectable |
+| 10 | Select a real model | search `sante` → `Parent: commandcode/inclusionai/ling-3.0-flash-sante:free · off`; the vendor-prefixed id survived intact |
+| 11-12 | Minimal real request | answered `LISTO`; rail showed `Total 6.1k` tokens and `Coste Total $0.00` (a real zero, not `—`) |
+| 13 | Anthropic 401 not usable | a real 401 turn recorded `{provider: anthropic, status: 401, reason: authentication_error, fingerprint: 571e8d80…}` — digest only, no secret — and the provider step became `2 providers no utilizables · anthropic (401), llama.cpp` with Anthropic gone from the usable list |
+
+Also observed live: the health warning fired exactly once (`anthropic · credencial rechazada · HTTP 401 · authentication_error — no queda seleccionable en /aies-models`), and a provider HTTP 400 for `max_tokens` was correctly **not** classified as a credential rejection.
+
+### T8 — EZE-436 real-use gate: not conclusive
+
+A disposable fixture (`sum.mjs` with `a - b`, one failing `node --test`) was run with an explicit Explore → Worker → Verify instruction. `aies_delegate role=explore` failed:
+
+```
+### Explore Result: FAILED
+**Summary**: Explore session failed: No API key found for commandcode.
+```
+
+The Parent then solved the fixture inline (the file was fixed and the test passed), so the rail never entered a real child delegation and no EZE-436 evidence could be collected.
+
+Root cause, confirmed by reading the code: `delegate.ts` passes `modelRuntime: ctx.modelRegistry`; `isSessionModelRuntime` requires `getAuth`, which Pi's `ModelRegistry` facade does not expose (it has `getProviderAuth`), so the child is created with `modelRuntime: undefined`; the child loader also sets `noExtensions: true`, so it never registers `commandcode`; `resolveAgentModel` then falls back to the parent's `commandcode/...` model object, which the child runtime cannot authenticate. Built-in and `models.json` providers are unaffected, which is why earlier child smokes passed.
+
+This is a latent pre-existing defect that EZE-453 exposed by introducing the first extension-registered provider. It was **not** fixed here: `session.ts`, `explore.ts`, `worker.ts` and `verify.ts` all held uncommitted concurrent EZE-436 work at the time. Filed as **EZE-454** with the root cause, the files and the acceptance criteria.
+
+### Known limitations
+
+1. **EZE-454** — extension-registered provider models work for Parent but not for Explore/Worker/Verify.
+2. A credential rejection is only known after one real failing request; AIES never probes at startup, because zero-network startup is an isolation invariant.
+3. `maxTokens` is still a derivation for 68 of 76 models. Only `poolside/laguna-s-2.1-free` has a measured override; a full sweep was not run because it would spend real credits. The failure mode is a loud provider HTTP 400 naming the real cap.
+4. `enabledModels` remains Pi's Ctrl+P cycling scope. CommandCode models are reachable through `/aies-models` and the `all` scope but are not added to `enabledModels` automatically.
+5. `docs/DECISIONS.md` defines D26–D28 on this branch while `feat/aies-settings-reseed` has a **committed** D26 (settings reseed). Merging both needs a renumber.
+6. `.codegraph/` and `.cursor/rules/codegraph.mdc` are untracked tooling artifacts, deliberately left out of every commit.
