@@ -64,15 +64,17 @@ Do not change routing, autonomy, permissions, context governor, Linear, Verify p
   - GREEN: shared-frame 88-column centered overlay; wide list/detail and narrow stacked layouts; real stats with `—`; bounded retained mechanical activity; selected-id preservation; scoped `AGENTS_CHANNEL` repaint handle; ↑↓/j/k and Esc/q.
   - Checks: focused agent-view + observatory UI → 34/34 pass; adjacent bridge/observability → 60/60 pass; parent repeated the focused suite → 34/34 pass.
 
-- [ ] **T4 — Repository validation and design detector**
-  - Run focused tests, full test suite, isolation suite, shell syntax checks, and one Impeccable detector pass over changed UI targets.
-  - Inspect the final diff for scope, accidental churn, ANSI literals, and authority-boundary regressions.
+- [x] **T4 — Repository validation and design detector**
+  - Independent verifier `mucsefsb-2-mlju`: `git diff --check` clean; `npm test` and `npm run check:isolation` each passed 788/788; `bash -n bin/aies scripts/*.sh` passed; final worktree clean.
+  - Candidate inspection found no raw ANSI output, debug logging, model/tool calls, persistence, or out-of-scope routing/fullscreen/right-rail/release/README/website/AIES-011 changes. Pi 0.87 rail compatibility is base-only at `458b238`.
+  - The required one-time detector invocation was attempted exactly once after visual changes: `impeccable detect --json extensions/aies-ui extensions/aies-models extensions/aies-runtime/index.ts`; unavailable because `impeccable` is not installed (`command not found`).
 
-- [ ] **T5 — Manual isolated-profile validation and delivery report**
-  - Use `AIES_HOME=/tmp/...`; project policy forbids touching the default/ambient profile.
-  - Validate empty-state positioning at tall and short sizes; `/aies-models` border and complete keyboard flow; `/agents` empty/running/completed views, selection, live updates, responsive layouts, Esc/q cleanup, and reopen.
-  - Capture text/PNG evidence only if the existing cmux capture mechanism is available.
-  - Report root cause/design, files, tests, manual evidence, LOC, commits, and real remaining limitations; then stop.
+- [x] **T5 — Manual isolated-profile validation and delivery report**
+  - Used explicit `AIES_HOME=/tmp/aies-polish-profile`; `--aies-info` confirmed Pi 0.87.0 and all profile resource links target `/private/tmp/aies-final-observational-polish`. The shared default profile was never used or modified.
+  - Real tmux TUI at 120×40 confirmed the Pi 0.87 physical rail, tall upper-third empty-state flow, centered bordered `/aies-models`, j/Enter navigation to Explore/model selection, q cleanup, and the centered larger `/agents` empty modal.
+  - Resized the same live session to 60×22: the rail yielded, empty-state spacer collapsed without covering the editor, and both modals remained bounded; model help clipped with `…` rather than overflowing.
+  - Text capture saved outside the repository at `/tmp/aies-polish-manual-capture.txt` (40 lines). Running/completed agents, live repaint, selection preservation, Esc/q reopen, and Explore/Worker/Verify execution paths are covered by the focused/full automated suites.
+  - Attempted the requested real Explore/Worker/Verify smoke from the isolated TUI, but the configured Anthropic credential returned HTTP 401 `authentication_error: API key is invalid` before delegation. No child ran and no files changed; this is the only manual-validation limitation.
 
 ## Acceptance criteria
 
@@ -90,8 +92,11 @@ Do not change routing, autonomy, permissions, context governor, Linear, Verify p
 - Pi 0.87 docs confirm public overlays, `overlayOptions`, injected keybindings, `tui.requestRender()`, and component invalidation. Repository dependency compatibility must remain valid with locked Pi 0.85.1 APIs already used by `/aies-models`.
 - T1 complete and independently verified: new `extensions/aies-ui/modal.ts` shared frame; `/aies-models` uses a centered numeric preferred width and existing public overlay API. Focused tests pass 60/60. The temporary `node_modules` symlink used only for worktree test resolution was removed after the check. A cwd incident was diagnosed read-only: no T1 changes leaked into the dirty main worktree.
 - T2 complete and independently verified: the Pi-free renderer computes a height-relative spacer, while the existing above-editor widget reads public `TUI.terminal.rows` per render. Focused tests pass 38/38, including heights 6–120 and live resize 48→14. Eligibility, transcript, context, persistence, and widget architecture remain unchanged.
-- T3 complete: `/agents` now uses the shared frame and public overlay API, adapts between side-by-side and stacked layouts, renders only existing Observatory fields/activity, and repaints through the existing event bus with no polling or model calls. Focused tests pass 34/34; adjacent observability tests pass 60/60.
+- T3 complete and independently verified: `/agents` uses the shared frame and public overlay API, adapts between side-by-side and stacked layouts, renders only existing Observatory fields/activity, and repaints through the existing event bus with no polling or model calls. Focused tests pass 34/34; adjacent observability tests pass 60/60.
+- Branch rebased cleanly onto `458b238`, which supplies the separately validated Pi 0.87 rail compatibility fix as base-only history; polish commits are now `6e227ba`, `dc38a19`, and `9166371`.
+- T4 complete: full and isolation suites each pass 788/788, shell syntax and diff checks pass, scope inspection is clean. Impeccable detector unavailable after the mandated single attempt because its executable is not installed.
+- T5 complete with a real isolated Pi 0.87.0 TUI at 120×40 and 60×22. Visual layout, modal framing, responsive clipping, close/reopen behavior, and profile attribution were observed directly. The real three-role model smoke was attempted but blocked before delegation by an invalid configured Anthropic API key; deterministic role/verification suites remained green in the 788-test run.
 
 ## Next step
 
-Commit T3, independently verify it, then run the T4 repository gates and one Impeccable detector pass.
+Commit this final validation record and deliver the requested report; no release, push, PR, README, website, or AIES-011 work.
