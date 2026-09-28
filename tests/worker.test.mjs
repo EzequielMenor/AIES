@@ -24,6 +24,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import {
   createAgentSession,
   DefaultResourceLoader,
+  ModelRegistry,
   ModelRuntime,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -384,6 +385,45 @@ describe("AIES-004 Isolated Worker Agent", () => {
       const parentModel = { id: "parent-model", provider: "mock" };
       const resolved = await resolveWorkerModel(null, parentModel, "/dummy", {});
       assert.equal(resolved, parentModel);
+    });
+
+    it("fails explicitly when a configured worker model cannot resolve instead of using the parent model", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "aies-worker-invalid-"));
+      const previous = process.env.AIES_WORKER_MODEL;
+      delete process.env.AIES_WORKER_MODEL;
+      try {
+        writeFileSync(
+          join(dir, "aies.json"),
+          JSON.stringify({ agents: { worker: { model: "ghost/missing-model" } } }),
+        );
+        const runtime = await ModelRuntime.create({
+          authPath: join(dir, "auth.json"),
+          modelsPath: null,
+        });
+        const registry = new ModelRegistry(runtime);
+        const parentModel = { provider: "mock", id: "parent-model" };
+
+        await assert.rejects(
+          () => resolveWorkerModel(registry, parentModel, dir, {}),
+          /ghost\/missing-model/,
+          "an explicit but unresolvable worker model must not resolve to the parent model",
+        );
+
+        const handoff = await runWorkerAgent({
+          task: "This must not run on the parent model",
+          cwd: REPO_ROOT,
+          agentDir: dir,
+          modelRuntime: registry,
+          parentModel,
+        });
+
+        assert.equal(handoff.status, "failed", "the delegation must fail explicitly, not fall back");
+        assert.match(handoff.issues.join(" "), /ghost\/missing-model/);
+      } finally {
+        if (previous === undefined) delete process.env.AIES_WORKER_MODEL;
+        else process.env.AIES_WORKER_MODEL = previous;
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

@@ -22,8 +22,8 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createFauxCore, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import * as delegateModule from "../extensions/aies-agents/delegate.ts";
 import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
@@ -472,5 +472,109 @@ describe("AIES-010D T12 model and thinking wiring", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("EZE-454 child provider runtime wiring", () => {
+  const PROVIDER = "faux-ext";
+  const MODEL = "faux-ext-1";
+
+  function extensionConfig(core) {
+    return {
+      name: "Faux Extension",
+      api: core.api,
+      baseUrl: "http://localhost:0",
+      apiKey: "$FAUX_EXT_KEY",
+      streamSimple: core.streamSimple,
+      models: core.models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        reasoning: model.reasoning,
+        input: model.input,
+        cost: model.cost,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      })),
+    };
+  }
+
+  it("distinguishes the public ModelRegistry facade from a genuine ModelRuntime", () => {
+    assert.equal(sessionModule.isSessionModelRuntime({ getAuth() {}, streamSimple() {} }), true);
+    assert.equal(sessionModule.isSessionModelRegistry({ getAuth() {}, streamSimple() {} }), false);
+    assert.equal(sessionModule.isSessionModelRegistry({ find() {}, getAvailable() {} }), false);
+    assert.equal(
+      sessionModule.isSessionModelRegistry({
+        find() {},
+        getAvailable() {},
+        getRegisteredProviderConfig() {},
+      }),
+      true,
+    );
+  });
+
+  it("builds an isolated child runtime carrying only the selected registered provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-eze454-runtime-"));
+    const previous = process.env.FAUX_EXT_KEY;
+    delete process.env.FAUX_EXT_KEY;
+    try {
+      writeFileSync(
+        join(dir, "auth.json"),
+        JSON.stringify({ [PROVIDER]: { type: "api_key", key: "stored-only-key" } }),
+      );
+      const core = createFauxCore({
+        provider: PROVIDER,
+        models: [
+          {
+            id: MODEL,
+            name: "Faux Extension Model",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 10000,
+            maxTokens: 1000,
+          },
+        ],
+      });
+      const parentRuntime = await ModelRuntime.create({
+        authPath: join(dir, "auth.json"),
+        modelsPath: null,
+      });
+      parentRuntime.registerProvider(PROVIDER, extensionConfig(core));
+      const registry = new ModelRegistry(parentRuntime);
+      const model = registry.find(PROVIDER, MODEL);
+
+      const child = await sessionModule.createChildModelRuntime(dir, model, registry);
+
+      assert.ok(child, "a facade with a registered provider config yields an isolated child runtime");
+      assert.equal(sessionModule.isSessionModelRuntime(child), true);
+      assert.deepEqual(child.getRegisteredProviderIds(), [PROVIDER], "only the selected provider is copied");
+      assert.equal(
+        child.getProviderAuthStatus(PROVIDER).source,
+        "stored",
+        "the child runtime reads the isolated agentDir auth.json",
+      );
+      assert.equal(child.getRegisteredProviderConfig("anthropic"), undefined);
+
+      // A facade without a registered config for the provider keeps Pi's default
+      // child runtime, so built-in and models.json providers are unaffected.
+      const noConfig = await sessionModule.createChildModelRuntime(
+        dir,
+        { provider: "anthropic", id: "claude-opus-4-8" },
+        registry,
+      );
+      assert.equal(noConfig, undefined);
+    } finally {
+      if (previous === undefined) delete process.env.FAUX_EXT_KEY;
+      else process.env.FAUX_EXT_KEY = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps child extensions and skills disabled", () => {
+    const text = readFileSync(new URL("../extensions/aies-agents/session.ts", import.meta.url), "utf8");
+    assert.match(text, /noExtensions:\s*true/u, "child provider handoff must not re-enable extensions");
+    assert.match(text, /noSkills:\s*true/u, "child provider handoff must not re-enable skills");
   });
 });

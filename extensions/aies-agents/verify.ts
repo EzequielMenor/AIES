@@ -248,9 +248,6 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
   const { task, criteria, cwd, agentDir, modelRuntime, parentModel, signal, observatory } = options;
 
   const systemPrompt = resolveRoleSystemPrompt("verify", agentDir, options.systemPrompt);
-  const model = options.model ?? (await resolveVerifyModel(modelRuntime, parentModel, agentDir));
-  const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("verify", model, agentDir);
-  const identity = projectModelIdentity(model);
 
   // The child prompt is the structured verification input, nothing else.
   const verifyInput = buildVerifyTaskInput({
@@ -277,6 +274,13 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
   );
 
   try {
+    // Resolution lives inside the guarded path: an explicitly configured model
+    // that cannot resolve must surface as an explicit protocol fault, never as a
+    // verdict and never as a silent parent-model fallback (EZE-454).
+    const model = options.model ?? (await resolveVerifyModel(modelRuntime, parentModel, agentDir));
+    const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("verify", model, agentDir);
+    const identity = projectModelIdentity(model);
+
     agentId = beginChildObservation(observatory, {
       role: "verify",
       modelId: identity.modelId,

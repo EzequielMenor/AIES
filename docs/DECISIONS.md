@@ -1008,6 +1008,46 @@ described a flat `getAvailable()` list and never showed an unselectable provider
 
 ---
 
+## D29 - Child provider handoff and strict role-model resolution (EZE-454)
+
+**Decision.** Explore, Worker and Verify keep `noExtensions: true` and
+`noSkills: true`, but they no longer fail on a provider the parent only knows
+through an extension. The parent delegates through its public `ModelRegistry`
+facade; when that facade exposes a registered provider config for the selected
+child model's provider, `executeChildSession` builds the child an isolated public
+`ModelRuntime` from the child's own `agentDir` `auth.json` and `models.json` and
+copies that one provider registration. A genuine session `ModelRuntime` passed by
+a caller is forwarded untouched, and a facade with no registered config for the
+provider keeps Pi's default child runtime, so built-in and `models.json`
+providers are unaffected.
+
+Resolution stays ordered env > `aies.json` > parent model, but an *explicit*
+source wins or faults: if `AIES_<ROLE>_MODEL` or `aies.json`
+(`agents.<role>.model`) names a model the registry cannot resolve, resolution
+throws `AgentModelResolutionError`; Explore and Worker return a failed handoff
+and Verify returns a `session_failure` protocol fault. It never silently
+substitutes the parent model. The parent-model fallback is reserved for the case
+where no source configures a role model.
+
+**Why.** EZE-453 introduced the first extension-registered provider (CommandCode)
+and exposed the gap: the facade is a resolution source, not a runtime, so the
+child was created without it; because child extensions are intentionally off, the
+child runtime never registered the provider and the model it was handed could not
+authenticate. Copying only the selected provider keeps the isolation contract — no
+provider extension and no skill loads — while making the configured child model
+usable. Failing loudly on an explicit but unresolvable model is the other half of
+the same contract: a delegation that cannot run the configured model must be a
+visible fault, never a silent run on the parent model, because the parent's
+context and authorization assumptions differ from the child's.
+
+**Consequence.** Stored credentials remain readable through the isolated
+`agentDir` auth file, so the ordinary `/login` path works for child sessions with
+no environment variable. A misconfigured `AIES_<ROLE>_MODEL` or `aies.json` now
+surfaces as an explicit failed delegation instead of a working run on the parent
+model. This closes the EZE-454 root cause recorded in EZE-453's evidence.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

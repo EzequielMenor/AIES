@@ -26,6 +26,18 @@ const ROLE_ENV_VAR: Record<AgentRole, string> = {
 };
 
 /**
+ * An explicit role model (env or `aies.json`) that the parent registry could not
+ * resolve. It is a routing/protocol fault, never a silent parent-model fallback:
+ * the caller must surface it instead of running the wrong model (EZE-454).
+ */
+export class AgentModelResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentModelResolutionError";
+  }
+}
+
+/**
  * Resolve a `provider/model` (or bare model id) through either Pi's extension
  * `ModelRegistry` facade (`find` / `getAvailable` / `getAll`) or a session
  * `ModelRuntime` (`getModel` / `getModels`). Both public shapes are supported so
@@ -103,6 +115,10 @@ function readConfig(agentDir: string, role: AgentRole): AgentConfig {
 
 /**
  * Resolve the Model instance for a specific child agent role.
+ *
+ * An explicitly configured role model (env or `aies.json`) that cannot resolve
+ * through the supplied registry fails with `AgentModelResolutionError`. Only the
+ * absence of an explicit configuration falls back to the parent session model.
  */
 export async function resolveAgentModel(
   role: AgentRole,
@@ -111,21 +127,27 @@ export async function resolveAgentModel(
   agentDir: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<any> {
-  // 1. Environment variable override
+  // 1. Environment variable override. Explicit means required: unresolved is a fault.
   const envModel = env[ROLE_ENV_VAR[role]]?.trim();
-  if (envModel && modelRuntime) {
+  if (envModel) {
     const model = findModel(modelRuntime, envModel);
     if (model) return model;
+    throw new AgentModelResolutionError(
+      `Configured ${role} model "${envModel}" (${ROLE_ENV_VAR[role]}) could not be resolved through the parent model registry. Refusing to fall back to the parent model.`,
+    );
   }
 
-  // 2. Profile configuration: aies.json
+  // 2. Profile configuration: aies.json. Explicit means required.
   const configModel = readConfig(agentDir, role).model;
-  if (configModel && modelRuntime) {
+  if (configModel) {
     const model = findModel(modelRuntime, configModel);
     if (model) return model;
+    throw new AgentModelResolutionError(
+      `Configured ${role} model "${configModel}" (aies.json agents.${role}.model) could not be resolved through the parent model registry. Refusing to fall back to the parent model.`,
+    );
   }
 
-  // 3. Fallback to parent session model
+  // 3. No explicit configuration: fall back to the parent session model.
   return parentModel;
 }
 

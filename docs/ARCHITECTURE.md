@@ -236,13 +236,31 @@ Parent Session (AgentSession)
 | `extensions/aies-agents/verify-guard.ts` | Verify read-only command policy and guarded bash tool definition |
 | `extensions/aies-agents/handoff.ts` | Structured parsers and defensive formatters for the three handoffs, the Verify verdict/protocol-error split, and the failure signature |
 | `extensions/aies-agents/verification.ts` | Verification record, PASS invalidation, requirement rule, repair policy and prompts |
-| `extensions/aies-agents/model.ts` | Model resolution: env (`AIES_<ROLE>_MODEL`) > `aies.json` (`agents.<role>.model`) > parent model |
+| `extensions/aies-agents/model.ts` | Model resolution: env (`AIES_<ROLE>_MODEL`) > `aies.json` (`agents.<role>.model`) > parent model. An explicit source that cannot resolve is a fault, never a silent fallback (EZE-454) |
 | `extensions/aies-agents/explore.ts` | Isolated Explore child agent runner |
 | `extensions/aies-agents/worker.ts` | Isolated Worker child agent runner |
 | `extensions/aies-agents/verify.ts` | Isolated Verify child agent runner, including the schema-validated `aies_verify_complete` completion tool |
 | `extensions/aies-agents/routing.ts` | Parent routing policy, soft signals, and hard guardrails |
 | `extensions/aies-agents/delegate.ts` | Definition of the `aies_delegate` tool supporting the three roles |
 | `extensions/aies-agents/index.ts` | Extension entry point: registers `aies_delegate`, the routing hooks, and the verification record |
+
+### Child provider handoff and strict role-model resolution (EZE-454)
+
+The parent delegates through its public `ModelRegistry` facade, which is a
+resolution source and not a session runtime. When that facade exposes a
+registered provider config for the selected child model's provider,
+`executeChildSession` builds an isolated public `ModelRuntime` for the child with
+the child's own `agentDir` `auth.json` and `models.json`, so a stored credential
+stays readable and exactly that one provider config is copied. Extensions and
+skills stay off (`noExtensions`, `noSkills`), and a facade without a registered
+config for the provider keeps Pi's default child runtime, so built-in and
+`models.json` providers are unaffected.
+
+Role-model resolution is strict. When `AIES_<ROLE>_MODEL` or `aies.json`
+(`agents.<role>.model`) names a model the registry cannot resolve, the delegation
+fails explicitly — Explore and Worker return a failed handoff, Verify returns a
+`session_failure` protocol fault — and never silently runs the parent model. The
+parent-model fallback applies only when neither source configures a role model.
 
 ### Parent routing policy and guardrails
 

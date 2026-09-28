@@ -94,9 +94,6 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
   } = options;
 
   const systemPrompt = resolveRoleSystemPrompt("worker", agentDir, options.systemPrompt);
-  const model = options.model ?? (await resolveWorkerModel(modelRuntime, parentModel, agentDir));
-  const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("worker", model, agentDir);
-  const identity = projectModelIdentity(model);
 
   const customTgrep = createTgrepToolDefinition(cwd, {
     runner: options.tgrepRunner,
@@ -114,6 +111,13 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
   let handoff: WorkerHandoff | undefined;
 
   try {
+    // Resolution lives inside the guarded path: an explicitly configured model
+    // that cannot resolve must surface as a failed delegation, not escape as an
+    // unhandled rejection and never silently run the parent model (EZE-454).
+    const model = options.model ?? (await resolveWorkerModel(modelRuntime, parentModel, agentDir));
+    const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("worker", model, agentDir);
+    const identity = projectModelIdentity(model);
+
     agentId = beginChildObservation(observatory, {
       role: "worker",
       modelId: identity.modelId,

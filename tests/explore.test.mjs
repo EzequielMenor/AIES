@@ -21,10 +21,11 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { createFauxCore, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
+  ModelRegistry,
   ModelRuntime,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -409,6 +410,192 @@ describe("AIES-003 Isolated Explore (Hardened Read-Only)", () => {
         assert.equal(resolved?.id, "faux-1");
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("EZE-454 child provider runtime and strict model resolution", () => {
+    const EXTENSION_PROVIDER = "faux-ext";
+    const EXTENSION_MODEL = "faux-ext-1";
+
+    function extensionCore() {
+      return createFauxCore({
+        provider: EXTENSION_PROVIDER,
+        models: [
+          {
+            id: EXTENSION_MODEL,
+            name: "Faux Extension Model",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 10000,
+            maxTokens: 1000,
+          },
+        ],
+      });
+    }
+
+    function extensionConfig(core) {
+      return {
+        name: "Faux Extension",
+        api: core.api,
+        baseUrl: "http://localhost:0",
+        // An environment expression with no variable set: only a stored
+        // credential can authenticate this provider. The child must read the
+        // isolated agentDir auth.json for the run to succeed.
+        apiKey: "$FAUX_EXT_KEY",
+        streamSimple: core.streamSimple,
+        models: core.models.map((model) => ({
+          id: model.id,
+          name: model.name,
+          api: model.api,
+          baseUrl: model.baseUrl,
+          reasoning: model.reasoning,
+          input: model.input,
+          cost: model.cost,
+          contextWindow: model.contextWindow,
+          maxTokens: model.maxTokens,
+        })),
+      };
+    }
+
+    const doneHandoffJson = `\`\`\`json
+{
+  "status": "done",
+  "summary": "Ran through the extension provider.",
+  "evidence": [{ "file": "package.json", "note": "provider handoff" }],
+  "issues": [],
+  "next": []
+}
+\`\`\``;
+
+    it("runs an extension-registered provider model through an isolated child ModelRuntime", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "aies-eze454-provider-"));
+      const previous = process.env.FAUX_EXT_KEY;
+      delete process.env.FAUX_EXT_KEY;
+      try {
+        writeFileSync(
+          join(dir, "auth.json"),
+          JSON.stringify({ [EXTENSION_PROVIDER]: { type: "api_key", key: "stored-only-key" } }),
+        );
+        writeFileSync(
+          join(dir, "aies.json"),
+          JSON.stringify({ agents: { explore: { model: `${EXTENSION_PROVIDER}/${EXTENSION_MODEL}` } } }),
+        );
+
+        const core = extensionCore();
+        core.setResponses([fauxAssistantMessage([{ type: "text", text: doneHandoffJson }])]);
+
+        const parentRuntime = await ModelRuntime.create({
+          authPath: join(dir, "auth.json"),
+          modelsPath: null,
+        });
+        parentRuntime.registerProvider(EXTENSION_PROVIDER, extensionConfig(core));
+        const registry = new ModelRegistry(parentRuntime);
+
+        const handoff = await runExploreAgent({
+          task: "Use the extension provider",
+          cwd: REPO_ROOT,
+          agentDir: dir,
+          modelRuntime: registry,
+          parentModel: { provider: "mock", id: "parent-model" },
+        });
+
+        assert.equal(handoff.status, "done", "the child must run on the registered provider, not fall back");
+        assert.equal(core.state.callCount, 1, "the child must stream through the registered provider");
+        assert.equal(handoff.summary, "Ran through the extension provider.");
+      } finally {
+        if (previous === undefined) delete process.env.FAUX_EXT_KEY;
+        else process.env.FAUX_EXT_KEY = previous;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+    it("fails explicitly when a configured Explore model cannot resolve instead of using the parent model", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "aies-eze454-invalid-"));
+      const previous = process.env.AIES_EXPLORE_MODEL;
+      delete process.env.AIES_EXPLORE_MODEL;
+      try {
+        writeFileSync(
+          join(dir, "aies.json"),
+          JSON.stringify({ agents: { explore: { model: "ghost/missing-model" } } }),
+        );
+        const runtime = await ModelRuntime.create({
+          authPath: join(dir, "auth.json"),
+          modelsPath: null,
+        });
+        const registry = new ModelRegistry(runtime);
+        const parentModel = { provider: "mock", id: "parent-model" };
+
+        await assert.rejects(
+          () => resolveExploreModel(registry, parentModel, dir, {}),
+          /ghost\/missing-model/,
+          "an explicit but unresolvable role model must not resolve to the parent model",
+        );
+
+        const handoff = await runExploreAgent({
+          task: "This must not run on the parent model",
+          cwd: REPO_ROOT,
+          agentDir: dir,
+          modelRuntime: registry,
+          parentModel,
+        });
+
+        assert.equal(handoff.status, "failed", "the delegation must fail explicitly, not fall back");
+        assert.match(handoff.issues.join(" "), /ghost\/missing-model/);
+        assert.match(handoff.summary, /ghost\/missing-model/);
+      } finally {
+        if (previous === undefined) delete process.env.AIES_EXPLORE_MODEL;
+        else process.env.AIES_EXPLORE_MODEL = previous;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("fails explicitly when AIES_EXPLORE_MODEL names an unresolvable model", async () => {
+      const registry = { find: () => undefined, getAvailable: () => [], getAll: () => [] };
+      await assert.rejects(
+        () =>
+          resolveExploreModel(registry, { provider: "mock", id: "parent-model" }, "/dummy", {
+            AIES_EXPLORE_MODEL: "ghost/env-model",
+          }),
+        /ghost\/env-model/,
+      );
+    });
+
+    it("hands the parent's extension-provider model to the child when no role model is configured", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "aies-eze454-parent-model-"));
+      const previous = process.env.FAUX_EXT_KEY;
+      delete process.env.FAUX_EXT_KEY;
+      try {
+        writeFileSync(
+          join(dir, "auth.json"),
+          JSON.stringify({ [EXTENSION_PROVIDER]: { type: "api_key", key: "stored-only-key" } }),
+        );
+
+        const core = extensionCore();
+        core.setResponses([fauxAssistantMessage([{ type: "text", text: doneHandoffJson }])]);
+        const parentRuntime = await ModelRuntime.create({
+          authPath: join(dir, "auth.json"),
+          modelsPath: null,
+        });
+        parentRuntime.registerProvider(EXTENSION_PROVIDER, extensionConfig(core));
+        const registry = new ModelRegistry(parentRuntime);
+
+        // Exactly the EZE-454 defect: no explicit role model, the parent session
+        // runs an extension-registered provider, and the child must still auth.
+        const handoff = await runExploreAgent({
+          task: "Run the parent's extension-provider model",
+          cwd: REPO_ROOT,
+          agentDir: dir,
+          modelRuntime: registry,
+          parentModel: registry.find(EXTENSION_PROVIDER, EXTENSION_MODEL),
+        });
+
+        assert.equal(handoff.status, "done");
+        assert.equal(core.state.callCount, 1, "the child must stream through the parent provider, not fail auth");
+      } finally {
+        if (previous === undefined) delete process.env.FAUX_EXT_KEY;
+        else process.env.FAUX_EXT_KEY = previous;
+        rmSync(dir, { recursive: true, force: true });
       }
     });
   });

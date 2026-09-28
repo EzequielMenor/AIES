@@ -76,9 +76,6 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
   } = options;
 
   const systemPrompt = resolveRoleSystemPrompt("explore", agentDir, options.systemPrompt);
-  const model = options.model ?? (await resolveExploreModel(modelRuntime, parentModel, agentDir));
-  const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("explore", model, agentDir);
-  const identity = projectModelIdentity(model);
 
   const customTgrep = createTgrepToolDefinition(cwd, {
     runner: options.tgrepRunner,
@@ -88,6 +85,13 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
   let handoff: ExploreHandoff | undefined;
 
   try {
+    // Resolution lives inside the guarded path: an explicitly configured model
+    // that cannot resolve must surface as a failed delegation, not escape as an
+    // unhandled rejection and never silently run the parent model (EZE-454).
+    const model = options.model ?? (await resolveExploreModel(modelRuntime, parentModel, agentDir));
+    const thinkingLevel = options.thinkingLevel ?? resolveAgentThinkingLevel("explore", model, agentDir);
+    const identity = projectModelIdentity(model);
+
     agentId = beginChildObservation(observatory, {
       role: "explore",
       modelId: identity.modelId,

@@ -28,6 +28,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import {
   createAgentSession,
   DefaultResourceLoader,
+  ModelRegistry,
   ModelRuntime,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -999,6 +1000,51 @@ describe("AIES-005 Verify model resolution", () => {
 
     const parentModel = { id: "parent-model", provider: "mock" };
     assert.equal(await resolveVerifyModel(null, parentModel, "/dummy", {}), parentModel);
+  });
+
+  it("fails explicitly when a configured verify model cannot resolve, never a parent fallback or a verdict", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-verify-invalid-"));
+    const previous = process.env.AIES_VERIFY_MODEL;
+    delete process.env.AIES_VERIFY_MODEL;
+    try {
+      writeFileSync(
+        join(dir, "aies.json"),
+        JSON.stringify({ agents: { verify: { model: "ghost/missing-model" } } }),
+      );
+      const runtime = await ModelRuntime.create({
+        authPath: join(dir, "auth.json"),
+        modelsPath: null,
+      });
+      const registry = new ModelRegistry(runtime);
+      const parentModel = { provider: "mock", id: "parent-model" };
+
+      await assert.rejects(
+        () => resolveVerifyModel(registry, parentModel, dir, {}),
+        /ghost\/missing-model/,
+        "an explicit but unresolvable verify model must not resolve to the parent model",
+      );
+
+      const result = await runVerifyAgent({
+        task: "This must not run on the parent model",
+        criteria: ["the configured model resolves"],
+        cwd: REPO_ROOT,
+        agentDir: dir,
+        modelRuntime: registry,
+        parentModel,
+      });
+
+      assert.equal(
+        isProtocolError(result),
+        true,
+        "an unresolvable model is a protocol fault, never a pass/fail/blocked verdict",
+      );
+      assert.equal(result.code, "session_failure");
+      assert.match(result.message, /ghost\/missing-model/);
+    } finally {
+      if (previous === undefined) delete process.env.AIES_VERIFY_MODEL;
+      else process.env.AIES_VERIFY_MODEL = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

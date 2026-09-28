@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   DefaultResourceLoader,
+  ModelRuntime,
   SessionManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -205,6 +206,65 @@ export function isSessionModelRuntime(value: any): boolean {
 }
 
 /**
+ * Whether a value is the public extension `ModelRegistry` facade: a resolution
+ * source that exposes the registered-provider config surface but is not itself a
+ * session runtime.
+ */
+export function isSessionModelRegistry(value: any): boolean {
+  return (
+    Boolean(value) &&
+    !isSessionModelRuntime(value) &&
+    typeof value.getRegisteredProviderConfig === "function"
+  );
+}
+
+/**
+ * Build the isolated child `ModelRuntime` when the parent delegated through its
+ * public `ModelRegistry` facade and that facade registered the provider the
+ * selected child model belongs to (EZE-454).
+ *
+ * The runtime is built by the public API with the child's own `agentDir` auth and
+ * models files, so a stored credential stays readable and `models.json` still
+ * applies, and only the one provider config the facade exposes is copied. Child
+ * extensions and skills still never load: the resource loader keeps
+ * `noExtensions`/`noSkills`, and this runtime only knows the model it was handed.
+ *
+ * Returns `undefined` when no registered provider config matches, so a facade for
+ * a built-in or `models.json` provider keeps Pi's own default child runtime.
+ */
+export async function createChildModelRuntime(
+  agentDir: string,
+  model: any,
+  registry: any,
+): Promise<ModelRuntime | undefined> {
+  if (!isSessionModelRegistry(registry)) return undefined;
+
+  const providerId =
+    typeof model?.provider === "string" && model.provider ? model.provider : undefined;
+  if (!providerId) return undefined;
+
+  let config: any;
+  let nativeProvider: any;
+  try {
+    config = registry.getRegisteredProviderConfig(providerId);
+    if (!config && typeof registry.getRegisteredNativeProvider === "function") {
+      nativeProvider = registry.getRegisteredNativeProvider(providerId);
+    }
+  } catch {
+    return undefined;
+  }
+  if (!config && !nativeProvider) return undefined;
+
+  const runtime = await ModelRuntime.create({
+    authPath: join(agentDir, "auth.json"),
+    modelsPath: join(agentDir, "models.json"),
+  });
+  if (config) runtime.registerProvider(providerId, config);
+  else runtime.registerNativeProvider(nativeProvider);
+  return runtime;
+}
+
+/**
  * Execute an isolated child AgentSession turn and return the assistant's final text.
  */
 export async function executeChildSession(options: ChildSessionOptions): Promise<string> {
@@ -238,11 +298,19 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
 
   const sessionManager = customSessionManager ?? SessionManager.inMemory(cwd);
 
+  // A genuine runtime is used untouched. A public `ModelRegistry` facade is a
+  // resolution source that a child runtime cannot authenticate an
+  // extension-registered provider with, so the child gets its own isolated
+  // runtime carrying exactly the selected model's registered provider config.
+  const childRuntime = isSessionModelRuntime(modelRuntime)
+    ? modelRuntime
+    : await createChildModelRuntime(agentDir, model, modelRuntime);
+
   const { session } = await createAgentSession({
     cwd,
     agentDir,
     model,
-    modelRuntime: isSessionModelRuntime(modelRuntime) ? modelRuntime : undefined,
+    modelRuntime: childRuntime,
     thinkingLevel,
     resourceLoader,
     sessionManager,
