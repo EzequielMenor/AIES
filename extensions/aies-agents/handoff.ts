@@ -340,9 +340,55 @@ function strictDefects(val: unknown): { ok: true; value: VerifyDefect[] } | { ok
   return { ok: true, value: list };
 }
 
-/** Collapse a criterion to comparable tokens: case, punctuation and whitespace. */
-function normalizedCriterion(value: string): string {
-  return value.toLowerCase().replace(/[\s`"'*_.,;:]+/gu, " ").trim();
+/** Strip leading list markers/numbering from a criterion string. */
+export function cleanCriterion(text: string): string {
+  return text.replace(/^(\s*(\d+[\.\)]|[-*•]|\[[ xX]\])\s*)+/u, "").trim();
+}
+
+/**
+ * Split and normalize an acceptance criteria list.
+ * Handles arrays of strings, single multiline strings, or strings with inline numbering ("1. ... 2. ...").
+ */
+export function normalizeCriteriaList(val: unknown): string[] {
+  const rawList: string[] = [];
+  if (typeof val === "string") {
+    rawList.push(val);
+  } else if (Array.isArray(val)) {
+    for (const item of val) {
+      if (typeof item === "string" && item.trim()) {
+        rawList.push(item);
+      }
+    }
+  } else {
+    return [];
+  }
+
+  const result: string[] = [];
+  for (const raw of rawList) {
+    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      const items = line.split(/(?<=[.!?]|^)\s+(?=\d+[\.\)]\s+)/).map((s) => s.trim()).filter(Boolean);
+      for (const item of items) {
+        const cleaned = cleanCriterion(item);
+        if (cleaned) {
+          result.push(cleaned);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+/** Collapse a criterion to comparable tokens: strip list prefixes, normalize quotes/ellipsis, punctuation and whitespace. */
+export function normalizedCriterion(value: string): string {
+  return value
+    .replace(/^(\s*(\d+[\.\)]|[-*•]|\[[ xX]\])\s*)+/u, "")
+    .toLowerCase()
+    .replace(/…/gu, "...")
+    .replace(/[\u2018\u2019]/gu, "'")
+    .replace(/[\u201C\u201D]/gu, '"')
+    .replace(/[\s`"'*_.,;:]+/gu, " ")
+    .trim();
 }
 
 /** One required criterion matched, or not, to exactly one completion entry. */
@@ -358,8 +404,9 @@ export interface CriterionMatch {
  * never cover two required criteria.
  */
 export function matchCriteria(required: string[], criteria: VerifyCriterion[]): CriterionMatch[] {
+  const normalizedRequired = normalizeCriteriaList(required);
   const used = new Set<number>();
-  return required.map((expected) => {
+  return normalizedRequired.map((expected) => {
     const target = normalizedCriterion(expected);
     if (!target) return { expected };
     const index = criteria.findIndex(
@@ -415,6 +462,18 @@ export function validateVerifyCompletion(
     defects: defects.value,
     next: sanitizeStringList(parsed.next).slice(0, 1),
   };
+
+  if (status === "blocked") {
+    const mentionsValidator =
+      /\b(?:validator|aies_verify_complete|completion tool|completion gate|completion rejected|rejected every attempt)\b/iu;
+    if (mentionsValidator.test(handoff.summary) || handoff.defects.some((d) => mentionsValidator.test(d.description))) {
+      return {
+        ok: false,
+        reason: "validator or completion gate rejection is a protocol error, not a semantic BLOCKED",
+      };
+    }
+    return { ok: true, handoff };
+  }
 
   if (status !== "pass") return { ok: true, handoff };
 

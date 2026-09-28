@@ -19,6 +19,7 @@ import {
   formatVerifyHandoff,
   formatWorkerHandoff,
   isProtocolError,
+  normalizeCriteriaList,
   type ExploreHandoff,
   type VerifyHandoff,
   type WorkerHandoff,
@@ -56,10 +57,16 @@ export const DelegateParamsSchema = Type.Object({
     }),
   ),
   criteria: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        "For 'verify': the verifiable acceptance criteria the work unit is judged against. Required for that role",
-    }),
+    Type.Union(
+      [
+        Type.Array(Type.String()),
+        Type.String(),
+      ],
+      {
+        description:
+          "For 'verify': the verifiable acceptance criteria the work unit is judged against. Required for that role",
+      },
+    ),
   ),
   changedPaths: Type.Optional(
     Type.Array(Type.String(), {
@@ -132,7 +139,7 @@ function verifyRequestError(params: DelegateParams): string | undefined {
     return "aies_delegate role 'verify' does not accept free-form context: pass criteria, changedPaths, baseRef and checks instead. Independent verification must not receive the implementer's narrative.";
   }
 
-  if (stringList(params.criteria).length === 0) {
+  if (normalizeCriteriaList(params.criteria).length === 0) {
     return "aies_delegate role 'verify' requires 'criteria': the verifiable acceptance criteria the work unit is judged against.";
   }
 
@@ -339,7 +346,7 @@ export function createDelegateTool(
           };
         }
 
-        const criteria = stringList(params.criteria);
+        const criteria = normalizeCriteriaList(params.criteria);
         const changedPaths = stringList(params.changedPaths);
         const startedAt = Date.now();
 

@@ -16,7 +16,14 @@
  *   independent verification; a documentation-only change does not.
  */
 
-import { isProtocolError, verifyFailureSignature, type VerifyHandoff, type VerifyProtocolErrorCode, type VerifyRunResult } from "./handoff.ts";
+import {
+  isProtocolError,
+  normalizeCriteriaList,
+  verifyFailureSignature,
+  type VerifyHandoff,
+  type VerifyProtocolErrorCode,
+  type VerifyRunResult,
+} from "./handoff.ts";
 
 export type VerificationStatus = "none" | "running" | "pass" | "fail" | "blocked" | "protocol_error";
 
@@ -396,7 +403,8 @@ export interface VerifyTaskInput {
 export function buildVerifyTaskInput(input: VerifyTaskInput): string {
   const blocks: string[] = [`WORK UNIT: ${input.task.trim()}`];
 
-  blocks.push(`ACCEPTANCE CRITERIA:\n${numberedList(input.criteria.map((c) => c.trim()))}`);
+  const criteria = normalizeCriteriaList(input.criteria);
+  blocks.push(`ACCEPTANCE CRITERIA:\n${numberedList(criteria)}`);
 
   const changedPaths = (input.changedPaths ?? []).map((entry) => entry.trim()).filter(Boolean);
   blocks.push(
@@ -437,7 +445,8 @@ export interface RepairContextInput {
 export function buildRepairContext(input: RepairContextInput): string {
   const blocks: string[] = [`WORK UNIT: ${input.task.trim()}`];
 
-  blocks.push(`ACCEPTANCE CRITERIA:\n${numberedList(input.criteria.map((c) => c.trim()))}`);
+  const criteria = normalizeCriteriaList(input.criteria);
+  blocks.push(`ACCEPTANCE CRITERIA:\n${numberedList(criteria)}`);
 
   blocks.push(`DEFECTS TO FIX (reported by independent verification):\n${input.brief.trim()}`);
 

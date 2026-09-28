@@ -19,6 +19,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createVerifyProtocolError,
   isProtocolError,
+  normalizeCriteriaList,
   validateVerifyCompletion,
   type VerifyRunResult,
   type VerifyVerdict,
@@ -93,6 +94,9 @@ export type VerifyCompleteParams = {
   next: string[];
 };
 
+/** Maximum recovery attempts allowed after an invalid completion before protocol failure. */
+export const MAX_VERIFY_RECOVERY_ATTEMPTS = 1;
+
 /**
  * Mutable state shared between the completion tool and the runner. The first
  * valid call wins; any later valid call marks the run as a duplicate.
@@ -102,23 +106,32 @@ export interface VerifyCompletionCollector {
   verdict: VerifyVerdict | undefined;
   duplicate: boolean;
   lastInvalidReason: string | undefined;
+  invalidAttempts: number;
 }
 
 /** A fresh collector for one Verify run. */
 export function createVerifyCompletionCollector(): VerifyCompletionCollector {
-  return { attempted: false, verdict: undefined, duplicate: false, lastInvalidReason: undefined };
+  return {
+    attempted: false,
+    verdict: undefined,
+    duplicate: false,
+    lastInvalidReason: undefined,
+    invalidAttempts: 0,
+  };
 }
 
 /**
  * The schema-validated completion tool. It validates shape and semantics
- * host-side: an invalid attempt is rejected so the child may correct it once in
- * the same turn; a duplicate valid verdict fails closed.
+ * host-side: an invalid attempt is rejected so the child may correct it at most once;
+ * a second invalid attempt fails closed immediately as a protocol failure; a duplicate
+ * valid verdict fails closed.
  */
 export function createVerifyCompleteTool(params: {
   criteria: string[];
   collector: VerifyCompletionCollector;
 }): ToolDefinition<typeof VerifyCompleteSchema, unknown> {
-  const { criteria, collector } = params;
+  const criteria = normalizeCriteriaList(params.criteria);
+  const { collector } = params;
 
   return {
     name: VERIFY_COMPLETE_TOOL,
@@ -130,27 +143,10 @@ export function createVerifyCompleteTool(params: {
       `Call ${VERIFY_COMPLETE_TOOL} exactly once, at the end of your inspection, with the structured verdict.`,
       "Copy each supplied acceptance criterion into `criteria` exactly as given; do not paraphrase, merge or split them.",
       "Give non-empty evidence for every supplied criterion. A PASS must represent and pass every acceptance criterion, each with its own evidence; never claim PASS from prose alone.",
-      "If a call is rejected, correct the completion and call it again in the same turn.",
+      `If a call is rejected as invalid, you have at most one recovery attempt to correct the completion and call ${VERIFY_COMPLETE_TOOL} again. A second invalid attempt fails the protocol immediately. Never convert a completion rejection into a blocked verdict.`,
     ],
     parameters: VerifyCompleteSchema,
     async execute(_toolCallId, input: VerifyCompleteParams) {
-      const validation = validateVerifyCompletion(input, criteria);
-      collector.attempted = true;
-
-      if (!validation.ok) {
-        collector.lastInvalidReason = validation.reason;
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Completion rejected: ${validation.reason}. Correct it and call ${VERIFY_COMPLETE_TOOL} again with a valid verdict.`,
-            },
-          ],
-          details: { accepted: false, reason: validation.reason },
-          isError: true,
-        };
-      }
-
       if (collector.verdict) {
         collector.duplicate = true;
         return {
@@ -161,6 +157,51 @@ export function createVerifyCompleteTool(params: {
             },
           ],
           details: { accepted: false, reason: "duplicate_completion" },
+          isError: true,
+        };
+      }
+
+      if (collector.invalidAttempts > MAX_VERIFY_RECOVERY_ATTEMPTS) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Completion rejected: verification protocol already failed after exhausted recovery attempts. Stop now; no further completion is accepted.",
+            },
+          ],
+          details: { accepted: false, reason: "exhausted_recovery_attempts" },
+          isError: true,
+        };
+      }
+
+      const validation = validateVerifyCompletion(input, criteria);
+      collector.attempted = true;
+
+      if (!validation.ok) {
+        collector.invalidAttempts += 1;
+        collector.lastInvalidReason = validation.reason;
+
+        if (collector.invalidAttempts <= MAX_VERIFY_RECOVERY_ATTEMPTS) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Completion rejected: ${validation.reason}. You have 1 recovery attempt: correct the completion and call ${VERIFY_COMPLETE_TOOL} again with a valid verdict.`,
+              },
+            ],
+            details: { accepted: false, reason: validation.reason, remainingRecoveries: 0 },
+            isError: true,
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Completion rejected: ${validation.reason}. Recovery budget exhausted (second malformed/invalid completion). Verification protocol failed; stop now.`,
+            },
+          ],
+          details: { accepted: false, reason: validation.reason, protocolError: "invalid_completion" },
           isError: true,
         };
       }
@@ -180,6 +221,12 @@ function resolveVerifyResult(collector: VerifyCompletionCollector): VerifyRunRes
     return createVerifyProtocolError(
       "duplicate_completion",
       "the verify child reported more than one valid verdict",
+    );
+  }
+  if (collector.invalidAttempts > MAX_VERIFY_RECOVERY_ATTEMPTS) {
+    return createVerifyProtocolError(
+      "invalid_completion",
+      collector.lastInvalidReason ?? "the verify child exhausted recovery attempts without a valid completion",
     );
   }
   if (collector.verdict) return collector.verdict;
@@ -245,7 +292,8 @@ function summarizeVerifyResult(result: VerifyRunResult): string {
  * Execute an independent verification run in a dedicated child AgentSession.
  */
 export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyRunResult> {
-  const { task, criteria, cwd, agentDir, modelRuntime, parentModel, signal, observatory } = options;
+  const { task, cwd, agentDir, modelRuntime, parentModel, signal, observatory } = options;
+  const criteria = normalizeCriteriaList(options.criteria);
 
   const systemPrompt = resolveRoleSystemPrompt("verify", agentDir, options.systemPrompt);
 
@@ -314,6 +362,11 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
       result = createVerifyProtocolError(
         "duplicate_completion",
         "the verify child reported more than one valid verdict",
+      );
+    } else if (collector.invalidAttempts > MAX_VERIFY_RECOVERY_ATTEMPTS) {
+      result = createVerifyProtocolError(
+        "invalid_completion",
+        collector.lastInvalidReason ?? "the verify child exhausted recovery attempts without a valid completion",
       );
     } else if (collector.verdict) {
       result = collector.verdict;

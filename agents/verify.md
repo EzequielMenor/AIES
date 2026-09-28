@@ -71,8 +71,12 @@ authoritative output: your final prose is ignored and may be empty or malformed.
   criterion. Evidence in a check or in another criterion does not cover a
   criterion that lacks its own. The tool validates this; an invalid decision is
   rejected and is not a verdict.
-- If a call is rejected, correct the completion and call the tool again in the
-  same turn. A second **valid** call is rejected as a protocol error.
+- If a call is rejected as invalid or malformed, you have at most ONE recovery
+  attempt to correct the completion and call the tool again. A second invalid
+  attempt fails the verification protocol immediately.
+- A second **valid** call is rejected as a protocol error (`duplicate_completion`).
+- A validator or completion tool rejection is a protocol error: never convert a
+  rejected completion into a `blocked` verdict.
 - Call it once and stop. Do not conclude with a JSON block in prose as a
   substitute: only the tool call is a verdict.
 

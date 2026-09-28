@@ -36,9 +36,12 @@ import {
 import { createDelegateTool } from "../extensions/aies-agents/delegate.ts";
 import {
   MAX_HANDOFF_CHARS,
+  cleanCriterion,
   formatRepairBrief,
   formatVerifyHandoff,
   isProtocolError,
+  normalizeCriteriaList,
+  normalizedCriterion,
   parseVerifyHandoff,
   validateVerifyCompletion,
   verifyFailureSignature,
@@ -69,7 +72,14 @@ import {
   createVerifyBashToolDefinition,
   isCommandPermittedInVerify,
 } from "../extensions/aies-agents/verify-guard.ts";
-import { VERIFY_COMPLETE_TOOL, VERIFY_TOOLS, runVerifyAgent } from "../extensions/aies-agents/verify.ts";
+import {
+  MAX_VERIFY_RECOVERY_ATTEMPTS,
+  VERIFY_COMPLETE_TOOL,
+  VERIFY_TOOLS,
+  createVerifyCompleteTool,
+  createVerifyCompletionCollector,
+  runVerifyAgent,
+} from "../extensions/aies-agents/verify.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
@@ -1511,6 +1521,260 @@ describe("AIES-010B Verify protocol hardening: completion capture", () => {
       const text = result.content.map((block) => block.text ?? "").join("\n");
       assert.match(text, /error de protocolo/u);
       assert.equal(text.includes("Verify Result: BLOCKED"), false, text);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("EZE-438 Verify protocol hardening: eliminate completion loops and distinguish protocol failure", () => {
+  const CRITERIA = ["TIMEOUT_MS is 2000", "npm test passes"];
+
+  function validPassCompletion(overrides = {}) {
+    return {
+      status: "pass",
+      summary: "Inspected config.js and ran npm test successfully.",
+      criteria: [
+        { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+        { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+      ],
+      checks: [{ check: "npm test", result: "exit 0" }],
+      defects: [],
+      next: [],
+      ...overrides,
+    };
+  }
+
+  async function runScenario(dir, responses, criteria = CRITERIA) {
+    const { faux, runtime, model } = await fauxRuntime();
+    const sessionManager = SessionManager.inMemory(dir);
+    faux.setResponses(responses);
+    const result = await runVerifyAgent({
+      task: "Bring the timeout to 2000",
+      criteria,
+      changedPaths: ["config.js"],
+      cwd: dir,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      sessionManager,
+    });
+    return { result, sessionManager };
+  }
+
+  it("completes a valid PASS exactly once", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, validPassCompletion(), "c2")]),
+      ]);
+
+      assert.equal(isProtocolError(result), false);
+      assert.equal(result.kind, "verdict");
+      assert.equal(result.status, "pass");
+      assert.equal(result.criteria.length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes a genuine semantic BLOCKED from a protocol error", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("bash", { command: "pytest" }, "c1")]),
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            {
+              status: "blocked",
+              summary: "pytest is not installed on the system, preventing verification.",
+              criteria: [{ criterion: "npm test passes", status: "blocked", evidence: "pytest exit 127" }],
+              checks: [{ check: "pytest", result: "exit 127: command not found" }],
+              defects: [],
+              next: ["Install pytest in the test environment"],
+            },
+            "c2",
+          ),
+        ]),
+      ]);
+
+      assert.equal(isProtocolError(result), false, "a genuine external blocker must remain a verdict");
+      assert.equal(result.kind, "verdict");
+      assert.equal(result.status, "blocked");
+      assert.equal(result.summary.includes("pytest"), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("notifies single recovery budget on malformed completion", async () => {
+    const collector = createVerifyCompletionCollector();
+    const tool = createVerifyCompleteTool({ criteria: CRITERIA, collector });
+
+    const malformed = validPassCompletion({
+      criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }],
+      checks: [],
+    });
+
+    const execution = await tool.execute("call-1", malformed);
+    assert.equal(execution.isError, true);
+    assert.equal(collector.invalidAttempts, 1);
+    assert.match(execution.content[0].text, /1 recovery attempt/u);
+    assert.equal(execution.details.remainingRecoveries, 0);
+  });
+
+  it("allows exactly one controlled recovery from a malformed completion", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        // Attempt 1: malformed (PASS without evidence)
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            validPassCompletion({
+              criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }],
+              checks: [],
+            }),
+            "c2",
+          ),
+        ]),
+        // Attempt 2: corrected valid PASS
+        fauxAssistantMessage([fauxToolCall(VERIFY_COMPLETE_TOOL, validPassCompletion(), "c3")]),
+      ]);
+
+      assert.equal(isProtocolError(result), false, "single recovery must succeed with a valid PASS");
+      assert.equal(result.kind, "verdict");
+      assert.equal(result.status, "pass");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails explicitly without loop on second malformed/protocol failure", async () => {
+    const dir = fixtureDir({ "config.js": "export const TIMEOUT_MS = 2000;\n" });
+    try {
+      const { result } = await runScenario(dir, [
+        fauxAssistantMessage([fauxToolCall("read", { path: "config.js" }, "c1")]),
+        // Attempt 1: malformed (PASS without evidence)
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            validPassCompletion({
+              criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }],
+              checks: [],
+            }),
+            "c2",
+          ),
+        ]),
+        // Attempt 2: second malformed (PASS carrying a blocking defect)
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            validPassCompletion({
+              defects: [{ severity: "blocking", description: "broken" }],
+            }),
+            "c3",
+          ),
+        ]),
+      ]);
+
+      assert.equal(isProtocolError(result), true, "second malformed must be a protocol failure");
+      assert.equal(result.code, "invalid_completion");
+      assert.equal(result.status, undefined, "must never be coerced to BLOCKED");
+      assert.match(result.message, /blocking/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("immediately rejects third attempt after exhausted recovery budget", async () => {
+    const collector = createVerifyCompletionCollector();
+    const tool = createVerifyCompleteTool({ criteria: CRITERIA, collector });
+
+    const malformed = validPassCompletion({
+      criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass" }],
+      checks: [],
+    });
+
+    // Attempt 1
+    const res1 = await tool.execute("call-1", malformed);
+    assert.equal(res1.isError, true);
+    assert.equal(collector.invalidAttempts, 1);
+    assert.match(res1.content[0].text, /1 recovery attempt/u);
+
+    // Attempt 2 (exhausts recovery budget)
+    const res2 = await tool.execute("call-2", malformed);
+    assert.equal(res2.isError, true);
+    assert.equal(collector.invalidAttempts, 2);
+    assert.match(res2.content[0].text, /Recovery budget exhausted/u);
+
+    // Attempt 3: immediately rejected as exhausted without checking validity
+    const res3 = await tool.execute("call-3", validPassCompletion());
+    assert.equal(res3.isError, true);
+    assert.equal(res3.details.reason, "exhausted_recovery_attempts");
+    assert.match(res3.content[0].text, /already failed after exhausted recovery/u);
+    assert.equal(collector.verdict, undefined, "verdict must not be recorded after budget exhaustion");
+  });
+
+  it("refuses to convert a validator or completion rejection into semantic BLOCKED", async () => {
+    const validation = validateVerifyCompletion(
+      {
+        status: "blocked",
+        summary: "The aies_verify_complete validator rejected every attempt at PASS.",
+        criteria: [{ criterion: "npm test passes", status: "blocked" }],
+        checks: [],
+        defects: [{ severity: "blocking", description: "(validator-side, not a repo defect) The validator rejected PASS" }],
+        next: [],
+      },
+      CRITERIA,
+    );
+
+    assert.equal(validation.ok, false, "validator blame must not be accepted as semantic BLOCKED");
+    assert.match(validation.reason, /protocol error, not a semantic BLOCKED/u);
+  });
+
+  it("reproduces and resolves the EZE-426 real-smoke case without rejection or loop", async () => {
+    const dir = fixtureDir({ "src/truncate.js": 'export function truncate(t, m) { return t.length > m ? t.slice(0, m) + "…" : t; }\n' });
+    try {
+      const smokeCriteria =
+        '1. `src/truncate.js` contiene lógica de truncado real. 2. `truncate("abcdef", 3)` === "abc…". 3. `truncate("ab", 5)` === "ab". 4. `npm test` exit 0 y ambos tests pasan. 5. Sólo `src/truncate.js` modificado. 6. Implementación minimal.';
+
+      const { result } = await runScenario(
+        dir,
+        [
+          fauxAssistantMessage([fauxToolCall("read", { path: "src/truncate.js" }, "c1")]),
+          fauxAssistantMessage([
+            fauxToolCall(
+              VERIFY_COMPLETE_TOOL,
+              {
+                status: "pass",
+                summary: "All 6 criteria verified on working tree.",
+                criteria: [
+                  { criterion: "1. `src/truncate.js` contiene lógica de truncado real.", status: "pass", evidence: "body has real logic" },
+                  { criterion: '2. `truncate("abcdef", 3)` === "abc…"', status: "pass", evidence: "returns abc…" },
+                  { criterion: '3. `truncate("ab", 5)` === "ab"', status: "pass", evidence: "returns ab" },
+                  { criterion: "4. `npm test` exit 0 y ambos tests pasan.", status: "pass", evidence: "tests passed" },
+                  { criterion: "5. Sólo `src/truncate.js` modificado.", status: "pass", evidence: "git diff confirms 1 file" },
+                  { criterion: "6. Implementación minimal.", status: "pass", evidence: "2 lines of logic" },
+                ],
+                checks: [{ check: "npm test", result: "exit 0" }],
+                defects: [],
+                next: [],
+              },
+              "c2",
+            ),
+          ]),
+        ],
+        smokeCriteria,
+      );
+
+      assert.equal(isProtocolError(result), false, "smoke criteria must be parsed and matched cleanly");
+      assert.equal(result.kind, "verdict");
+      assert.equal(result.status, "pass");
+      assert.equal(result.criteria.length, 6, "all 6 criteria must be represented");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
