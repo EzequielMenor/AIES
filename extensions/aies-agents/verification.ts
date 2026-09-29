@@ -58,6 +58,10 @@ export interface VerificationState {
   awaitingVerification: boolean;
   startedAt: number | undefined;
   lastChange: string | undefined;
+  /** Revision where Verify reported BLOCKED for external/infrastructure cause. */
+  blockedRevision?: number;
+  /** The external/infrastructure reason for the BLOCKED verdict. */
+  blockedReason?: string;
 }
 
 export interface VerificationDecision {
@@ -99,6 +103,8 @@ export function createVerificationState(): VerificationState {
     awaitingVerification: false,
     startedAt: undefined,
     lastChange: undefined,
+    blockedRevision: undefined,
+    blockedReason: undefined,
   };
 }
 
@@ -122,12 +128,14 @@ export function applyWorkUnitChange(
 
   if (!requirement.required) return next;
 
-  const invalidates = state.status === "pass";
+  const invalidates = state.status === "pass" || state.status === "blocked";
   return {
     ...next,
     revision: state.revision + 1,
     status: invalidates ? "none" : state.status,
-    verifiedRevision: invalidates ? undefined : state.verifiedRevision,
+    verifiedRevision: invalidates && state.status === "pass" ? undefined : state.verifiedRevision,
+    blockedRevision: invalidates && state.status === "blocked" ? undefined : state.blockedRevision,
+    blockedReason: invalidates && state.status === "blocked" ? undefined : state.blockedReason,
   };
 }
 
@@ -150,6 +158,8 @@ export function applyWorkerResult(
     revision: state.revision + 1,
     status: "none",
     verifiedRevision: undefined,
+    blockedRevision: undefined,
+    blockedReason: undefined,
     awaitingVerification: true,
     lastChange: requirement.reason,
   };
@@ -219,7 +229,17 @@ export function applyVerifyResult(
   }
 
   // Blocked: a cause external to the change. It is not a defect to repair.
-  return { ...next, awaitingVerification: true };
+  const blockedReason =
+    handoff.summary ||
+    (handoff.defects && handoff.defects.length > 0 ? handoff.defects[0].description : undefined) ||
+    "external infrastructure cause";
+
+  return {
+    ...next,
+    awaitingVerification: true,
+    blockedRevision: state.revision,
+    blockedReason,
+  };
 }
 
 /**

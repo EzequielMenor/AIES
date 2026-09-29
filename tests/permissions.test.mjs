@@ -19,7 +19,7 @@
  */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -60,9 +60,12 @@ import {
   buildWorkerSandboxConfig,
   executeSandboxedCommand,
   getSandboxStatus,
+  hasTrackedFilesInDir,
   isSandboxSupported,
   isSandboxViolation,
+  isSafeGeneratedSubdir,
   resetSandbox,
+  resolveVerifyAllowedOutputSubdirs,
   withdrawKeychainAccess,
 } from "../extensions/aies-agents/sandbox.ts";
 import {
@@ -772,6 +775,198 @@ describe("AIES-006 Permission Boundaries", () => {
           /^credential:/,
           `${role} must not recover the host's stored credential: ${result.stdout.trim()}`,
         );
+      }
+    });
+  });
+
+  describe("14. Verify ephemeral and generated writes isolation (EZE-471)", () => {
+    it("classifies safe generated subdirs and rejects secrets, VCS, and source paths", () => {
+      assert.equal(isSafeGeneratedSubdir(".astro"), true);
+      assert.equal(isSafeGeneratedSubdir("dist"), true);
+      assert.equal(isSafeGeneratedSubdir(".next"), true);
+      assert.equal(isSafeGeneratedSubdir(".output"), true);
+      assert.equal(isSafeGeneratedSubdir("build_artifacts"), true);
+
+      // Secrets and credentials
+      assert.equal(isSafeGeneratedSubdir(".env"), false);
+      assert.equal(isSafeGeneratedSubdir(".env.local"), false);
+      assert.equal(isSafeGeneratedSubdir("server.key"), false);
+      assert.equal(isSafeGeneratedSubdir("cert.pem"), false);
+      assert.equal(isSafeGeneratedSubdir("auth.json"), false);
+
+      // VCS and tooling configs
+      assert.equal(isSafeGeneratedSubdir(".git"), false);
+      assert.equal(isSafeGeneratedSubdir(".cursor"), false);
+      assert.equal(isSafeGeneratedSubdir(".vscode"), false);
+      assert.equal(isSafeGeneratedSubdir("openspec"), false);
+      assert.equal(isSafeGeneratedSubdir(".agents"), false);
+
+      // Dependencies & standard source roots
+      assert.equal(isSafeGeneratedSubdir("node_modules"), false);
+      assert.equal(isSafeGeneratedSubdir("src"), false);
+      assert.equal(isSafeGeneratedSubdir("lib"), false);
+      assert.equal(isSafeGeneratedSubdir("app"), false);
+      assert.equal(isSafeGeneratedSubdir("test"), false);
+
+      // Path traversal & wildcards
+      assert.equal(isSafeGeneratedSubdir("../outside"), false);
+      assert.equal(isSafeGeneratedSubdir("*.log"), false);
+      assert.equal(isSafeGeneratedSubdir(".DS_Store"), false);
+    });
+
+    it("resolves default ephemeral output subdirs and discovers safe git-ignored directories", () => {
+      const dir = mkdtempSync(join(tmpdir(), "aies-output-dirs-"));
+      try {
+        writeFileSync(
+          join(dir, ".gitignore"),
+          [
+            "# Build output",
+            "dist/",
+            ".astro/",
+            "custom_generated/",
+            "# Dependencies",
+            "node_modules/",
+            "# Secrets",
+            ".env",
+            ".env.local",
+            "# Tooling",
+            ".cursor/",
+            "openspec/",
+            "# Source",
+            "src/",
+          ].join("\n"),
+        );
+
+        mkdirSync(join(dir, "dist"), { recursive: true });
+        mkdirSync(join(dir, ".astro"), { recursive: true });
+        mkdirSync(join(dir, "custom_generated"), { recursive: true });
+        mkdirSync(join(dir, "src"), { recursive: true });
+
+        const subdirs = resolveVerifyAllowedOutputSubdirs(dir);
+
+        // Standard framework subdirs included
+        assert.ok(subdirs.includes(".astro"));
+        assert.ok(subdirs.includes(".cache"));
+        assert.ok(subdirs.includes("dist"));
+        assert.ok(subdirs.includes(".tmp"));
+
+        // Dangerous / sensitive paths never included
+        assert.ok(!subdirs.includes(".env"));
+        assert.ok(!subdirs.includes(".env.local"));
+        assert.ok(!subdirs.includes(".cursor"));
+        assert.ok(!subdirs.includes("openspec"));
+        assert.ok(!subdirs.includes("node_modules"));
+        assert.ok(!subdirs.includes("src"));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("allows check writes to generated/ephemeral output roots under Verify sandbox", async () => {
+      if (!isSandboxSupported()) {
+        return;
+      }
+
+      await resetSandbox();
+      mkdirSync(join(fixtureDir, "src"), { recursive: true });
+      writeFileSync(join(fixtureDir, "src", "index.js"), "console.log('original');\n");
+
+      // 1. Check writing to .astro/content.d.ts (the exact EZE-471 Astro pattern)
+      const writeAstro = await executeSandboxedCommand(
+        "node -e \"require('fs').writeFileSync('.astro/content.d.ts', 'export const content = 1;')\"",
+        fixtureDir,
+        { role: "verify" },
+      );
+      assert.equal(writeAstro.exitCode, 0, `Writing .astro/content.d.ts must succeed in Verify: ${writeAstro.stderr}`);
+      assert.equal(writeAstro.sandboxDenied, false);
+      assert.equal(
+        readFileSync(join(fixtureDir, ".astro", "content.d.ts"), "utf8"),
+        "export const content = 1;",
+      );
+
+      // 2. Check writing to .cache
+      const writeCache = await executeSandboxedCommand(
+        "node -e \"require('fs').writeFileSync('.cache/check.json', '{\"ok\":true}')\"",
+        fixtureDir,
+        { role: "verify" },
+      );
+      assert.equal(writeCache.exitCode, 0, `Writing to .cache must succeed in Verify: ${writeCache.stderr}`);
+      assert.equal(writeCache.sandboxDenied, false);
+
+      // 3. Direct attempt to modify source code in src/index.js is BLOCKED
+      const writeSource = await executeSandboxedCommand(
+        "node -e \"require('fs').writeFileSync('src/index.js', 'HACKED')\"",
+        fixtureDir,
+        { role: "verify" },
+      );
+      assert.notEqual(writeSource.exitCode, 0, "Modifying source file in Verify must fail");
+      assert.ok(writeSource.sandboxDenied, "Modifying source file in Verify must trigger sandbox denial");
+      assert.equal(readFileSync(join(fixtureDir, "src", "index.js"), "utf8"), "console.log('original');\n");
+
+      // 4. Arbitrary write outside allowed output roots is BLOCKED
+      const writeArbitrary = await executeSandboxedCommand(
+        "node -e \"require('fs').writeFileSync('arbitrary.txt', 'HACKED')\"",
+        fixtureDir,
+        { role: "verify" },
+      );
+      assert.notEqual(writeArbitrary.exitCode, 0, "Writing arbitrary file in Verify must fail");
+      assert.ok(writeArbitrary.sandboxDenied, "Writing arbitrary file in Verify must trigger sandbox denial");
+      assert.equal(existsSync(join(fixtureDir, "arbitrary.txt")), false);
+    });
+
+    it("strictly rejects catalog output roots if they contain git-tracked files (tracked .astro or out)", async () => {
+      const repoDir = mkdtempSync(join(tmpdir(), "aies-tracked-output-"));
+      try {
+        execFileSync("git", ["init"], { cwd: repoDir });
+        execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir });
+        execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: repoDir });
+
+        // 1. Create a tracked file inside .astro and out
+        mkdirSync(join(repoDir, ".astro"), { recursive: true });
+        writeFileSync(join(repoDir, ".astro", "tracked.txt"), "tracked astro content\n");
+        mkdirSync(join(repoDir, "out"), { recursive: true });
+        writeFileSync(join(repoDir, "out", "tracked.txt"), "tracked out content\n");
+
+        execFileSync("git", ["add", ".astro/tracked.txt", "out/tracked.txt"], { cwd: repoDir });
+        execFileSync("git", ["commit", "-m", "commit tracked files in catalog dirs"], { cwd: repoDir });
+
+        assert.equal(hasTrackedFilesInDir(repoDir, ".astro"), true);
+        assert.equal(hasTrackedFilesInDir(repoDir, "out"), true);
+
+        // 2. resolveVerifyAllowedOutputSubdirs must strictly exclude .astro and out
+        const subdirs = resolveVerifyAllowedOutputSubdirs(repoDir);
+        assert.ok(!subdirs.includes(".astro"), ".astro must NOT be allowed when it contains tracked files");
+        assert.ok(!subdirs.includes("out"), "out must NOT be allowed when it contains tracked files");
+
+        // 3. buildVerifySandboxConfig must not include them in allowWrite
+        const config = buildVerifySandboxConfig(repoDir);
+        const allowWrite = config.filesystem.allowWrite;
+        assert.ok(
+          !allowWrite.some((p) => p.endsWith("/.astro")),
+          `.astro must not be in allowWrite when tracked: ${allowWrite}`,
+        );
+        assert.ok(
+          !allowWrite.some((p) => p.endsWith("/out")),
+          `out must not be in allowWrite when tracked: ${allowWrite}`,
+        );
+
+        // 4. If sandbox is supported, writing to .astro/tracked.txt must be denied by Seatbelt
+        if (isSandboxSupported()) {
+          await resetSandbox();
+          const writeRes = await executeSandboxedCommand(
+            "node -e \"require('fs').writeFileSync('.astro/tracked.txt', 'MUTATED')\"",
+            repoDir,
+            { role: "verify" },
+          );
+          assert.notEqual(writeRes.exitCode, 0, "Writing to tracked .astro must be denied");
+          assert.ok(writeRes.sandboxDenied, "Writing to tracked .astro must trigger sandbox denial");
+          assert.equal(
+            readFileSync(join(repoDir, ".astro", "tracked.txt"), "utf8"),
+            "tracked astro content\n",
+          );
+        }
+      } finally {
+        rmSync(repoDir, { recursive: true, force: true });
       }
     });
   });

@@ -1798,4 +1798,110 @@ describe("EZE-438 Verify protocol hardening: eliminate completion loops and dist
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("EZE-471: does not launch another identical Verify after an infrastructure BLOCKED without changed conditions", async () => {
+    const dir = fixtureDir({ "src/app.js": "export const app = 1;\n" });
+    try {
+      const { faux, runtime, model } = await fauxRuntime();
+      let vState = createVerificationState();
+      const store = {
+        get: () => vState,
+        set: (next) => {
+          vState = next;
+        },
+      };
+
+      const tool = createDelegateTool({ verification: store });
+
+      // 1. Initial Verify ends in BLOCKED due to an infrastructure cause (e.g. EPERM on generated path)
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            {
+              status: "blocked",
+              summary: "EPERM al acceder/escribir .astro/content.d.ts",
+              criteria: [{ criterion: "npm run check passes", status: "blocked", evidence: "EPERM sandbox denial" }],
+              checks: [{ check: "npm run check", result: "EPERM: operation not permitted" }],
+              defects: [{ severity: "blocking", description: "infrastructure blocked by EPERM" }],
+              next: [],
+            },
+            "c1",
+          ),
+        ]),
+      ]);
+
+      const res1 = await tool.execute(
+        "call-1",
+        { role: "verify", task: "Verify app", criteria: ["npm run check passes"] },
+        undefined,
+        undefined,
+        { cwd: dir, model, modelRegistry: runtime },
+      );
+
+      assert.equal(vState.status, "blocked");
+      assert.equal(vState.blockedRevision, 0);
+      assert.match(vState.blockedReason ?? "", /EPERM/);
+
+      // 2. Parent attempts to run Verify again at the same revision without changed conditions
+      let secondAgentRan = false;
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall("read", { path: "src/app.js" }, "unexpected-call"),
+        ]),
+      ]);
+
+      const res2 = await tool.execute(
+        "call-2",
+        { role: "verify", task: "Verify app", criteria: ["npm run check passes"] },
+        undefined,
+        undefined,
+        { cwd: dir, model, modelRegistry: runtime },
+      );
+
+      assert.equal(res2.isError, true, "Second identical verify must be rejected");
+      assert.equal(res2.details.error, "verification_blocked_conditions_unchanged");
+      assert.match(res2.content[0].text, /Verify request rejected:/);
+      assert.match(res2.content[0].text, /already ended in BLOCKED at revision 0/);
+      assert.match(res2.content[0].text, /Conditions have not changed/);
+
+      // 3. Worker makes a code change, advancing revision and resetting status
+      store.set(applyWorkerResult(vState, ["src/app.js"]));
+      assert.equal(vState.status, "none");
+      assert.equal(vState.revision, 1);
+      assert.equal(vState.blockedRevision, undefined);
+
+      // 4. Verify is now allowed to run on the new revision
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall(
+            VERIFY_COMPLETE_TOOL,
+            {
+              status: "pass",
+              summary: "All checks passed on revision 1",
+              criteria: [{ criterion: "npm run check passes", status: "pass", evidence: "exit 0" }],
+              checks: [{ check: "npm run check", result: "passed" }],
+              defects: [],
+              next: [],
+            },
+            "c2",
+          ),
+        ]),
+      ]);
+
+      const res3 = await tool.execute(
+        "call-3",
+        { role: "verify", task: "Verify app", criteria: ["npm run check passes"] },
+        undefined,
+        undefined,
+        { cwd: dir, model, modelRegistry: runtime },
+      );
+
+      assert.equal(res3.isError, undefined, "Verify must run cleanly after conditions change");
+      assert.equal(vState.status, "pass");
+      assert.equal(vState.verifiedRevision, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

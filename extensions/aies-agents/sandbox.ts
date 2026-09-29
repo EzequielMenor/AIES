@@ -14,8 +14,8 @@
  * - Network isolation: disabled by default for both Worker and Verify child sessions.
  */
 
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -87,14 +87,188 @@ const COMMON_DENY_READ = [
   "~/.gnupg",
 ];
 
-const VERIFY_ALLOWED_OUTPUT_SUBDIRS = [
+export const DEFAULT_VERIFY_ALLOWED_OUTPUT_SUBDIRS: readonly string[] = [
   ".cache",
   "coverage",
   "dist",
   "build",
+  "out",
+  "target",
   "node_modules/.cache",
   ".tmp",
+  ".astro",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  ".parcel-cache",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
 ];
+
+export const VERIFY_ALLOWED_OUTPUT_SUBDIRS = DEFAULT_VERIFY_ALLOWED_OUTPUT_SUBDIRS;
+
+const FORBIDDEN_OUTPUT_ROOT_PARTS = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".vscode",
+  ".cursor",
+  ".idea",
+  ".claude",
+  ".superpowers",
+  "openspec",
+  ".agents",
+  ".agent",
+  ".pi",
+  ".atl",
+  ".codegraph",
+  ".vercel",
+  "src",
+  "source",
+  "lib",
+  "app",
+  "pages",
+  "components",
+  "test",
+  "tests",
+  "spec",
+  "specs",
+  "docs",
+  "documentation",
+  "public",
+  "static",
+  "scripts",
+  "bin",
+  "config",
+]);
+
+/**
+ * Check if a candidate relative directory is safe to treat as an ephemeral/generated output root.
+ */
+export function isSafeGeneratedSubdir(subdir: string): boolean {
+  const normalized = subdir.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized || normalized.includes("..") || normalized.includes("*") || normalized.includes("?")) {
+    return false;
+  }
+
+  const parts = normalized.split("/");
+  const rootPart = parts[0];
+  const lower = normalized.toLowerCase();
+
+  // Ephemeral OS files or log streams
+  if (lower === ".ds_store" || lower === "thumbs.db" || lower.endsWith(".log")) {
+    return false;
+  }
+
+  // Secrets, credentials, keys, auth
+  if (
+    lower.startsWith(".env") ||
+    lower.endsWith(".pem") ||
+    lower.endsWith(".key") ||
+    lower.includes("secret") ||
+    lower.includes("credential") ||
+    lower.includes("token") ||
+    lower.includes("auth.json")
+  ) {
+    return false;
+  }
+
+  // VCS, tooling configs, or standard source directories
+  if (FORBIDDEN_OUTPUT_ROOT_PARTS.has(rootPart)) {
+    return false;
+  }
+
+  // Dependencies: only node_modules/.cache is allowed, never node_modules itself
+  if (rootPart === "node_modules" && normalized !== "node_modules/.cache") {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Check if a directory inside workspaceRoot contains any git-tracked files.
+ */
+export function hasTrackedFilesInDir(workspaceRoot: string, subdir: string): boolean {
+  try {
+    const tracked = execFileSync("git", ["ls-files", subdir], {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return Boolean(tracked.trim());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the complete list of allowed output subdirectories inside a workspace for Verify.
+ * Combines built-in standard ephemeral directories with safe, git-ignored generated directories.
+ * Strictly excludes ANY candidate directory that contains git-tracked files.
+ */
+export function resolveVerifyAllowedOutputSubdirs(workspaceRoot: string): string[] {
+  const result = new Set<string>();
+
+  // Filter default catalog: strictly exclude any directory containing git-tracked files
+  for (const candidate of DEFAULT_VERIFY_ALLOWED_OUTPUT_SUBDIRS) {
+    if (!hasTrackedFilesInDir(workspaceRoot, candidate)) {
+      result.add(candidate);
+    }
+  }
+
+  const gitignorePath = join(workspaceRoot, ".gitignore");
+
+  if (existsSync(gitignorePath)) {
+    try {
+      const content = readFileSync(gitignorePath, "utf8");
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("!")) {
+          continue;
+        }
+        const isExplicitDir = trimmed.endsWith("/");
+        const candidate = trimmed.replace(/\/+$/, "");
+        if (!isSafeGeneratedSubdir(candidate)) {
+          continue;
+        }
+
+        const fullPath = join(workspaceRoot, candidate);
+        const exists = existsSync(fullPath);
+        if (exists) {
+          try {
+            if (!statSync(fullPath).isDirectory()) {
+              continue;
+            }
+          } catch {
+            continue;
+          }
+        } else if (!isExplicitDir) {
+          continue;
+        }
+
+        // Validate that git actually ignores this path and that it contains no tracked files
+        try {
+          execFileSync("git", ["check-ignore", "-q", candidate], {
+            cwd: workspaceRoot,
+            stdio: "ignore",
+          });
+          if (!hasTrackedFilesInDir(workspaceRoot, candidate)) {
+            result.add(candidate);
+          }
+        } catch {
+          // If git check fails (not a git repo or not ignored), do not add unverified path
+        }
+      }
+    } catch {
+      // Best-effort reading of .gitignore
+    }
+  }
+
+  return Array.from(result);
+}
 
 export function buildWorkspaceSecretPatterns(workspaceRoot: string): string[] {
   return [
@@ -175,7 +349,8 @@ export function buildVerifySandboxConfig(
     allowedOutputRoots.push(systemTmp);
   }
 
-  for (const subDir of VERIFY_ALLOWED_OUTPUT_SUBDIRS) {
+  const allowedSubdirs = resolveVerifyAllowedOutputSubdirs(workspaceRoot);
+  for (const subDir of allowedSubdirs) {
     const fullPath = join(workspaceRoot, subDir);
     try {
       if (!existsSync(fullPath)) {

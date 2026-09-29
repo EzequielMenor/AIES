@@ -279,6 +279,7 @@ export function createDelegateTool(
       "Use aies_delegate({ role: 'worker', ... }) to implement changes, edit files, and run tests. Worker reads the files it modifies, so prior Explore is unnecessary when the target is known.",
       "Use aies_delegate({ role: 'verify', task, criteria, changedPaths }) after a behaviour-bearing Worker change, before calling it complete. Pass facts only: never the Worker's summary, reasoning or transcript. Do NOT run bash commands like 'git rev-parse HEAD' to discover baseRef: aies_delegate automatically resolves baseRef if omitted.",
       "After a 'verify' result that is a protocol error, do NOT retry verification automatically or treat it as PASS/FAIL/BLOCKED: surface the protocol fault to the user and fix the Verify configuration or the completion call first.",
+      "After a 'verify' result that is BLOCKED due to an infrastructure or external cause, do NOT retry verification if conditions have not changed. Resolve the infrastructure blockage or report it to the user.",
       "Do NOT implement substantial multi-file changes directly in the parent session.",
       "Do NOT mark a work unit verified yourself: only a valid 'verify' PASS supports that claim.",
     ],
@@ -367,6 +368,24 @@ export function createDelegateTool(
         if (invalid) {
           return {
             content: [{ type: "text", text: `${VERIFY_REQUEST_REJECTED} ${invalid}` }],
+            isError: true,
+          };
+        }
+
+        if (current.status === "blocked") {
+          const reason = current.blockedReason ?? current.lastChange ?? "reproducible infrastructure block";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${VERIFY_REQUEST_REJECTED} verification already ended in BLOCKED at revision ${current.revision} due to an external/infrastructure cause (${reason}). Conditions have not changed: resolve the underlying cause before re-verifying.\n\n${commit(current)}`,
+              },
+            ],
+            details: {
+              status: "blocked",
+              error: "verification_blocked_conditions_unchanged",
+              verification: toVerificationReport(current),
+            },
             isError: true,
           };
         }
