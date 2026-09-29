@@ -136,6 +136,270 @@ describe("AIES isolation", () => {
     assert.notEqual(info.PI_CODING_AGENT_DIR, PI_PROFILE);
   });
 
+  it("resolves explicit --aies-home, overriding AIES_HOME environment variable", () => {
+    const explicitHome = mkdtempSync(join(tmpdir(), "aies-explicit-home-"));
+    try {
+      const info = parseInfo(runAies(env, ["--aies-info", "--aies-home", explicitHome]));
+      assert.equal(info.AIES_HOME, explicitHome);
+      assert.equal(info.PI_CODING_AGENT_DIR, join(explicitHome, "agent"));
+    } finally {
+      rmSync(explicitHome, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds both mcp.json and mcp-adapter.json for adapter 2.x and 3.x compatibility", () => {
+    runAies(env, ["--aies-info"]);
+    const mcpJson = join(agentDir, "mcp.json");
+    const mcpAdapterJson = join(agentDir, "mcp-adapter.json");
+    assert.ok(existsSync(mcpJson), "mcp.json must be seeded");
+    assert.ok(existsSync(mcpAdapterJson), "mcp-adapter.json must be seeded");
+    const mcpContent = JSON.parse(readFileSync(mcpJson, "utf8"));
+    const adapterContent = JSON.parse(readFileSync(mcpAdapterJson, "utf8"));
+    assert.deepEqual(adapterContent, mcpContent, "mcp-adapter.json must match mcp.json");
+  });
+
+  it("protects against inherited temporary AIES_HOME in interactive sessions and falls back to canonical", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "aies-inherited-"));
+    const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
+    try {
+      const mockPi = join(mockBinDir, "pi");
+      writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+      const script = `import pty, os, subprocess
+master, slave = pty.openpty()
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+p = subprocess.run(["bash", "${AIES}", "install"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print("STDOUT:" + p.stdout.decode())
+print("STDERR:" + p.stderr.decode())
+`;
+      const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${DEFAULT_AIES_HOME}/agent`));
+      assert.match(result.stdout, /ignoring inherited temporary AIES_HOME/);
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(mockBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it("respects --aies-ephemeral in interactive sessions when temporary AIES_HOME is intentional", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "aies-ephemeral-"));
+    const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
+    try {
+      const mockPi = join(mockBinDir, "pi");
+      writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+      const script = `import pty, os, subprocess
+master, slave = pty.openpty()
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+p = subprocess.run(["bash", "${AIES}", "--aies-ephemeral", "install"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print("STDOUT:" + p.stdout.decode())
+print("STDERR:" + p.stderr.decode())
+`;
+      const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${tmpHome}/agent`));
+      assert.doesNotMatch(result.stdout, /ignoring inherited temporary AIES_HOME/);
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(mockBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it("respects explicit --aies-home even in interactive sessions with temporary path", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "aies-inherited-"));
+    const explicitHome = mkdtempSync(join(tmpdir(), "aies-explicit-interactive-"));
+    const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
+    try {
+      const mockPi = join(mockBinDir, "pi");
+      writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+      const script = `import pty, os, subprocess
+master, slave = pty.openpty()
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+p = subprocess.run(["bash", "${AIES}", "--aies-home", "${explicitHome}", "install"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print("STDOUT:" + p.stdout.decode())
+print("STDERR:" + p.stderr.decode())
+`;
+      const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${explicitHome}/agent`));
+      assert.doesNotMatch(result.stdout, /ignoring inherited temporary AIES_HOME/);
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(explicitHome, { recursive: true, force: true });
+      rmSync(mockBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it("respects inherited custom persistent AIES_HOME in interactive and non-interactive sessions", () => {
+    const persistentHome = join(homedir(), ".aies-test-custom-persistent-" + Date.now());
+    const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
+    try {
+      const mockPi = join(mockBinDir, "pi");
+      writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+      // Interactive (PTY)
+      const script = `import pty, os, subprocess
+master, slave = pty.openpty()
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${persistentHome}")
+p = subprocess.run(["bash", "${AIES}", "install"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print("STDOUT:" + p.stdout.decode())
+print("STDERR:" + p.stderr.decode())
+`;
+      const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${persistentHome}/agent`));
+      assert.doesNotMatch(result.stdout, /ignoring inherited temporary AIES_HOME/);
+
+      // Non-interactive (direct spawn)
+      const nonInteractive = spawnSync(AIES, ["--aies-info"], {
+        env: { ...process.env, AIES_HOME: persistentHome },
+        encoding: "utf8"
+      });
+      assert.equal(nonInteractive.status, 0);
+      assert.match(nonInteractive.stdout, new RegExp(`AIES_HOME=${persistentHome}`));
+    } finally {
+      rmSync(persistentHome, { recursive: true, force: true });
+      rmSync(mockBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it("guarantees bin/aies and bootstrap-profile.sh apply the exact same profile precedence", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "aies-temp-parity-"));
+    const explicitHome = mkdtempSync(join(tmpdir(), "aies-explicit-parity-"));
+    const bootstrapScript = join(REPO, "scripts", "bootstrap-profile.sh");
+    try {
+      // 1. Explicit --aies-home
+      const aiesInfoExplicit = parseInfo(runAies(env, ["--aies-info", "--aies-home", explicitHome]));
+      const bootstrapExplicit = spawnSync("bash", [bootstrapScript, "--aies-home", explicitHome], {
+        env: { ...env, AIES_HOME: tmpHome },
+        encoding: "utf8"
+      });
+      assert.equal(aiesInfoExplicit.AIES_HOME, explicitHome);
+      assert.equal(bootstrapExplicit.status, 0);
+      assert.ok(existsSync(join(explicitHome, "agent", "settings.json")));
+
+      // 2. Ephemeral opt-in with temporary directory
+      const aiesInfoEphemeral = parseInfo(runAies({ ...env, AIES_HOME: tmpHome }, ["--aies-info", "--aies-ephemeral"]));
+      assert.equal(aiesInfoEphemeral.AIES_HOME, tmpHome);
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(explicitHome, { recursive: true, force: true });
+    }
+  });
+
+  describe("MCP conflict-safe seeding rules (A, B, C, D) and idempotence", () => {
+    const seedScript = join(REPO, "scripts", "seed-profile-config.mjs");
+    const templateDir = join(REPO, "profile");
+
+    it("Case A: empty profile seeds both mcp.json and mcp-adapter.json idempotently", () => {
+      const testAgentDir = mkdtempSync(join(tmpdir(), "aies-mcp-case-a-"));
+      try {
+        const first = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(first.status, 0);
+        const mcpJson = join(testAgentDir, "mcp.json");
+        const adapterJson = join(testAgentDir, "mcp-adapter.json");
+        assert.ok(existsSync(mcpJson));
+        assert.ok(existsSync(adapterJson));
+
+        const mcpContentFirst = readFileSync(mcpJson, "utf8");
+        const adapterContentFirst = readFileSync(adapterJson, "utf8");
+
+        // Second run: 0 changes
+        const second = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(second.status, 0);
+        assert.equal(readFileSync(mcpJson, "utf8"), mcpContentFirst);
+        assert.equal(readFileSync(adapterJson, "utf8"), adapterContentFirst);
+        assert.doesNotMatch(second.stdout, /reconciled at/);
+      } finally {
+        rmSync(testAgentDir, { recursive: true, force: true });
+      }
+    });
+
+    it("Case B: only mcp.json exists -> preserved byte-for-byte; creates mcp-adapter.json preserving config", () => {
+      const testAgentDir = mkdtempSync(join(tmpdir(), "aies-mcp-case-b-"));
+      try {
+        const mcpJson = join(testAgentDir, "mcp.json");
+        const customMcpContent = '{\n  "mcpServers": {\n    "custom-user-server": {\n      "command": "custom-cmd"\n    }\n  }\n}\n';
+        writeFileSync(mcpJson, customMcpContent);
+
+        const first = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(first.status, 0);
+
+        // mcp.json preserved byte-for-byte
+        assert.equal(readFileSync(mcpJson, "utf8"), customMcpContent);
+
+        // mcp-adapter.json created with user server + template servers (linear)
+        const adapterJson = join(testAgentDir, "mcp-adapter.json");
+        assert.ok(existsSync(adapterJson));
+        const adapterObj = JSON.parse(readFileSync(adapterJson, "utf8"));
+        assert.ok(adapterObj.mcpServers["custom-user-server"]);
+        assert.ok(adapterObj.mcpServers["linear"]);
+
+        const adapterContentFirst = readFileSync(adapterJson, "utf8");
+
+        // Second run: 0 changes
+        const second = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(second.status, 0);
+        assert.equal(readFileSync(mcpJson, "utf8"), customMcpContent);
+        assert.equal(readFileSync(adapterJson, "utf8"), adapterContentFirst);
+        assert.doesNotMatch(second.stdout, /reconciled at/);
+      } finally {
+        rmSync(testAgentDir, { recursive: true, force: true });
+      }
+    });
+
+    it("Case C: only mcp-adapter.json exists -> preserved byte-for-byte", () => {
+      const testAgentDir = mkdtempSync(join(tmpdir(), "aies-mcp-case-c-"));
+      try {
+        const adapterJson = join(testAgentDir, "mcp-adapter.json");
+        const customAdapterContent = '{\n  "mcpServers": {\n    "v3-custom": {\n      "command": "v3"\n    }\n  }\n}\n';
+        writeFileSync(adapterJson, customAdapterContent);
+
+        const first = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(first.status, 0);
+        assert.equal(readFileSync(adapterJson, "utf8"), customAdapterContent);
+
+        // Second run: 0 changes
+        const second = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(second.status, 0);
+        assert.equal(readFileSync(adapterJson, "utf8"), customAdapterContent);
+        assert.doesNotMatch(second.stdout, /reconciled at/);
+      } finally {
+        rmSync(testAgentDir, { recursive: true, force: true });
+      }
+    });
+
+    it("Case D: both exist with different content -> neither overwritten, neither merged destructively", () => {
+      const testAgentDir = mkdtempSync(join(tmpdir(), "aies-mcp-case-d-"));
+      try {
+        const mcpJson = join(testAgentDir, "mcp.json");
+        const adapterJson = join(testAgentDir, "mcp-adapter.json");
+        const mcpContent = '{\n  "mcpServers": {\n    "server-one": {\n      "command": "one"\n    }\n  }\n}\n';
+        const adapterContent = '{\n  "mcpServers": {\n    "server-two": {\n      "command": "two"\n    }\n  }\n}\n';
+        writeFileSync(mcpJson, mcpContent);
+        writeFileSync(adapterJson, adapterContent);
+
+        const first = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(first.status, 0);
+
+        // Neither overwritten, neither merged destructively
+        assert.equal(readFileSync(mcpJson, "utf8"), mcpContent);
+        assert.equal(readFileSync(adapterJson, "utf8"), adapterContent);
+        assert.doesNotMatch(first.stdout, /reconciled at/);
+
+        // Second run: 0 changes
+        const second = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
+        assert.equal(second.status, 0);
+        assert.equal(readFileSync(mcpJson, "utf8"), mcpContent);
+        assert.equal(readFileSync(adapterJson, "utf8"), adapterContent);
+      } finally {
+        rmSync(testAgentDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("resolves the repository correctly when launched through a PATH symlink", () => {
     // Typical installation: ~/.local/bin/aies -> <repo>/bin/aies. AIES_REPO
     // must follow the real script, not the symlink location.

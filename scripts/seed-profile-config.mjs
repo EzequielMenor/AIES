@@ -103,51 +103,100 @@ function reconcilePackages() {
 }
 
 /**
- * Ensure the declared MCP servers and adapter settings exist. Every other server
- * the user added stays exactly as it was.
+ * Ensure MCP configurations exist and remain compatible across pi-mcp-adapter 2.x and 3.x.
+ *
+ * Conflict-safe rules:
+ * A) Empty profile: seed both mcp.json and mcp-adapter.json from templates.
+ * B) Only mcp.json exists: preserve mcp.json byte-for-byte; create mcp-adapter.json
+ *    migrating user servers and settings without destroying user configuration.
+ * C) Only mcp-adapter.json exists: preserve mcp-adapter.json byte-for-byte.
+ * D) Both exist (even with different content): never overwrite either, never merge
+ *    destructively; preserve both byte-for-byte.
+ *
+ * Idempotence: a second run makes zero changes.
  */
 function reconcileMcpConfig() {
-  const templatePath = join(TEMPLATE_DIR, "mcp.json");
-  if (!existsSync(templatePath)) return;
-  const targetPath = join(AGENT_DIR, "mcp.json");
+  const mcpJsonPath = join(AGENT_DIR, "mcp.json");
+  const mcpAdapterPath = join(AGENT_DIR, "mcp-adapter.json");
 
-  const template = readJson(templatePath);
-  if (!template.ok || !isPlainObject(template.value)) return;
+  const hasMcpJson = existsSync(mcpJsonPath);
+  const hasMcpAdapter = existsSync(mcpAdapterPath);
 
-  let current;
-  if (existsSync(targetPath)) {
-    const loaded = readJson(targetPath);
-    if (!loaded.ok) return;
-    current = loaded.value;
-  } else {
-    current = {};
-  }
-  if (!isPlainObject(current)) {
-    warn(`${targetPath} is not a JSON object; leaving it untouched`);
+  // Case D: Both exist. Never overwrite either, never merge destructively.
+  if (hasMcpJson && hasMcpAdapter) {
     return;
   }
 
-  const next = { ...current };
-
-  const templateServers = isPlainObject(template.value.mcpServers) ? template.value.mcpServers : {};
-  const currentServers = isPlainObject(current.mcpServers) ? current.mcpServers : {};
-  const servers = { ...currentServers };
-  for (const [name, definition] of Object.entries(templateServers)) {
-    if (!deepEqual(servers[name], definition)) servers[name] = definition;
+  // Case C: Only mcp-adapter.json exists. Preserve byte-for-byte.
+  if (!hasMcpJson && hasMcpAdapter) {
+    return;
   }
-  next.mcpServers = servers;
 
-  const templateSettings = isPlainObject(template.value.settings) ? template.value.settings : {};
-  const currentSettings = isPlainObject(current.settings) ? current.settings : {};
-  const settings = { ...currentSettings };
-  for (const [key, value] of Object.entries(templateSettings)) {
-    if (!deepEqual(settings[key], value)) settings[key] = value;
+  // Case B: Only mcp.json exists. Preserve mcp.json byte-for-byte;
+  // create mcp-adapter.json migrating user configuration and adding declared template servers.
+  if (hasMcpJson && !hasMcpAdapter) {
+    const templatePath = existsSync(join(TEMPLATE_DIR, "mcp-adapter.json"))
+      ? join(TEMPLATE_DIR, "mcp-adapter.json")
+      : join(TEMPLATE_DIR, "mcp.json");
+
+    const template = existsSync(templatePath) ? readJson(templatePath) : { ok: true, value: {} };
+    const userMcp = readJson(mcpJsonPath);
+
+    if (!userMcp.ok || !isPlainObject(userMcp.value)) {
+      warn(`${mcpJsonPath} is not a readable JSON object; leaving profile untouched`);
+      return;
+    }
+
+    const next = { ...userMcp.value };
+
+    const templateServers = (template.ok && isPlainObject(template.value?.mcpServers)) ? template.value.mcpServers : {};
+    const userServers = isPlainObject(userMcp.value.mcpServers) ? userMcp.value.mcpServers : {};
+    const mergedServers = { ...userServers };
+    for (const [name, definition] of Object.entries(templateServers)) {
+      if (!mergedServers[name]) {
+        mergedServers[name] = definition;
+      }
+    }
+    next.mcpServers = mergedServers;
+
+    const templateSettings = (template.ok && isPlainObject(template.value?.settings)) ? template.value.settings : {};
+    const userSettings = isPlainObject(userMcp.value.settings) ? userMcp.value.settings : {};
+    const mergedSettings = { ...userSettings };
+    for (const [key, value] of Object.entries(templateSettings)) {
+      if (mergedSettings[key] === undefined) {
+        mergedSettings[key] = value;
+      }
+    }
+    if (Object.keys(mergedSettings).length > 0) {
+      next.settings = mergedSettings;
+    }
+
+    writeJson(mcpAdapterPath, next);
+    process.stdout.write(`aies: profile MCP config reconciled at ${mcpAdapterPath}\n`);
+    return;
   }
-  if (Object.keys(settings).length > 0) next.settings = settings;
 
-  if (deepEqual(next, current) && existsSync(targetPath)) return;
-  writeJson(targetPath, next);
-  process.stdout.write(`aies: profile MCP config reconciled at ${targetPath}\n`);
+  // Case A: Empty profile (neither exists). Seed both from templates.
+  const templateMcp = join(TEMPLATE_DIR, "mcp.json");
+  const templateAdapter = existsSync(join(TEMPLATE_DIR, "mcp-adapter.json"))
+    ? join(TEMPLATE_DIR, "mcp-adapter.json")
+    : templateMcp;
+
+  if (existsSync(templateMcp)) {
+    const parsed = readJson(templateMcp);
+    if (parsed.ok && isPlainObject(parsed.value)) {
+      writeJson(mcpJsonPath, parsed.value);
+      process.stdout.write(`aies: profile MCP config reconciled at ${mcpJsonPath}\n`);
+    }
+  }
+
+  if (existsSync(templateAdapter)) {
+    const parsed = readJson(templateAdapter);
+    if (parsed.ok && isPlainObject(parsed.value)) {
+      writeJson(mcpAdapterPath, parsed.value);
+      process.stdout.write(`aies: profile MCP config reconciled at ${mcpAdapterPath}\n`);
+    }
+  }
 }
 
 function main() {

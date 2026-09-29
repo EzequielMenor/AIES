@@ -146,6 +146,7 @@ describe("AIES MCP integration", () => {
       try {
         mkdirSync(join(agentDir, "extensions"), { recursive: true });
         writeFileSync(join(agentDir, "mcp.json"), JSON.stringify(TEMPLATE_MCP, null, 2));
+        writeFileSync(join(agentDir, "mcp-adapter.json"), JSON.stringify(TEMPLATE_MCP, null, 2));
 
         const loader = new DefaultResourceLoader({
           cwd: REPO,
@@ -163,7 +164,7 @@ describe("AIES MCP integration", () => {
         assert.deepEqual(loaded.errors, [], "the adapter must load without errors");
 
         const commands = loaded.extensions.flatMap((extension) => [...extension.commands.keys()]);
-        assert.ok(commands.includes("mcp"), "/mcp must come from the adapter");
+        assert.ok(commands.includes("mcp") || commands.includes("mcp-adapter"), "/mcp or /mcp-adapter must come from the adapter");
         assert.ok(commands.includes("mcp-auth"), "/mcp-auth must come from the adapter");
 
         const tools = loaded.extensions.flatMap((extension) => [...extension.tools.keys()]);
@@ -767,6 +768,7 @@ describe("AIES MCP integration", () => {
         );
         // The profile's own declaration.
         writeFileSync(join(agentDir, "mcp.json"), JSON.stringify(TEMPLATE_MCP, null, 2));
+        writeFileSync(join(agentDir, "mcp-adapter.json"), JSON.stringify(TEMPLATE_MCP, null, 2));
 
         process.env.HOME = home;
         process.env.PI_CODING_AGENT_DIR = agentDir;

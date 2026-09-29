@@ -14,8 +14,59 @@ set -euo pipefail
 
 AIES_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-AIES_HOME="${AIES_HOME:-$HOME/.local/share/aies}"
+CANONICAL_AIES_HOME="$HOME/.local/share/aies"
+AIES_HOME="${AIES_HOME:-}"
+
+allow_ephemeral=0
+explicit_home=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --aies-ephemeral)
+      allow_ephemeral=1
+      shift
+      ;;
+    --aies-home)
+      if [ $# -lt 2 ]; then
+        printf 'bootstrap-profile: --aies-home requires a path\n' >&2
+        exit 2
+      fi
+      explicit_home="$2"
+      shift 2
+      ;;
+    --aies-home=*)
+      explicit_home="${1#--aies-home=}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+# Profile resolution precedence:
+# 1. Explicit CLI flag: --aies-home <path> (always respected, interactive or non-interactive)
+# 2. Explicit ephemeral opt-in: --aies-ephemeral or AIES_EPHEMERAL=1 (allows temporary paths in interactive sessions)
+# 3. Inherited persistent/non-temp custom AIES_HOME (e.g. ~/my-profile, always respected)
+# 4. Inherited suspicious temporary AIES_HOME (/tmp/*, etc.) in interactive use ([ -t 0 ]) without (1) or (2):
+#    sanitized with warning, falls back to CANONICAL_AIES_HOME ($HOME/.local/share/aies).
+# 5. Default: CANONICAL_AIES_HOME ($HOME/.local/share/aies)
+if [ -n "$explicit_home" ]; then
+  AIES_HOME="$explicit_home"
+elif [ -n "${AIES_HOME:-}" ]; then
+  case "$AIES_HOME" in "~/"*) AIES_HOME="$HOME/${AIES_HOME#\~/}" ;; esac
+  case "$AIES_HOME" in
+    /tmp/*|/private/tmp/*|/var/folders/*|${TMPDIR:-/tmp}/*)
+      if [ "$allow_ephemeral" -eq 0 ] && [ "${AIES_EPHEMERAL:-0}" -ne 1 ] && [ -t 0 ]; then
+        AIES_HOME="$CANONICAL_AIES_HOME"
+      fi
+      ;;
+  esac
+else
+  AIES_HOME="$CANONICAL_AIES_HOME"
+fi
 case "$AIES_HOME" in "~/"*) AIES_HOME="$HOME/${AIES_HOME#\~/}" ;; esac
+export AIES_HOME
 AIES_AGENT_DIR="$AIES_HOME/agent"
 
 mkdir -p "$AIES_AGENT_DIR"
