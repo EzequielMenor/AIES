@@ -7,7 +7,7 @@
  *
  *   - the first launch seeds a usable profile,
  *   - later launches still work when the user edited the profile (Pi owns
- *     `settings.json` after seeding, and `/mcp setup` may rewrite `mcp.json`),
+ *     `settings.json` after seeding, and `/mcp setup` may rewrite MCP config),
  *   - running it twice changes nothing.
  *
  * Nothing here is a credential. OAuth tokens live in the OS credential store and
@@ -19,7 +19,7 @@
  * Usage: node scripts/seed-profile-config.mjs <templateDir> <agentDir>
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const [, , TEMPLATE_DIR_ARG, AGENT_DIR_ARG] = process.argv;
@@ -103,100 +103,97 @@ function reconcilePackages() {
 }
 
 /**
- * Ensure MCP configurations exist and remain compatible across pi-mcp-adapter 2.x and 3.x.
- *
- * Conflict-safe rules:
- * A) Empty profile: seed both mcp.json and mcp-adapter.json from templates.
- * B) Only mcp.json exists: preserve mcp.json byte-for-byte; create mcp-adapter.json
- *    migrating user servers and settings without destroying user configuration.
- * C) Only mcp-adapter.json exists: preserve mcp-adapter.json byte-for-byte.
- * D) Both exist (even with different content): never overwrite either, never merge
- *    destructively; preserve both byte-for-byte.
- *
- * Idempotence: a second run makes zero changes.
+ * Keep the MCP config format aligned with the installed adapter generation. v3
+ * reads mcp-adapter.json only; v2 reads mcp.json. If the package is not installed
+ * yet, use the current v3 format so the first Pi launch cannot produce a warning.
  */
 function reconcileMcpConfig() {
   const mcpJsonPath = join(AGENT_DIR, "mcp.json");
   const mcpAdapterPath = join(AGENT_DIR, "mcp-adapter.json");
+  const legacyTemplatePath = join(TEMPLATE_DIR, "mcp.json");
+  const adapterTemplatePath = join(TEMPLATE_DIR, "mcp-adapter.json");
+  const packagePath = join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  let adapterMajor;
 
-  const hasMcpJson = existsSync(mcpJsonPath);
-  const hasMcpAdapter = existsSync(mcpAdapterPath);
+  if (existsSync(packagePath)) {
+    const metadata = readJson(packagePath);
+    const match = metadata.ok && typeof metadata.value?.version === "string"
+      ? metadata.value.version.match(/^(\d+)\./)
+      : null;
+    if (match) adapterMajor = Number(match[1]);
+    else warn(`cannot determine pi-mcp-adapter version from ${packagePath}; using the current v3 config format`);
+  }
 
-  // Case D: Both exist. Never overwrite either, never merge destructively.
-  if (hasMcpJson && hasMcpAdapter) {
+  const isV2 = adapterMajor !== undefined && adapterMajor < 3;
+  const targetPath = isV2 ? mcpJsonPath : mcpAdapterPath;
+  const sourcePath = isV2 ? mcpAdapterPath : mcpJsonPath;
+  const templatePath = isV2 ? legacyTemplatePath : adapterTemplatePath;
+
+  if (isV2) {
+    if (!existsSync(targetPath) && existsSync(templatePath)) {
+      const template = readJson(templatePath);
+      if (template.ok && isPlainObject(template.value)) {
+        writeJson(targetPath, template.value);
+        process.stdout.write(`aies: profile MCP config reconciled at ${targetPath}\n`);
+      }
+    }
     return;
   }
 
-  // Case C: Only mcp-adapter.json exists. Preserve byte-for-byte.
-  if (!hasMcpJson && hasMcpAdapter) {
+  const template = existsSync(templatePath) ? readJson(templatePath) : { ok: true, value: {} };
+  if (!template.ok || !isPlainObject(template.value)) return;
+
+  if (!existsSync(sourcePath)) {
+    if (!existsSync(targetPath)) {
+      writeJson(targetPath, template.value);
+      process.stdout.write(`aies: profile MCP config reconciled at ${targetPath}\n`);
+    }
     return;
   }
 
-  // Case B: Only mcp.json exists. Preserve mcp.json byte-for-byte;
-  // create mcp-adapter.json migrating user configuration and adding declared template servers.
-  if (hasMcpJson && !hasMcpAdapter) {
-    const templatePath = existsSync(join(TEMPLATE_DIR, "mcp-adapter.json"))
-      ? join(TEMPLATE_DIR, "mcp-adapter.json")
-      : join(TEMPLATE_DIR, "mcp.json");
+  const legacy = readJson(sourcePath);
+  if (!legacy.ok || !isPlainObject(legacy.value)) {
+    warn(`${sourcePath} is not a readable JSON object; leaving profile untouched`);
+    return;
+  }
 
-    const template = existsSync(templatePath) ? readJson(templatePath) : { ok: true, value: {} };
-    const userMcp = readJson(mcpJsonPath);
-
-    if (!userMcp.ok || !isPlainObject(userMcp.value)) {
-      warn(`${mcpJsonPath} is not a readable JSON object; leaving profile untouched`);
+  let current = { ...template.value };
+  if (existsSync(targetPath)) {
+    const loaded = readJson(targetPath);
+    if (!loaded.ok || !isPlainObject(loaded.value)) {
+      warn(`${targetPath} is not a readable JSON object; leaving profile untouched`);
       return;
     }
+    current = loaded.value;
+  }
 
-    const next = { ...userMcp.value };
-
-    const templateServers = (template.ok && isPlainObject(template.value?.mcpServers)) ? template.value.mcpServers : {};
-    const userServers = isPlainObject(userMcp.value.mcpServers) ? userMcp.value.mcpServers : {};
-    const mergedServers = { ...userServers };
-    for (const [name, definition] of Object.entries(templateServers)) {
-      if (!mergedServers[name]) {
-        mergedServers[name] = definition;
-      }
-    }
-    next.mcpServers = mergedServers;
-
-    const templateSettings = (template.ok && isPlainObject(template.value?.settings)) ? template.value.settings : {};
-    const userSettings = isPlainObject(userMcp.value.settings) ? userMcp.value.settings : {};
-    const mergedSettings = { ...userSettings };
-    for (const [key, value] of Object.entries(templateSettings)) {
-      if (mergedSettings[key] === undefined) {
-        mergedSettings[key] = value;
-      }
-    }
-    if (Object.keys(mergedSettings).length > 0) {
-      next.settings = mergedSettings;
-    }
-
-    writeJson(mcpAdapterPath, next);
-    process.stdout.write(`aies: profile MCP config reconciled at ${mcpAdapterPath}\n`);
+  const next = mergeObjects(mergeObjects(template.value, legacy.value), current);
+  if (!isPlainObject(next.mcpServers)) {
+    warn(`${targetPath} has no valid "mcpServers" object after migration; leaving legacy config untouched`);
     return;
   }
 
-  // Case A: Empty profile (neither exists). Seed both from templates.
-  const templateMcp = join(TEMPLATE_DIR, "mcp.json");
-  const templateAdapter = existsSync(join(TEMPLATE_DIR, "mcp-adapter.json"))
-    ? join(TEMPLATE_DIR, "mcp-adapter.json")
-    : templateMcp;
-
-  if (existsSync(templateMcp)) {
-    const parsed = readJson(templateMcp);
-    if (parsed.ok && isPlainObject(parsed.value)) {
-      writeJson(mcpJsonPath, parsed.value);
-      process.stdout.write(`aies: profile MCP config reconciled at ${mcpJsonPath}\n`);
-    }
+  writeJson(targetPath, next);
+  const validated = readJson(targetPath);
+  if (!validated.ok || !isPlainObject(validated.value) || !isPlainObject(validated.value.mcpServers)
+    || !deepEqual(validated.value, next)) {
+    warn(`${targetPath} failed validation after migration; leaving legacy config untouched`);
+    return;
   }
 
-  if (existsSync(templateAdapter)) {
-    const parsed = readJson(templateAdapter);
-    if (parsed.ok && isPlainObject(parsed.value)) {
-      writeJson(mcpAdapterPath, parsed.value);
-      process.stdout.write(`aies: profile MCP config reconciled at ${mcpAdapterPath}\n`);
-    }
+  unlinkSync(sourcePath);
+  process.stdout.write(`aies: profile MCP config migrated to ${targetPath}; removed legacy ${sourcePath}\n`);
+}
+
+/** Merge recursively, with values from the right-hand config taking precedence. */
+function mergeObjects(base, override) {
+  const result = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    result[key] = isPlainObject(result[key]) && isPlainObject(value)
+      ? mergeObjects(result[key], value)
+      : value;
   }
+  return result;
 }
 
 function main() {

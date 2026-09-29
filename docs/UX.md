@@ -1140,7 +1140,7 @@ Boundaries:
 - Only the six named generic tools are quiet. Every other Pi tool keeps Pi's own
   rendering, and the external `mcp` tool is not wrapped at all.
 - Renderers never send a conversation message: no UI path calls `sendMessage`.
-- The adapter's quiet result mode is pinned in `profile/mcp.json` —
+- The adapter's quiet result mode is pinned in `profile/mcp-adapter.json` —
   `toolResultRendering: "compact"`, `collapsedResultLines: 1`,
   `notifyOnStartupConnect: false`, `mcpFooterStatus: "off"`. These are
   presentation settings only: the `mcp` schema and the parent-mediated

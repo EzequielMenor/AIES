@@ -196,7 +196,7 @@ export class FakeLinearTransport implements LinearTransport {
   }
 }
 
-/** MCP server AIES declares for Linear in `profile/mcp.json`. */
+/** MCP server AIES declares for Linear in `profile/mcp-adapter.json`. */
 export const LINEAR_MCP_SERVER = "linear";
 
 /** Linear MCP tool names whose arguments were verified against the live server. */

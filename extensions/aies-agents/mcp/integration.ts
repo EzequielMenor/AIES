@@ -180,7 +180,7 @@ export function describeMcpDiagnostic(diagnostic: McpDiagnostic, options: { mode
     case "server_missing":
       return [
         `No "${diagnostic.server}" MCP server is configured in this AIES profile.`,
-        'Expected in $AIES_HOME/agent/mcp.json, pointing at https://mcp.linear.app/mcp with auth "oauth".',
+        'Expected in $AIES_HOME/agent/mcp-adapter.json, pointing at https://mcp.linear.app/mcp with auth "oauth".',
       ].join("\n");
     case "needs_auth":
       return interactive
@@ -192,7 +192,7 @@ export function describeMcpDiagnostic(diagnostic: McpDiagnostic, options: { mode
     case "disabled":
       return [
         `The "${diagnostic.server}" MCP server is disabled in this AIES profile.`,
-        `Enable it with /mcp enable ${diagnostic.server} and reload, or remove the disabled flag from $AIES_HOME/agent/mcp.json.`,
+        `Enable it with /mcp enable ${diagnostic.server} and reload, or remove the disabled flag from $AIES_HOME/agent/mcp-adapter.json.`,
       ].join("\n");
     case "server_failed":
       return [
