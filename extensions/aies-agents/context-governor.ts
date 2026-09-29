@@ -577,9 +577,13 @@ export class ContextGovernor {
     this.zone = "green";
     this.compactPending = false;
     this.compacting = false;
+    this.compactionCount = 0;
+    this.compactionFailures = 0;
+    this.consecutiveCompactionFailures = 0;
+    this.oversizedResults = 0;
+    this.truncatedChars = 0;
     this.lastCompactionAt = undefined;
     this.lastCompactionError = undefined;
-    this.consecutiveCompactionFailures = 0;
     this.activeCompactionPromise = null;
     this.budgets = calculateContextBudgets(0, this.config);
   }

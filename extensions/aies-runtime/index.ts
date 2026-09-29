@@ -1443,55 +1443,59 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
   guard(() => registerEntryRenderers());
 
+  function resetRuntimeSessionState(now: number, ctx: ExtensionContext, reason?: string): void {
+    footer = "";
+    header = "";
+    panel = "";
+    emptyStateTranscriptSeen = false;
+    footerTui = undefined;
+    headerTui = undefined;
+    persisted = "";
+    autonomySignal = "";
+    autonomyEnabled = false;
+    autonomyStopReason = null;
+    doneEmitted = false;
+    ticketWasComplete = false;
+    ticketStatusTypeComplete = false;
+    lastVerify = undefined;
+    runEndedAt = undefined;
+
+    // A session switch must not carry another session's cumulative Parent
+    // usage: reset the incremental cache before the first sample.
+    resetParentUsageCache();
+
+    // The observatory registry is one session's run, owned by the agents
+    // extension and delivered over the shared bus. Subscribe to the bus with
+    // this context and start from an empty projection, so records never leak
+    // across sessions and a missing publisher degrades to an empty registry.
+    observatoryUnsubscribe?.();
+    observatoryUnsubscribe = subscribeToAgentsBus(ctx);
+    activeAgentsOverlay?.dispose();
+    activeAgentsOverlay = undefined;
+
+    panelVisible = false;
+    railHandle?.dispose();
+    railHandle = undefined;
+    branchReader = undefined;
+    detachedShaCache = undefined;
+
+    state = createState(now);
+    state = applyAgents(state, []);
+    state = applySessionMeta(state, {
+      sessionId: ctx.sessionManager.getSessionId(),
+      sessionFile: ctx.sessionManager.getSessionFile(),
+    });
+    state = applyModel(state, ctx.model);
+    if (reason !== "new") restore(ctx, now);
+    // A resumed or reloaded session may already carry user messages. Read the
+    // transcript once here, never on the render path.
+    if (reason !== "new") emptyStateTranscriptSeen = hasHumanTranscript(sessionEntriesOf(ctx));
+  }
+
   pi.on("session_start", async (event, ctx) => {
     guard(() => {
       const now = Date.now();
-      footer = "";
-      header = "";
-      panel = "";
-      emptyStateTranscriptSeen = false;
-      footerTui = undefined;
-      headerTui = undefined;
-      persisted = "";
-      autonomySignal = "";
-      autonomyEnabled = false;
-      autonomyStopReason = null;
-      doneEmitted = false;
-      ticketWasComplete = false;
-      ticketStatusTypeComplete = false;
-      lastVerify = undefined;
-      runEndedAt = undefined;
-
-      // A session switch must not carry another session's cumulative Parent
-      // usage: reset the incremental cache before the first sample.
-      resetParentUsageCache();
-
-      // The observatory registry is one session's run, owned by the agents
-      // extension and delivered over the shared bus. Subscribe to the bus with
-      // this context and start from an empty projection, so records never leak
-      // across sessions and a missing publisher degrades to an empty registry.
-      observatoryUnsubscribe?.();
-      observatoryUnsubscribe = subscribeToAgentsBus(ctx);
-      activeAgentsOverlay?.dispose();
-      activeAgentsOverlay = undefined;
-
-      panelVisible = false;
-      railHandle?.dispose();
-      railHandle = undefined;
-      branchReader = undefined;
-      detachedShaCache = undefined;
-
-      state = createState(now);
-      state = applyAgents(state, []);
-      state = applySessionMeta(state, {
-        sessionId: ctx.sessionManager.getSessionId(),
-        sessionFile: ctx.sessionManager.getSessionFile(),
-      });
-      state = applyModel(state, ctx.model);
-      if (event.reason !== "new") restore(ctx, now);
-      // A resumed or reloaded session may already carry user messages. Read the
-      // transcript once here, never on the render path.
-      if (event.reason !== "new") emptyStateTranscriptSeen = hasHumanTranscript(sessionEntriesOf(ctx));
+      resetRuntimeSessionState(now, ctx, event.reason);
 
       // Quiet rendering for the six generic Pi tools, with the real session cwd.
       // Idempotent per host: a reload or resume in the same directory registers

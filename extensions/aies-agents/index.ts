@@ -46,6 +46,7 @@ import {
   setActiveContinuationController,
   type AutonomySnapshot,
 } from "./autonomy/index.ts";
+import { resetPermissionTelemetry } from "./permissions.ts";
 
 /** Native tools that change the work unit when the parent uses them directly. */
 const PARENT_MUTATION_TOOLS = ["edit", "write"];
@@ -54,6 +55,22 @@ let activeTicketManager: TicketManager | undefined;
 
 export function getActiveTicketManager(): TicketManager | undefined {
   return activeTicketManager;
+}
+
+let activeResetSessionState: (() => void) | undefined;
+
+/**
+ * Single, explicit reset boundary for a new AIES session (EZE-485).
+ * Resets all session-ephemeral child observations, telemetry counters,
+ * active ticket state, autonomy controller state, and routing/verification states.
+ */
+export function resetSessionState(): void {
+  observatory.reset();
+  resetPermissionTelemetry();
+  getContextGovernor().reset();
+  getActiveTicketManager()?.reset();
+  getActiveContinuationController()?.reset();
+  activeResetSessionState?.();
 }
 
 /** The minimal event surface the observatory bridge needs. */
@@ -114,9 +131,13 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   pi.events.on(MCP_STATUS_CHANNEL, (payload: unknown) => {
     mcpState = applyMcpStatusEvent(mcpState, payload, Date.now());
   });
-  pi.on("session_start", () => {
+
+  function resetLocalAgentState(): void {
+    routingState = createRoutingState();
+    verification = createVerificationState();
     mcpState = createMcpIntegrationState();
-  });
+  }
+  activeResetSessionState = resetLocalAgentState;
 
   // The registry watches the children; this bridge lets the UI extension see it.
   // Subscribed once per extension instance and never per event: the registry
@@ -298,13 +319,11 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (event, ctx) => {
-    routingState = createRoutingState();
-    verification = createVerificationState();
     if (event.reason === "new") {
-      governor.reset();
-      ticketManager.reset();
-      controller.reset();
+      resetSessionState();
     } else if (event.reason === "resume" || event.reason === "reload") {
+      routingState = createRoutingState();
+      verification = createVerificationState();
       try {
         const entries = ctx.sessionManager.getEntries();
         for (let i = entries.length - 1; i >= 0; i--) {
@@ -322,6 +341,9 @@ export default function aiesAgents(pi: ExtensionAPI): void {
           }
         }
       } catch {}
+    } else {
+      routingState = createRoutingState();
+      verification = createVerificationState();
     }
   });
 }
