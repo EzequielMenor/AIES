@@ -10,6 +10,7 @@
  *   `context` to this role is rejected.
  */
 
+import { execFileSync } from "node:child_process";
 import { Type, type Static } from "typebox";
 import { getAgentDir, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -44,7 +45,7 @@ export const DelegateParamsSchema = Type.Object({
     [Type.Literal("explore"), Type.Literal("worker"), Type.Literal("verify")],
     {
       description:
-        "The agent role to delegate to: 'explore' to investigate, 'worker' to implement, 'verify' to prove independent of the implementer",
+        "The agent role to delegate to: 'worker' to implement or fix a known target/files directly (Fast-Path, preferred when target is scoped), 'explore' ONLY to investigate unknown codebase architecture or search across >2 unknown files, 'verify' to prove independent of the implementer",
     },
   ),
   task: Type.String({
@@ -75,7 +76,8 @@ export const DelegateParamsSchema = Type.Object({
   ),
   baseRef: Type.Optional(
     Type.String({
-      description: "For 'verify': the base commit or ref the change is compared against",
+      description:
+        "For 'verify': optional base commit or ref. Omit it: aies_delegate automatically resolves it from git HEAD when not supplied",
     }),
   ),
   checks: Type.Optional(
@@ -144,6 +146,28 @@ function verifyRequestError(params: DelegateParams): string | undefined {
   }
 
   return undefined;
+}
+
+/**
+ * Resolve the baseRef for verify: prefer explicit parameter if provided;
+ * otherwise resolve git HEAD automatically so Parent never spends a tool roundtrip
+ * running `git rev-parse HEAD`.
+ */
+export function resolveBaseRef(cwd: string, explicit?: string): string | undefined {
+  if (typeof explicit === "string" && explicit.trim()) {
+    return explicit.trim();
+  }
+  try {
+    const out = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const trimmed = out.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -250,9 +274,10 @@ export function createDelegateTool(
     promptSnippet:
       "aies_delegate: Delegate an exploration ('explore'), implementation ('worker') or independent verification ('verify') task to an isolated child agent.",
     promptGuidelines: [
-      "Use aies_delegate({ role: 'explore', ... }) when investigating the codebase or checking >2 files.",
-      "Use aies_delegate({ role: 'worker', ... }) when implementing concrete changes, editing files, or running tests.",
-      "Use aies_delegate({ role: 'verify', task, criteria, changedPaths }) after a behaviour-bearing Worker change, before calling it complete. Pass facts only: never the Worker's summary, reasoning or transcript.",
+      "Delegate directly to 'worker' (bypassing 'explore') when the work unit or target file/function is already known, localized or scoped (e.g. fixing a known function, test, or file). Do NOT call 'explore' for localized or already-identified targets.",
+      "Use aies_delegate({ role: 'explore', ... }) ONLY when the relevant files, architecture or root cause are unknown and require broad discovery across >2 files.",
+      "Use aies_delegate({ role: 'worker', ... }) to implement changes, edit files, and run tests. Worker reads the files it modifies, so prior Explore is unnecessary when the target is known.",
+      "Use aies_delegate({ role: 'verify', task, criteria, changedPaths }) after a behaviour-bearing Worker change, before calling it complete. Pass facts only: never the Worker's summary, reasoning or transcript. Do NOT run bash commands like 'git rev-parse HEAD' to discover baseRef: aies_delegate automatically resolves baseRef if omitted.",
       "After a 'verify' result that is a protocol error, do NOT retry verification automatically or treat it as PASS/FAIL/BLOCKED: surface the protocol fault to the user and fix the Verify configuration or the completion call first.",
       "Do NOT implement substantial multi-file changes directly in the parent session.",
       "Do NOT mark a work unit verified yourself: only a valid 'verify' PASS supports that claim.",
@@ -354,7 +379,7 @@ export function createDelegateTool(
           task,
           criteria,
           changedPaths,
-          baseRef: typeof params.baseRef === "string" ? params.baseRef.trim() : undefined,
+          baseRef: resolveBaseRef(ctx.cwd, params.baseRef),
           checks: stringList(params.checks),
           cwd: ctx.cwd,
           agentDir,

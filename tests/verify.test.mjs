@@ -33,7 +33,7 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-import { createDelegateTool } from "../extensions/aies-agents/delegate.ts";
+import { createDelegateTool, resolveBaseRef } from "../extensions/aies-agents/delegate.ts";
 import {
   MAX_HANDOFF_CHARS,
   cleanCriterion,
@@ -448,6 +448,25 @@ describe("AIES-005 Verify independence", () => {
     assert.match(prompt, /SUGGESTED CHECKS/u);
     assert.equal(prompt.includes(workerClaim), false);
     assert.doesNotMatch(prompt, /Worker says|everything passes/u);
+  });
+
+  it("resolves baseRef automatically from git HEAD when omitted, and prefers explicit value", () => {
+    const explicit = resolveBaseRef(REPO_ROOT, "v1.0.0");
+    assert.equal(explicit, "v1.0.0");
+
+    const autoHead = resolveBaseRef(REPO_ROOT, undefined);
+    assert.match(autoHead ?? "", /^[0-9a-f]{40}$/u, "git HEAD must resolve to 40-char hash");
+
+    const fallback = resolveBaseRef(tmpdir(), undefined);
+    assert.equal(fallback, undefined, "non-git dir must resolve to undefined");
+  });
+
+  it("instructs Parent to delegate directly to Worker when target is scoped, and not run git rev-parse", () => {
+    const tool = createDelegateTool();
+    const guidelines = (tool.promptGuidelines ?? []).join("\n");
+    assert.match(guidelines, /bypassing 'explore'/i);
+    assert.match(guidelines, /git rev-parse HEAD/i);
+    assert.match(tool.parameters.properties.role.description, /Fast-Path/i);
   });
 });
 
