@@ -265,6 +265,133 @@ print("STDERR:" + p.stderr.decode())
     }
   });
 
+  describe("EZE-486 regression: zero arguments / empty array under macOS Bash 3.2 (nounset)", () => {
+    it("launches Pi when called with zero arguments under system bash (/bin/bash)", () => {
+      const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-zeroargs-"));
+      const logFile = join(mockBinDir, "pi.log");
+      try {
+        const mockPi = join(mockBinDir, "pi");
+        writeFileSync(mockPi, `#!/bin/sh\necho "INVOKED" >> "${logFile}"\nfor a in "$@"; do echo "ARG: $a" >> "${logFile}"; done\n`, { mode: 0o755 });
+
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        const result = spawnSync("/bin/bash", [AIES], { env: customEnv, encoding: "utf8" });
+        assert.equal(result.status, 0, `aies with zero arguments failed:\n${result.stderr}`);
+        const log = readFileSync(logFile, "utf8");
+        assert.match(log, /INVOKED/);
+        assert.match(log, /ARG: --no-skills/);
+      } finally {
+        rmSync(mockBinDir, { recursive: true, force: true });
+      }
+    });
+
+    it("matrix Case A: inherited temporary AIES_HOME in interactive mode warns, falls back to canonical, and launches Pi with zero args", () => {
+      const tmpHome = mkdtempSync(join(tmpdir(), "aies-inherited-zeroargs-"));
+      const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-a-"));
+      try {
+        const mockPi = join(mockBinDir, "pi");
+        writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\nfor a in "$@"; do echo "ARG: $a"; done\n', { mode: 0o755 });
+
+        const script = `import pty, os, subprocess
+master, slave = pty.openpty()
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+p = subprocess.run(["/bin/bash", "${AIES}"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print("STDOUT:" + p.stdout.decode())
+print("STDERR:" + p.stderr.decode())
+`;
+        const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+        assert.equal(result.status, 0);
+        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${DEFAULT_AIES_HOME}/agent`));
+        assert.match(result.stdout, /ignoring inherited temporary AIES_HOME/);
+        assert.match(result.stdout, /ARG: --no-skills/);
+        assert.doesNotMatch(result.stdout, /unbound variable/);
+      } finally {
+        rmSync(tmpHome, { recursive: true, force: true });
+        rmSync(mockBinDir, { recursive: true, force: true });
+      }
+    });
+
+    it("matrix Case B: env -u AIES_HOME uses canonical profile and launches Pi with zero args", () => {
+      const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-b-"));
+      try {
+        const mockPi = join(mockBinDir, "pi");
+        writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        delete customEnv.AIES_HOME;
+        const result = spawnSync("/bin/bash", [AIES], { env: customEnv, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${DEFAULT_AIES_HOME}/agent`));
+        assert.doesNotMatch(result.stderr, /ignoring inherited temporary AIES_HOME/);
+        assert.doesNotMatch(result.stderr, /unbound variable/);
+      } finally {
+        rmSync(mockBinDir, { recursive: true, force: true });
+      }
+    });
+
+    it("matrix Case C: aies --aies-home <path> respects explicit profile with zero other args", () => {
+      const explicitHome = mkdtempSync(join(tmpdir(), "aies-explicit-zeroargs-"));
+      const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-c-"));
+      try {
+        const mockPi = join(mockBinDir, "pi");
+        writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        const result = spawnSync("/bin/bash", [AIES, "--aies-home", explicitHome], { env: customEnv, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${explicitHome}/agent`));
+        assert.doesNotMatch(result.stderr, /unbound variable/);
+      } finally {
+        rmSync(explicitHome, { recursive: true, force: true });
+        rmSync(mockBinDir, { recursive: true, force: true });
+      }
+    });
+
+    it("matrix Case D: aies --aies-ephemeral respects temporary profile with zero other args", () => {
+      const tmpHome = mkdtempSync(join(tmpdir(), "aies-ephemeral-zeroargs-"));
+      const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-d-"));
+      try {
+        const mockPi = join(mockBinDir, "pi");
+        writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
+
+        const script = `import pty, os, subprocess
+master, slave = pty.openpty()
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+p = subprocess.run(["/bin/bash", "${AIES}", "--aies-ephemeral"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print("STDOUT:" + p.stdout.decode())
+print("STDERR:" + p.stderr.decode())
+`;
+        const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+        assert.equal(result.status, 0);
+        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${tmpHome}/agent`));
+        assert.doesNotMatch(result.stderr, /ignoring inherited temporary AIES_HOME/);
+        assert.doesNotMatch(result.stderr, /unbound variable/);
+      } finally {
+        rmSync(tmpHome, { recursive: true, force: true });
+        rmSync(mockBinDir, { recursive: true, force: true });
+      }
+    });
+
+    it("matrix Case E: normal Pi arguments are preserved exactly in order and content", () => {
+      const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-e-"));
+      const logFile = join(mockBinDir, "pi.log");
+      try {
+        const mockPi = join(mockBinDir, "pi");
+        writeFileSync(mockPi, `#!/bin/sh\nfor a in "$@"; do echo "ARG: $a" >> "${logFile}"; done\n`, { mode: 0o755 });
+
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        const testArgs = ["-p", "hello world", "--mode", "rpc", "arg with spaces and quotes '\""];
+        const result = spawnSync("/bin/bash", [AIES, ...testArgs], { env: customEnv, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        const logLines = readFileSync(logFile, "utf8").trim().split("\n");
+        const forwardedArgs = logLines.map((l) => l.replace(/^ARG: /, ""));
+        assert.deepEqual(forwardedArgs.slice(-testArgs.length), testArgs);
+      } finally {
+        rmSync(mockBinDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+
   it("guarantees bin/aies and bootstrap-profile.sh apply the exact same profile precedence", () => {
     const tmpHome = mkdtempSync(join(tmpdir(), "aies-temp-parity-"));
     const explicitHome = mkdtempSync(join(tmpdir(), "aies-explicit-parity-"));

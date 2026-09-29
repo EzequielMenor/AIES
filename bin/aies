@@ -134,4 +134,8 @@ if [ -n "$(ls -A "$AIES_REPO/skills" 2>/dev/null)" ]; then
   pi_args+=(--skill "$AIES_REPO/skills")
 fi
 
-exec pi "${pi_args[@]}" "${filtered_args[@]}"
+if [ ${#filtered_args[@]} -gt 0 ]; then
+  exec pi "${pi_args[@]}" "${filtered_args[@]}"
+fi
+
+exec pi "${pi_args[@]}"
