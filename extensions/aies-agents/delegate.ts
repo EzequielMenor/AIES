@@ -274,8 +274,9 @@ export function createDelegateTool(
     promptSnippet:
       "aies_delegate: Delegate an exploration ('explore'), implementation ('worker') or independent verification ('verify') task to an isolated child agent.",
     promptGuidelines: [
-      "Delegate directly to 'worker' (bypassing 'explore') when the work unit or target file/function is already known, localized or scoped (e.g. fixing a known function, test, or file). Do NOT call 'explore' for localized or already-identified targets.",
-      "Use aies_delegate({ role: 'explore', ... }) ONLY when the relevant files, architecture or root cause are unknown and require broad discovery across >2 files.",
+      "Delegate directly to 'worker' (bypassing 'explore') when the target file or component is already identified or scoped. Use 'explore' ONLY when relevant files, architecture or root cause are unknown and require broad discovery across >2 files.",
+      "When Explore already returned a sufficient handoff with relevant paths and facts, do NOT re-read those same files in Parent out of routine. Parent may perform a small read only when genuinely necessary for coordination or routing, but must never become a second Explore or reimplement child work.",
+      "Child agents inspect files and execute checks in their isolated sessions; avoid running full build/test/diff commands directly in Parent before or after delegation.",
       "Use aies_delegate({ role: 'worker', ... }) to implement changes, edit files, and run tests. Worker reads the files it modifies, so prior Explore is unnecessary when the target is known.",
       "Use aies_delegate({ role: 'verify', task, criteria, changedPaths }) after a behaviour-bearing Worker change, before calling it complete. Pass facts only: never the Worker's summary, reasoning or transcript. Do NOT run bash commands like 'git rev-parse HEAD' to discover baseRef: aies_delegate automatically resolves baseRef if omitted.",
       "After a 'verify' result that is a protocol error, do NOT retry verification automatically or treat it as PASS/FAIL/BLOCKED: surface the protocol fault to the user and fix the Verify configuration or the completion call first.",

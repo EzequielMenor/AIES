@@ -43,10 +43,12 @@ export function createWorkerBashToolDefinition(
     runner: options?.runner,
     sandboxOptions: options?.sandboxOptions,
     description:
-      "Execute bash commands within the workspace (e.g. tests, linters, git status/diff, builds). Destructive commands (git clean, reset --hard, push, sudo) are strictly blocked.",
-    promptSnippet: "bash: Execute tests, builds, and development checks safely.",
+      "Execute bash commands within the workspace (e.g. tests, builds, typecheck, git status/diff). Destructive commands (git clean, reset --hard, push, sudo) are strictly blocked.",
+    promptSnippet: "bash: Execute targeted tests, builds, and checks safely in a single batch.",
     promptGuidelines: [
-      "Use bash to run tests, typecheck, lint, or inspect git status/diff.",
+      "Use bash to run the specific tests, typecheck, build, or git status/diff required by the work unit.",
+      "Combine related checks in one command (e.g. 'npm run check && npm run build') instead of multiple turns.",
+      "Do NOT run unrequested repo-wide linters/formatters or inspect CI workflows; conclude once assigned checks pass.",
       "Destructive commands like git clean, git reset --hard, git push, and sudo are blocked.",
     ],
   });
