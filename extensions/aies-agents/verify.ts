@@ -48,36 +48,36 @@ export const VERIFY_COMPLETE_TOOL = "aies_verify_complete";
 /** Shape of the structured verdict the completion tool accepts. */
 export const VerifyCompleteSchema = Type.Object({
   status: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked")], {
-    description: "The verdict: pass, fail or blocked",
+    description: "Verdict: pass, fail or blocked",
   }),
   summary: Type.String({
-    description: "2-4 sentences: what was inspected and what the real repository state is",
+    description: "Summary of inspection and observed repository state",
   }),
   criteria: Type.Array(
     Type.Object({
-      criterion: Type.String({ description: "The acceptance criterion, restated" }),
+      criterion: Type.String({ description: "Acceptance criterion, copied exactly as supplied" }),
       status: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked")]),
       evidence: Type.Optional(
-        Type.String({ description: "File, line or symbol plus the observed value" }),
+        Type.String({ description: "File, line, symbol or output with observed value" }),
       ),
     }),
-    { description: "One entry per acceptance criterion, each with its own evidence" },
+    { description: "One entry per acceptance criterion with observed evidence" },
   ),
   checks: Type.Array(
     Type.Object({
       check: Type.String({ description: "Command executed" }),
-      result: Type.Optional(Type.String({ description: "Exit status and the relevant output" })),
+      result: Type.Optional(Type.String({ description: "Exit status and output" })),
     }),
   ),
   defects: Type.Array(
     Type.Object({
       severity: Type.Union([Type.Literal("blocking"), Type.Literal("non_blocking")]),
       file: Type.Optional(Type.String()),
-      description: Type.String({ description: "What is wrong, concretely" }),
-      evidence: Type.Optional(Type.String({ description: "How to reproduce it" })),
+      description: Type.String({ description: "Concrete defect description" }),
+      evidence: Type.Optional(Type.String({ description: "Reproduction or evidence" })),
     }),
   ),
-  next: Type.Array(Type.String(), { description: "At most one recommended next step" }),
+  next: Type.Array(Type.String(), { description: "Recommended next step" }),
 });
 
 export type VerifyCompleteParams = {
@@ -137,13 +137,13 @@ export function createVerifyCompleteTool(params: {
     name: VERIFY_COMPLETE_TOOL,
     label: "AIES Verify Complete",
     description:
-      "Report the structured verification verdict. Call this exactly once, after inspecting the artifact and running the checks. The parent reads the verdict from here; your final prose is not authoritative and may be empty.",
-    promptSnippet: `${VERIFY_COMPLETE_TOOL}: Report the structured verification verdict (pass | fail | blocked) with per-criterion evidence.`,
+      "Report structured verification verdict with per-criterion evidence. Call once after inspection; prose is not authoritative.",
+    promptSnippet: `${VERIFY_COMPLETE_TOOL}: Report structured verification verdict (pass|fail|blocked) with per-criterion evidence.`,
     promptGuidelines: [
-      `Call ${VERIFY_COMPLETE_TOOL} exactly once, at the end of your inspection, with the structured verdict.`,
+      `Call ${VERIFY_COMPLETE_TOOL} exactly once at the end of inspection with the structured verdict. Never call it a second time; any duplicate call is rejected as a protocol error. Once recorded, stop immediately.`,
       "Copy each supplied acceptance criterion into `criteria` exactly as given; do not paraphrase, merge or split them.",
-      "Give non-empty evidence for every supplied criterion. A PASS must represent and pass every acceptance criterion, each with its own evidence; never claim PASS from prose alone.",
-      `If a call is rejected as invalid, you have at most one recovery attempt to correct the completion and call ${VERIFY_COMPLETE_TOOL} again. A second invalid attempt fails the protocol immediately. Never convert a completion rejection into a blocked verdict.`,
+      "Give non-empty evidence for every supplied criterion. A PASS must represent and pass every acceptance criterion, each with its own evidence.",
+      `If a call is rejected as invalid, you have at most one recovery attempt to correct and call ${VERIFY_COMPLETE_TOOL} again. A second invalid attempt fails the protocol immediately. Never convert rejection into blocked.`,
     ],
     parameters: VerifyCompleteSchema,
     async execute(_toolCallId, input: VerifyCompleteParams) {

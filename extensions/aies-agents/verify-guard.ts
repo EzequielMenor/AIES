@@ -45,12 +45,11 @@ export function createVerifyBashToolDefinition(
     runner: options?.runner,
     sandboxOptions: options?.sandboxOptions,
     description:
-      "Execute read-only commands within the workspace: tests, typecheck, lint, build and git inspection (status, diff, show, log, blame, ls-files). Mutating commands and file writes are blocked.",
-    promptSnippet: "bash: Run the checks that produce evidence, and inspect git safely.",
+      "Execute read-only checks and git inspection (npm test, build, lint, git status, git diff, git show). Mutations are blocked.",
+    promptSnippet: "bash: Run checks and read-only git inspection safely.",
     promptGuidelines: [
-      "Use bash to run the repository's own checks: npm test, npm run lint, typecheck, build, pytest, cargo test, go test.",
-      "Use bash for read-only git inspection: git status, git diff, git show, git log, git blame, git ls-files.",
-      "Verify never mutates the workspace: edits, in-place sed, file deletion or movement, dependency installation and file redirection are blocked.",
+      "Use bash for repository checks (npm test, build, lint) and read-only git inspection (git status, git diff, git show).",
+      "Verify is strictly read-only: edits, file modifications, deletions, installs, and redirection are blocked.",
     ],
   });
 }
