@@ -46,6 +46,8 @@ export interface WorkerHandoff {
 export type VerifyStatus = "pass" | "fail" | "blocked";
 
 export interface VerifyCriterion {
+  /** 1-based index into the run's acceptance criteria list (EZE-488: structural coverage). */
+  index?: number;
   criterion: string;
   status: VerifyStatus;
   evidence?: string;
@@ -227,12 +229,14 @@ function sanitizeCriteria(val: unknown): VerifyCriterion[] {
     if (!item || typeof item !== "object") continue;
     const entry = item as Record<string, unknown>;
     const criterion = typeof entry.criterion === "string" ? entry.criterion.trim() : "";
-    if (!criterion) continue;
+    const index = typeof entry.index === "number" && Number.isInteger(entry.index) ? entry.index : undefined;
+    if (!criterion && index === undefined) continue;
     // Compatibility: an older handoff may say `met: true|false` instead of `status`.
     const status =
       sanitizeVerifyStatus(entry.status)
       ?? (entry.met === true ? "pass" : entry.met === false ? "fail" : undefined);
     list.push({
+      ...(index !== undefined ? { index } : {}),
       criterion,
       status: status ?? "blocked",
       evidence:
@@ -287,10 +291,14 @@ function strictCriteria(val: unknown): { ok: true; value: VerifyCriterion[] } | 
     if (!item || typeof item !== "object") return { ok: false, reason: "each criterion must be an object" };
     const entry = item as Record<string, unknown>;
     const criterion = typeof entry.criterion === "string" ? entry.criterion.trim() : "";
-    if (!criterion) return { ok: false, reason: "each criterion needs non-empty text" };
+    const index = typeof entry.index === "number" && Number.isInteger(entry.index) ? entry.index : undefined;
+    if (!criterion && index === undefined) {
+      return { ok: false, reason: "each criterion entry needs an index or non-empty text" };
+    }
     const status = strictStatus(entry.status);
-    if (!status) return { ok: false, reason: `criterion "${criterion}" needs status pass|fail|blocked` };
+    if (!status) return { ok: false, reason: `criterion "${criterion || index}" needs status pass|fail|blocked` };
     list.push({
+      ...(index !== undefined ? { index } : {}),
       criterion,
       status,
       evidence:
@@ -347,12 +355,39 @@ export function cleanCriterion(text: string): string {
 
 /**
  * Split and normalize an acceptance criteria list.
- * Handles arrays of strings, single multiline strings, or strings with inline numbering ("1. ... 2. ...").
+ * Handles arrays of strings, single multiline strings, strings with inline
+ * numbering ("1. ... 2. ..."), and JSON-array strings ('["a", "b"]'), which
+ * `aies_delegate` receives when a caller serializes the criteria list into the
+ * string arm of its criteria union (EZE-488: collapsing N criteria into one
+ * giant single-line criterion made index coverage impossible to satisfy).
  */
 export function normalizeCriteriaList(val: unknown): string[] {
   const rawList: string[] = [];
   if (typeof val === "string") {
-    rawList.push(val);
+    // EZE-488 input boundary: a JSON-array string is parsed and its string
+    // elements feed the existing per-item pipeline below. The fallback is
+    // deliberate: a criterion TEXT that begins with '[' and ends with ']' but
+    // is not valid JSON keeps working as one literal criterion; if such text
+    // happens to be valid JSON it now parses as a list instead. Never throws.
+    const trimmed = val.trim();
+    let parsed: unknown[] | undefined;
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const candidate: unknown = JSON.parse(trimmed);
+        if (Array.isArray(candidate)) parsed = candidate;
+      } catch {
+        // Not valid JSON: fall back to the literal-string behavior below.
+      }
+    }
+    if (parsed) {
+      for (const item of parsed) {
+        if (typeof item === "string" && item.trim()) {
+          rawList.push(item);
+        }
+      }
+    } else {
+      rawList.push(val);
+    }
   } else if (Array.isArray(val)) {
     for (const item of val) {
       if (typeof item === "string" && item.trim()) {
@@ -484,23 +519,125 @@ export function validateVerifyCompletion(
     return { ok: false, reason: "a PASS needs evidence in its criteria or checks" };
   }
 
-  const matches = matchCriteria(requiredCriteria, handoff.criteria);
-  const uncovered = matches.filter((match) => !match.entry).map((match) => match.expected);
-  if (uncovered.length > 0) {
-    return { ok: false, reason: `a PASS must represent every acceptance criterion; missing: ${uncovered.join("; ")}` };
-  }
-  const notPassing = matches.filter((match) => match.entry?.status !== "pass").map((match) => match.expected);
-  if (notPassing.length > 0) {
-    return { ok: false, reason: `a PASS requires every acceptance criterion to pass; not passing: ${notPassing.join("; ")}` };
-  }
-  const unevidenced = matches
-    .filter((match) => match.entry && !match.entry.evidence)
-    .map((match) => match.expected);
-  if (unevidenced.length > 0) {
-    return { ok: false, reason: `a PASS needs evidence for every acceptance criterion; missing evidence: ${unevidenced.join("; ")}` };
+  const normalizedRequired = normalizeCriteriaList(requiredCriteria);
+  const N = normalizedRequired.length;
+
+  if (N > 0 && handoff.criteria.length > 0) {
+    // EZE-488: index-based structural coverage when the model provides indices.
+    const useIndex = handoff.criteria.every((entry) => entry.index !== undefined);
+
+    if (useIndex) {
+      // Validate indices are in range 1..N and each appears exactly once.
+      const seen = new Map<number, VerifyCriterion>();
+      for (const entry of handoff.criteria) {
+        const idx = entry.index!;
+        if (idx < 1 || idx > N) {
+          return { ok: false, reason: `completion criteria index ${idx} out of range 1..${N}` };
+        }
+        if (seen.has(idx)) {
+          return { ok: false, reason: `completion criteria index ${idx} appears more than once` };
+        }
+        seen.set(idx, entry);
+      }
+      const missing: string[] = [];
+      for (let i = 1; i <= N; i++) {
+        if (!seen.has(i)) missing.push(normalizedRequired[i - 1]);
+      }
+      if (missing.length > 0) {
+        return { ok: false, reason: `a PASS must represent every acceptance criterion; missing: ${missing.join("; ")}` };
+      }
+      // All indices present: check status and evidence per index.
+      for (let i = 1; i <= N; i++) {
+        const entry = seen.get(i)!;
+        if (entry.status !== "pass") {
+          return { ok: false, reason: `a PASS requires every acceptance criterion to pass; not passing: ${normalizedRequired[i - 1]}` };
+        }
+        if (!entry.evidence) {
+          return { ok: false, reason: `a PASS needs evidence for every acceptance criterion; missing evidence: ${normalizedRequired[i - 1]}` };
+        }
+      }
+      // Inject canonical criterion text (host-side: handoff stays human-readable).
+      for (const entry of handoff.criteria) {
+        entry.criterion = normalizedRequired[entry.index! - 1];
+      }
+    } else {
+      // Legacy text-based coverage fallback. It is NOT reachable from the completion
+      // tool: `createVerifyCompleteTool.execute` rejects a PASS whose entries lack an
+      // index before calling this function (see `verifyCompletionIndexGuidance`). The
+      // only callers that can reach it are direct/unit-level calls of
+      // `validateVerifyCompletion` without indices. `parseVerifyHandoff` does not use
+      // this function at all, and the Linear Done gate never re-validates coverage
+      // against a stored PASS, so no production caller depends on this branch.
+      const matches = matchCriteria(requiredCriteria, handoff.criteria);
+      const uncovered = matches.filter((match) => !match.entry).map((match) => match.expected);
+      if (uncovered.length > 0) {
+        return { ok: false, reason: `a PASS must represent every acceptance criterion; missing: ${uncovered.join("; ")}` };
+      }
+      const notPassing = matches.filter((match) => match.entry?.status !== "pass").map((match) => match.expected);
+      if (notPassing.length > 0) {
+        return { ok: false, reason: `a PASS requires every acceptance criterion to pass; not passing: ${notPassing.join("; ")}` };
+      }
+      const unevidenced = matches
+        .filter((match) => match.entry && !match.entry.evidence)
+        .map((match) => match.expected);
+      if (unevidenced.length > 0) {
+        return { ok: false, reason: `a PASS needs evidence for every acceptance criterion; missing evidence: ${unevidenced.join("; ")}` };
+      }
+    }
+  } else if (N > 0) {
+    // No criteria entries at all but required list is non-empty.
+    return { ok: false, reason: `a PASS must represent every acceptance criterion; missing: ${normalizedRequired.join("; ")}` };
   }
 
   return { ok: true, handoff };
+}
+
+/**
+ * The per-entry shape a completion tool caller must produce, used verbatim in the
+ * corrective reason so the model can fix the call instead of guessing.
+ */
+const VERIFY_INDEX_SHAPE =
+  'every criteria entry must carry its 1-based index from the ACCEPTANCE CRITERIA list (one entry per index 1..N, shape {"index": 1, "status": "pass", "evidence": "<what was observed>"}; the "criterion" text is optional)';
+
+/**
+ * Tool-level index requirement (EZE-488 follow-up).
+ *
+ * The completion tool is the only runtime authority for a verdict, and a PASS is a
+ * claim about every acceptance criterion of the run. Coverage is therefore decided
+ * structurally by index, never by the text the model echoes back: a paraphrase,
+ * truncation or typographic rewrite must not be able to fail a substantively correct
+ * PASS. `validateVerifyCompletion` keeps a text-based branch for callers that supply
+ * no indices at all; this gate is what keeps that branch unreachable from the tool,
+ * rejecting with a message that teaches the required per-entry shape instead.
+ *
+ * Returns the corrective reason, or `undefined` when the completion may go through
+ * to `validateVerifyCompletion`: no required criteria, a non-PASS verdict (only a
+ * PASS claims full coverage), or a shape the semantic validator describes better.
+ */
+export function verifyCompletionIndexGuidance(
+  completion: unknown,
+  requiredCriteria: string[],
+): string | undefined {
+  const required = normalizeCriteriaList(requiredCriteria);
+  if (required.length === 0) return undefined;
+  if (!completion || typeof completion !== "object" || Array.isArray(completion)) return undefined;
+
+  const parsed = completion as Record<string, unknown>;
+  if (strictStatus(parsed.status) !== "pass") return undefined;
+  if (!Array.isArray(parsed.criteria)) return undefined;
+
+  const entries = parsed.criteria as unknown[];
+  const missingIndex = entries.find((entry) => {
+    const index = entry && typeof entry === "object" ? (entry as Record<string, unknown>).index : undefined;
+    return typeof index !== "number" || !Number.isInteger(index);
+  });
+  if (entries.length === 0) {
+    return `a PASS must report every acceptance criterion by index; no criteria entries were reported for ${required.length} required ${required.length === 1 ? "criterion" : "criteria"}: ${VERIFY_INDEX_SHAPE}`;
+  }
+  if (missingIndex !== undefined) {
+    return `a PASS must report every acceptance criterion by index; a criteria entry carries no integer "index"${missingIndex && typeof missingIndex === "object" && "criterion" in missingIndex ? ` (entry "${String((missingIndex as Record<string, unknown>).criterion).slice(0, 80)}")` : ""}: ${VERIFY_INDEX_SHAPE}`;
+  }
+  return undefined;
 }
 
 /**
@@ -772,7 +909,9 @@ export function formatVerifyHandoff(handoff: VerifyHandoff): string {
     lines.push("", "**Criteria**:");
     for (const item of handoff.criteria) {
       const evidence = item.evidence ? ` — ${item.evidence}` : "";
-      lines.push(`- ${item.status.toUpperCase()} \`${item.criterion}\`${evidence}`);
+      const idx = item.index !== undefined ? `${item.index}. ` : "";
+      const label = item.criterion || (item.index !== undefined ? `criterion ${item.index}` : "(unnamed)");
+      lines.push(`- ${idx}${item.status.toUpperCase()} \`${label}\`${evidence}`);
     }
   }
 
@@ -828,7 +967,8 @@ export function formatRepairBrief(handoff: VerifyHandoff): string {
 
   for (const entry of handoff.criteria.filter((item) => item.status !== "pass")) {
     const evidence = entry.evidence ? ` (${entry.evidence})` : "";
-    lines.push(`- criterion ${entry.status}: ${entry.criterion}${evidence}`);
+    const label = entry.criterion || (entry.index !== undefined ? `criterion ${entry.index}` : "criterion");
+    lines.push(`- ${label} [${entry.status}]${evidence}`);
   }
 
   return lines.join("\n");

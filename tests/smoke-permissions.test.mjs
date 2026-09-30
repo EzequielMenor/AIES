@@ -193,8 +193,10 @@ describe("AIES-006 Real Smoke: Permission Boundaries End-to-End", () => {
       status: "pass",
       summary: "multiply function is implemented and test.js passes with full assertion coverage.",
       criteria: [
-        { criterion: "multiply(3, 4) returns 12", status: "pass", evidence: "math.js exports multiply and returns a * b" },
-        { criterion: "node test.js passes", status: "pass", evidence: "node test.js exited 0 with ALL CHECKS PASSED" },
+        // EZE-488: a PASS sent through the completion tool addresses every acceptance
+        // criterion by its 1-based index in the ACCEPTANCE CRITERIA list above.
+        { index: 1, criterion: "multiply(3, 4) returns 12", status: "pass", evidence: "math.js exports multiply and returns a * b" },
+        { index: 2, criterion: "node test.js passes", status: "pass", evidence: "node test.js exited 0 with ALL CHECKS PASSED" },
       ],
       defects: [],
       checks: [{ check: "node test.js", result: "passed" }],

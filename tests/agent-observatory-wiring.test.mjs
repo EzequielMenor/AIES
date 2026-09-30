@@ -279,7 +279,8 @@ describe("AIES-010C runner observatory wiring", () => {
           {
             status: "pass",
             summary: "Inspected the artifact.",
-            criteria: [{ criterion: "c", status: "pass", evidence: "file.js:1 shows 2000" }],
+            // EZE-488: a PASS sent through the completion tool is index-addressed.
+            criteria: [{ index: 1, criterion: "c", status: "pass", evidence: "file.js:1 shows 2000" }],
             checks: [],
             defects: [],
             next: [],

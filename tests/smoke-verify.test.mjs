@@ -86,12 +86,26 @@ function workerHandoffJson({ claim, file }) {
 }
 
 function verifyCompletionArgs({ status, observed, defect }) {
+  // EZE-488: a PASS reported through the completion tool is index-addressed against
+  // [TIMEOUT_CRITERION, CHECK_CRITERION]. A FAIL verdict stays index-less so the
+  // exemption for non-PASS verdicts keeps being exercised end to end.
+  const byIndex = status === "pass";
   return {
     status,
     summary: status === "pass" ? "The artifact matches the criteria." : "The artifact does not match the criteria.",
     criteria: [
-      { criterion: TIMEOUT_CRITERION, status, evidence: `config.js:1 shows ${observed}` },
-      { criterion: CHECK_CRITERION, status: "pass", evidence: "npm test exit 0" },
+      {
+        ...(byIndex ? { index: 1 } : {}),
+        criterion: TIMEOUT_CRITERION,
+        status,
+        evidence: `config.js:1 shows ${observed}`,
+      },
+      {
+        ...(byIndex ? { index: 2 } : {}),
+        criterion: CHECK_CRITERION,
+        status: "pass",
+        evidence: "npm test exit 0",
+      },
     ],
     checks: [{ check: "npm test", result: "exit 0" }],
     defects: defect ? [defect] : [],

@@ -88,7 +88,15 @@ function verifyCompletionArgs(status, details) {
     status,
     summary: status === "pass" ? "All criteria satisfied" : `Criterion failed: ${details}`,
     criteria: [
-      { criterion: "TIMEOUT_MS in config.js is 2000", status, evidence: details },
+      {
+        // EZE-488: the completion tool addresses a PASS by the 1-based index of each
+        // acceptance criterion. Only the PASS shape carries it; the FAIL shape stays
+        // index-less on purpose so the exemption keeps being exercised.
+        ...(status === "pass" ? { index: 1 } : {}),
+        criterion: "TIMEOUT_MS in config.js is 2000",
+        status,
+        evidence: details,
+      },
     ],
     checks: [],
     defects: status === "pass" ? [] : [{ severity: "blocking", description: details }],

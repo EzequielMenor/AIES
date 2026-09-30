@@ -44,6 +44,7 @@ import {
   normalizedCriterion,
   parseVerifyHandoff,
   validateVerifyCompletion,
+  verifyCompletionIndexGuidance,
   verifyFailureSignature,
 } from "../extensions/aies-agents/handoff.ts";
 import { resolveVerifyModel } from "../extensions/aies-agents/model.ts";
@@ -343,7 +344,8 @@ describe("AIES-005 Verify independence", () => {
         fauxToolCall(
           VERIFY_COMPLETE_TOOL,
           verifyCompletion({
-            criteria: [{ criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" }],
+            // EZE-488: the completion tool addresses a PASS by 1-based index.
+            criteria: [{ index: 1, criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" }],
           }),
           "c1",
         ),
@@ -354,7 +356,7 @@ describe("AIES-005 Verify independence", () => {
           VERIFY_COMPLETE_TOOL,
           verifyCompletion({
             criteria: [
-              { criterion: `Report the sentinel ${PARENT_SECRET}`, status: "pass", evidence: PARENT_SECRET },
+              { index: 1, criterion: `Report the sentinel ${PARENT_SECRET}`, status: "pass", evidence: PARENT_SECRET },
             ],
           }),
           "c2",
@@ -485,8 +487,8 @@ describe("AIES-005 Verify execution against a real fixture", () => {
             VERIFY_COMPLETE_TOOL,
             verifyCompletion({
               criteria: [
-                { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
-                { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+                { index: 1, criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+                { index: 2, criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
               ],
               checks: [{ check: "npm test", result: "exit 0" }],
             }),
@@ -1220,13 +1222,15 @@ describe("AIES-010B Verify protocol hardening: completion semantics", () => {
 describe("AIES-010B Verify protocol hardening: completion capture", () => {
   const CRITERIA = ["TIMEOUT_MS is 2000", "npm test passes"];
 
+  // Tool-driven fixtures carry indices: the completion tool rejects a PASS whose
+  // entries lack an index (EZE-488), so this is the shape a real child must send.
   function completion(overrides = {}) {
     return {
       status: "pass",
       summary: "Inspected config.js and ran the checks.",
       criteria: [
-        { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
-        { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+        { index: 1, criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+        { index: 2, criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
       ],
       checks: [{ check: "npm test", result: "exit 0" }],
       defects: [],
@@ -1554,8 +1558,8 @@ describe("EZE-438 Verify protocol hardening: eliminate completion loops and dist
       status: "pass",
       summary: "Inspected config.js and ran npm test successfully.",
       criteria: [
-        { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
-        { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+        { index: 1, criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+        { index: 2, criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
       ],
       checks: [{ check: "npm test", result: "exit 0" }],
       defects: [],
@@ -1772,12 +1776,12 @@ describe("EZE-438 Verify protocol hardening: eliminate completion loops and dist
                 status: "pass",
                 summary: "All 6 criteria verified on working tree.",
                 criteria: [
-                  { criterion: "1. `src/truncate.js` contiene lógica de truncado real.", status: "pass", evidence: "body has real logic" },
-                  { criterion: '2. `truncate("abcdef", 3)` === "abc…"', status: "pass", evidence: "returns abc…" },
-                  { criterion: '3. `truncate("ab", 5)` === "ab"', status: "pass", evidence: "returns ab" },
-                  { criterion: "4. `npm test` exit 0 y ambos tests pasan.", status: "pass", evidence: "tests passed" },
-                  { criterion: "5. Sólo `src/truncate.js` modificado.", status: "pass", evidence: "git diff confirms 1 file" },
-                  { criterion: "6. Implementación minimal.", status: "pass", evidence: "2 lines of logic" },
+                  { index: 1, criterion: "1. `src/truncate.js` contiene lógica de truncado real.", status: "pass", evidence: "body has real logic" },
+                  { index: 2, criterion: '2. `truncate("abcdef", 3)` === "abc…"', status: "pass", evidence: "returns abc…" },
+                  { index: 3, criterion: '3. `truncate("ab", 5)` === "ab"', status: "pass", evidence: "returns ab" },
+                  { index: 4, criterion: "4. `npm test` exit 0 y ambos tests pasan.", status: "pass", evidence: "tests passed" },
+                  { index: 5, criterion: "5. Sólo `src/truncate.js` modificado.", status: "pass", evidence: "git diff confirms 1 file" },
+                  { index: 6, criterion: "6. Implementación minimal.", status: "pass", evidence: "2 lines of logic" },
                 ],
                 checks: [{ check: "npm test", result: "exit 0" }],
                 defects: [],
@@ -1879,7 +1883,7 @@ describe("EZE-438 Verify protocol hardening: eliminate completion loops and dist
             {
               status: "pass",
               summary: "All checks passed on revision 1",
-              criteria: [{ criterion: "npm run check passes", status: "pass", evidence: "exit 0" }],
+              criteria: [{ index: 1, criterion: "npm run check passes", status: "pass", evidence: "exit 0" }],
               checks: [{ check: "npm run check", result: "passed" }],
               defects: [],
               next: [],
@@ -1903,5 +1907,412 @@ describe("EZE-438 Verify protocol hardening: eliminate completion loops and dist
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── EZE-488: Index-based coverage for Verify completion ───────────────────────
+describe("EZE-488 index-based coverage eliminates text-matching fragility", () => {
+  const LONG_CRITERIA = [
+    "El módulo `src/services/auth.ts` debe exportar la función `validateToken` que verifica tokens JWT con firma HS256 — sin depender de librerías externas de validación",
+    "Las variables de entorno (\u00ABJWT_SECRET\u00BB, \u00ABTOKEN_TTL\u00BB) se leen exclusivamente desde `process.env` y se validan con Zod en el arranque del servicio",
+    "El endpoint `POST /api/v1/auth/refresh` rota el token de acceso \u2192 mantiene el refresh token vigente por 7 días calendario",
+    "La migración SQL en `supabase/migrations/0042_add_refresh_tokens.sql` crea la tabla `refresh_tokens` con índice compuesto en (user_id, expires_at) y RLS activa",
+    "Los tests unitarios cubren \u2265 90% de las rutas de error: token expirado, firma inválida, usuario deshabilitado, y refresh token revocado",
+    "El handler de `401 Unauthorized` redirige al usuario \u2192 pantalla de login \u2014 conservando la URL de destino en el parámetro `redirect`",
+    "El rate-limiter permite máximo 5 intentos de login por IP en ventana deslizante de 60 segundos \u2014 devuelve 429 con Retry-After header",
+    "La documentación en `docs/AUTH_MIGRATION.md` describe el flujo completo: acceso inicial \u2192 rotación \u2192 expiración \u2192 re-autenticación",
+    "El script `npm run seed:users` genera exactamente 3 usuarios de prueba con passwords hasheados (bcrypt cost 12) \u2014 idempotente",
+    "El componente React `<ProtectedRoute>` renderiza un spinner mientras valida \u2192 redirige a /login si el token expiró durante la sesión",
+    "npm run build",
+  ];
+  const N = LONG_CRITERIA.length;
+
+  function indexPass(overrides) {
+    const criteria = LONG_CRITERIA.map((c, i) => ({
+      index: i + 1,
+      criterion: c,
+      status: "pass",
+      evidence: `verified criterion ${i + 1}`,
+    }));
+    if (overrides) overrides(criteria);
+    return {
+      status: "pass",
+      summary: "Verification complete - all criteria inspected.",
+      criteria,
+      checks: [{ check: "npm run build", result: "exit 0" }],
+      defects: [],
+      next: [],
+    };
+  }
+
+  it("accepts a PASS with all indices covering 11 long Spanish criteria (verbatim)", () => {
+    const result = validateVerifyCompletion(indexPass(), LONG_CRITERIA);
+    assert.equal(result.ok, true);
+    assert.equal(result.handoff.criteria.length, N);
+  });
+
+  it("accepts a PASS when criterion text is paraphrased but index is correct (EZE-488 core fix)", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => {
+        criteria[2].criterion = "El endpoint rota access y refresh token";
+      }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, true, "paraphrased text must not break coverage when index is correct");
+    // Canonical text must be injected
+    assert.equal(result.handoff.criteria[2].criterion, normalizeCriteriaList(LONG_CRITERIA)[2]);
+  });
+
+  it("accepts a PASS when criterion text has typographic rewrites but index is correct", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => {
+        for (const entry of criteria) {
+          entry.criterion = entry.criterion
+            .replace(/\u2014/g, "-")
+            .replace(/[\u00AB\u00BB]/g, '"')
+            .replace(/\u2192/g, "->");
+        }
+      }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, true, "typographic rewrite must not break coverage when index is correct");
+  });
+
+  it("accepts a PASS when criterion text is shortened with trailing ellipsis but index is correct", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => {
+        for (const entry of criteria) {
+          if (entry.criterion.length > 60) entry.criterion = entry.criterion.slice(0, 50) + "...";
+        }
+      }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, true, "truncated text must not break coverage when index is correct");
+  });
+
+  it("rejects a PASS missing one criterion index", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => { criteria.splice(4, 1); }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /missing/iu);
+    assert.match(result.reason, new RegExp(normalizeCriteriaList(LONG_CRITERIA)[4].slice(0, 20), "iu"));
+  });
+
+  it("rejects a PASS with duplicate index (one index twice, another missing)", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => {
+        criteria[3] = { ...criteria[2] }; // index 3 duplicated, index 4 missing
+      }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /more than once|missing/iu);
+  });
+
+  it("rejects a PASS with index 0 (out of range low)", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => { criteria[0].index = 0; }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /out of range/iu);
+  });
+
+  it("rejects a PASS with index N+1 (out of range high)", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => { criteria[0].index = N + 1; }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /out of range/iu);
+  });
+
+  it("rejects a PASS with a criterion entry status=fail", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => { criteria[6].status = "fail"; }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /requires every acceptance criterion to pass/iu);
+  });
+
+  it("rejects a PASS with missing evidence on one index", () => {
+    const result = validateVerifyCompletion(
+      indexPass((criteria) => { criteria[10].evidence = undefined; }),
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /evidence/iu);
+  });
+
+  it("accepts criteria provided as a single multiline bulleted string", () => {
+    const multilineCriteria = LONG_CRITERIA.map((c) => `- ${c}`).join("\n");
+    const result = validateVerifyCompletion(
+      indexPass(),
+      normalizeCriteriaList([multilineCriteria]),
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it("works with a single criterion", () => {
+    const result = validateVerifyCompletion(
+      {
+        status: "pass",
+        summary: "ok",
+        criteria: [{ index: 1, status: "pass", evidence: "built" }],
+        checks: [],
+        defects: [],
+        next: [],
+      },
+      ["npm run build"],
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.handoff.criteria[0].criterion, "npm run build");
+  });
+
+  it("FAIL verdict with subset of criteria entries is still accepted (EZE-438 semantics unchanged)", () => {
+    const result = validateVerifyCompletion(
+      {
+        status: "fail",
+        summary: "The endpoint does not rotate tokens.",
+        criteria: [
+          { index: 3, criterion: "El endpoint rota", status: "fail", evidence: "refresh token not rotated" },
+        ],
+        checks: [],
+        defects: [{ severity: "blocking", file: "src/auth.ts", description: "no rotation implemented" }],
+        next: [],
+      },
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, true, "FAIL verdict must not enforce full coverage");
+  });
+
+  it("BLOCKED verdict with partial criteria is still accepted", () => {
+    const result = validateVerifyCompletion(
+      {
+        status: "blocked",
+        summary: "Cannot run npm test: node not installed.",
+        criteria: [{ index: 11, status: "blocked", evidence: "command not found" }],
+        checks: [],
+        defects: [],
+        next: [],
+      },
+      LONG_CRITERIA,
+    );
+    assert.equal(result.ok, true, "BLOCKED must not enforce full coverage");
+  });
+
+  it("preserves hasEvidence guarantee: PASS with no evidence in criteria or checks is rejected", () => {
+    const result = validateVerifyCompletion(
+      {
+        status: "pass",
+        summary: "looks good",
+        criteria: [{ index: 1, status: "pass" }],
+        checks: [],
+        defects: [],
+        next: [],
+      },
+      ["npm run build"],
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /evidence/iu);
+  });
+
+  it("legacy text-based path works when no index is provided (backward compatibility)", () => {
+    const result = validateVerifyCompletion(
+      {
+        status: "pass",
+        summary: "Inspected config.js.",
+        criteria: [
+          { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1" },
+          { criterion: "npm test passes", status: "pass", evidence: "exit 0" },
+        ],
+        checks: [{ check: "npm test", result: "exit 0" }],
+        defects: [],
+        next: [],
+      },
+      ["TIMEOUT_MS is 2000", "npm test passes"],
+    );
+    assert.equal(result.ok, true, "text-based fallback must still work when no indices provided");
+  });
+
+  // ─── EZE-488 follow-up: the completion tool must never reach that fallback ────
+
+  const TOOL_CRITERIA = ["TIMEOUT_MS is 2000", "npm test passes"];
+
+  function toolPass(overrides = {}) {
+    return {
+      status: "pass",
+      summary: "Inspected config.js and ran npm test.",
+      criteria: [
+        { index: 1, criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+        { index: 2, criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+      ],
+      checks: [{ check: "npm test", result: "exit 0" }],
+      defects: [],
+      next: [],
+      ...overrides,
+    };
+  }
+
+  function toolWithCollector() {
+    const collector = createVerifyCompletionCollector();
+    return { collector, tool: createVerifyCompleteTool({ criteria: TOOL_CRITERIA, collector }) };
+  }
+
+  it("completion tool accepts a PASS whose every entry carries a valid index", async () => {
+    const { collector, tool } = toolWithCollector();
+    const execution = await tool.execute("call-1", toolPass());
+
+    assert.equal(execution.details.accepted, true);
+    assert.equal(execution.isError, undefined);
+    assert.equal(collector.invalidAttempts, 0, "an index-addressed PASS spends no recovery budget");
+    assert.equal(collector.verdict?.status, "pass");
+  });
+
+  it("completion tool rejects an index-less PASS with index guidance, keeping exactly one recovery (EZE-438 intact)", async () => {
+    const { collector, tool } = toolWithCollector();
+
+    // Exact criterion text: the legacy matcher inside validateVerifyCompletion would
+    // accept this. The tool must not, so text coverage stays unreachable from here.
+    const first = await tool.execute(
+      "call-1",
+      toolPass({
+        criteria: [
+          { criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+          { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+        ],
+      }),
+    );
+
+    assert.equal(first.isError, true);
+    assert.match(first.content[0].text, /1-based index/u, "the rejection must name indices as the fix");
+    assert.match(first.details.reason, /ACCEPTANCE CRITERIA list/u);
+    assert.equal(first.details.remainingRecoveries, 0);
+    assert.equal(collector.invalidAttempts, 1, "the guidance consumes the single existing recovery budget");
+    assert.equal(collector.verdict, undefined, "a rejection is never a verdict");
+
+    const second = await tool.execute("call-2", toolPass());
+    assert.equal(second.details.accepted, true, "the corrected index-addressed PASS is recorded");
+    assert.equal(collector.verdict.status, "pass");
+    assert.equal(MAX_VERIFY_RECOVERY_ATTEMPTS, 1, "EZE-438: the recovery budget is unchanged");
+  });
+
+  it("completion tool rejects a partially indexed PASS instead of falling back to text coverage", async () => {
+    const { tool } = toolWithCollector();
+    const execution = await tool.execute(
+      "call-1",
+      toolPass({
+        criteria: [
+          { index: 1, criterion: "TIMEOUT_MS is 2000", status: "pass", evidence: "config.js:1 shows 2000" },
+          { criterion: "npm test passes", status: "pass", evidence: "npm test exit 0" },
+        ],
+      }),
+    );
+
+    assert.equal(execution.isError, true);
+    assert.match(execution.details.reason, /carries no integer "index"/u);
+    assert.match(execution.details.reason, /"index": 1/u, "the corrective message shows the required shape");
+  });
+
+  it("completion tool rejects an index-less empty criteria list with index guidance", async () => {
+    const { tool } = toolWithCollector();
+    const execution = await tool.execute("call-1", toolPass({ criteria: [] }));
+
+    assert.equal(execution.isError, true);
+    assert.match(execution.details.reason, /no criteria entries were reported for 2 required criteria/u);
+  });
+
+  it("index guidance exempts FAIL and BLOCKED verdicts, and defers shape errors to the validator", () => {
+    assert.equal(
+      verifyCompletionIndexGuidance({ status: "fail", criteria: [{ criterion: "x", status: "fail" }] }, TOOL_CRITERIA),
+      undefined,
+      "a FAIL does not claim full coverage, so indices are not demanded",
+    );
+    assert.equal(
+      verifyCompletionIndexGuidance({ status: "blocked", criteria: [{ criterion: "x", status: "blocked" }] }, TOOL_CRITERIA),
+      undefined,
+    );
+    assert.equal(
+      verifyCompletionIndexGuidance({ status: "pass", criteria: [{ criterion: "x", status: "pass" }] }, []),
+      undefined,
+      "nothing to index against",
+    );
+    assert.equal(verifyCompletionIndexGuidance({ status: "pass", criteria: "not an array" }, TOOL_CRITERIA), undefined);
+    assert.equal(verifyCompletionIndexGuidance("not an object", TOOL_CRITERIA), undefined);
+    assert.equal(
+      verifyCompletionIndexGuidance({ status: "pass", criteria: [{ index: 1, status: "pass" }] }, TOOL_CRITERIA),
+      undefined,
+    );
+  });
+
+  it("prompt and task input state that every PASS entry must carry its index", () => {
+    const { tool } = toolWithCollector();
+    assert.match((tool.promptGuidelines ?? []).join("\n"), /mandatory on every entry of a PASS/iu);
+
+    const prompt = buildVerifyTaskInput({ task: "Bring the timeout to 2000", criteria: TOOL_CRITERIA });
+    assert.match(prompt, /must carry "index"/u);
+    assert.match(prompt, /1\. TIMEOUT_MS is 2000/u, "the numbered list stays the index source of truth");
+  });
+
+  // ─── EZE-488 final input-boundary: JSON-array-string criteria ────────────────
+  // The demonstrated defect: aies_delegate's 'verify' criteria can arrive as the
+  // string arm of its union holding a serialized list, e.g. '["crit one", ...]'.
+  // normalizeCriteriaList must fan that out into N criteria, not collapse it.
+
+  const TEN_CRITERIA = LONG_CRITERIA.slice(0, 10); // 10 long Spanish/English sentences: accents, «», →
+
+  it("normalizes a JSON-array string of 10 long sentences to exactly N=10, identical to the array form", () => {
+    const fromJsonString = normalizeCriteriaList(JSON.stringify(TEN_CRITERIA));
+    const fromArray = normalizeCriteriaList(TEN_CRITERIA);
+    assert.equal(fromJsonString.length, 10);
+    assert.deepEqual(fromJsonString, fromArray);
+  });
+
+  it("normalizes a single-element JSON-array string identically to the array form of one", () => {
+    assert.deepEqual(normalizeCriteriaList('["npm run build"]'), normalizeCriteriaList(["npm run build"]));
+    assert.equal(normalizeCriteriaList('["npm run build"]').length, 1);
+  });
+
+  it("keeps a malformed JSON string starting with '[' as one literal criterion (documented fallback)", () => {
+    const literal = "[npm run build passes]";
+    const result = normalizeCriteriaList(literal);
+    assert.equal(result.length, 1, "invalid JSON must fall back to the current single-string behavior");
+    assert.equal(result[0], literal);
+  });
+
+  it("handles an array containing a JSON-array-string element without parsing it (asserted current behavior)", () => {
+    // Parsing applies only to the top-level string arm; a serialized list nested
+    // inside an array stays one literal criterion, exactly as before this fix.
+    const result = normalizeCriteriaList(['["alpha", "beta"]']);
+    assert.equal(result.length, 1);
+    assert.equal(result[0], '["alpha", "beta"]');
+  });
+
+  it("end-to-end: delegate-style JSON-array-string criteria give the completion tool a required list of N=10 and accept an indexed PASS", async () => {
+    const required = normalizeCriteriaList(JSON.stringify(TEN_CRITERIA));
+    assert.equal(required.length, 10, "the tool's required list is 10, not 1");
+
+    const collector = createVerifyCompletionCollector();
+    const tool = createVerifyCompleteTool({ criteria: JSON.stringify(TEN_CRITERIA), collector });
+    const execution = await tool.execute("call-1", {
+      status: "pass",
+      summary: "Verification complete - all ten criteria inspected.",
+      criteria: required.map((c, i) => ({
+        index: i + 1,
+        criterion: c,
+        status: "pass",
+        evidence: `verified criterion ${i + 1}`,
+      })),
+      checks: [{ check: "npm run build", result: "exit 0" }],
+      defects: [],
+      next: [],
+    });
+
+    assert.equal(execution.details.accepted, true, "an indexed PASS covering 1..10 must be accepted");
+    assert.equal(collector.invalidAttempts, 0);
+    assert.equal(collector.verdict?.criteria.length, 10);
   });
 });

@@ -424,7 +424,9 @@ export function buildVerifyTaskInput(input: VerifyTaskInput): string {
   const blocks: string[] = [`WORK UNIT: ${input.task.trim()}`];
 
   const criteria = normalizeCriteriaList(input.criteria);
-  blocks.push(`ACCEPTANCE CRITERIA:\n${numberedList(criteria)}`);
+  blocks.push(
+    `ACCEPTANCE CRITERIA (report each by its 1-based index; every criteria entry of a PASS must carry "index" equal to its number here, and a PASS must cover every index exactly once):\n${numberedList(criteria)}`,
+  );
 
   const changedPaths = (input.changedPaths ?? []).map((entry) => entry.trim()).filter(Boolean);
   blocks.push(
@@ -466,7 +468,9 @@ export function buildRepairContext(input: RepairContextInput): string {
   const blocks: string[] = [`WORK UNIT: ${input.task.trim()}`];
 
   const criteria = normalizeCriteriaList(input.criteria);
-  blocks.push(`ACCEPTANCE CRITERIA:\n${numberedList(criteria)}`);
+  blocks.push(
+    `ACCEPTANCE CRITERIA (report each by its 1-based index in the completion tool):\n${numberedList(criteria)}`,
+  );
 
   blocks.push(`DEFECTS TO FIX (reported by independent verification):\n${input.brief.trim()}`);
 

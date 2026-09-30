@@ -21,6 +21,7 @@ import {
   isProtocolError,
   normalizeCriteriaList,
   validateVerifyCompletion,
+  verifyCompletionIndexGuidance,
   type VerifyRunResult,
   type VerifyVerdict,
 } from "./handoff.ts";
@@ -55,13 +56,20 @@ export const VerifyCompleteSchema = Type.Object({
   }),
   criteria: Type.Array(
     Type.Object({
-      criterion: Type.String({ description: "Acceptance criterion, copied exactly as supplied" }),
+      index: Type.Optional(Type.Number({
+        description:
+          "1-based position in the ACCEPTANCE CRITERIA list from the prompt. Required on every entry of a PASS: a PASS whose entries lack an index is rejected.",
+        minimum: 1,
+      })),
+      criterion: Type.Optional(
+        Type.String({ description: "Short display label or copy of the criterion text (optional)" }),
+      ),
       status: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked")]),
       evidence: Type.Optional(
         Type.String({ description: "File, line, symbol or output with observed value" }),
       ),
     }),
-    { description: "One entry per acceptance criterion with observed evidence" },
+    { description: "One entry per acceptance criterion index, 1-based" },
   ),
   checks: Type.Array(
     Type.Object({
@@ -83,7 +91,7 @@ export const VerifyCompleteSchema = Type.Object({
 export type VerifyCompleteParams = {
   status: "pass" | "fail" | "blocked";
   summary: string;
-  criteria: Array<{ criterion: string; status: "pass" | "fail" | "blocked"; evidence?: string }>;
+  criteria: Array<{ index?: number; criterion?: string; status: "pass" | "fail" | "blocked"; evidence?: string }>;
   checks: Array<{ check: string; result?: string }>;
   defects: Array<{
     severity: "blocking" | "non_blocking";
@@ -141,8 +149,8 @@ export function createVerifyCompleteTool(params: {
     promptSnippet: `${VERIFY_COMPLETE_TOOL}: Report structured verification verdict (pass|fail|blocked) with per-criterion evidence.`,
     promptGuidelines: [
       `Call ${VERIFY_COMPLETE_TOOL} exactly once at the end of inspection with the structured verdict. Never call it a second time; any duplicate call is rejected as a protocol error. Once recorded, stop immediately.`,
-      "Copy each supplied acceptance criterion into `criteria` exactly as given; do not paraphrase, merge or split them.",
-      "Give non-empty evidence for every supplied criterion. A PASS must represent and pass every acceptance criterion, each with its own evidence.",
+      "Report one entry per ACCEPTANCE CRITERIA index, 1-based, exactly once per index. The 'index' field is mandatory on every entry of a PASS and is how coverage is decided; copy the criterion text from the prompt only for readability (optional).",
+      "Give non-empty evidence for every supplied criterion. A PASS must represent and pass every acceptance criterion, each with its own evidence; a PASS whose entries lack an index is rejected outright, never matched by criterion text.",
       `If a call is rejected as invalid, you have at most one recovery attempt to correct and call ${VERIFY_COMPLETE_TOOL} again. A second invalid attempt fails the protocol immediately. Never convert rejection into blocked.`,
     ],
     parameters: VerifyCompleteSchema,
@@ -174,7 +182,13 @@ export function createVerifyCompleteTool(params: {
         };
       }
 
-      const validation = validateVerifyCompletion(input, criteria);
+      // EZE-488: the tool never falls back to text coverage. A PASS must be
+      // index-addressed, so a model that echoes the criteria in its own words (or
+      // omits the index) is corrected instead of silently failing exact-text matching.
+      const indexGuidance = verifyCompletionIndexGuidance(input, criteria);
+      const validation = indexGuidance
+        ? { ok: false as const, reason: indexGuidance }
+        : validateVerifyCompletion(input, criteria);
       collector.attempted = true;
 
       if (!validation.ok) {
