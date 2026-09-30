@@ -25,11 +25,10 @@ import { fileURLToPath } from "node:url";
 import { createFauxCore, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import * as delegateModule from "../extensions/aies-agents/delegate.ts";
-import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
-import { resolveAgentThinkingLevel } from "../extensions/aies-agents/model.ts";
-import { AgentObservatory, observatory } from "../extensions/aies-agents/observatory.ts";
 import * as sessionModule from "../extensions/aies-agents/session.ts";
+import { providerDisplayLabel, resolveAgentThinkingLevel } from "../extensions/aies-agents/model.ts";
+import { AgentObservatory, observatory } from "../extensions/aies-agents/observatory.ts";
+import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
 import { runVerifyAgent, VERIFY_COMPLETE_TOOL } from "../extensions/aies-agents/verify.ts";
 import { runWorkerAgent } from "../extensions/aies-agents/worker.ts";
 
@@ -226,7 +225,6 @@ describe("AIES-010C runner observatory wiring", () => {
       modelRuntime: runtime,
       model,
       observatory: obs,
-      providerLabel: "Faux Provider",
     });
 
     assert.equal(handoff.status, "done");
@@ -238,7 +236,10 @@ describe("AIES-010C runner observatory wiring", () => {
     assert.equal(record.modelId, "faux-1");
     assert.equal(record.modelLabel, "Faux Model");
     assert.equal(record.providerId, "faux");
-    assert.equal(record.providerLabel, "Faux Provider");
+    // EZE-487: the label derives from the child provider id through the runtime;
+    // a session ModelRuntime exposes no display-name method, so the registry
+    // falls back to the id itself — never a label resolved from another model.
+    assert.equal(record.providerLabel, "faux");
     assert.equal(record.currentActivity, null);
     assert.equal(record.finishedAt > 0, true);
     assert.ok(record.totalTokens > 0, "real usage sampled from the child session");
@@ -371,28 +372,31 @@ describe("AIES-010C runner observatory wiring", () => {
 });
 
 describe("AIES-010C delegate provider label resolution", () => {
-  it("resolves the provider display name and degrades safely", () => {
-    const { resolveProviderDisplayLabel } = delegateModule;
-    assert.equal(typeof resolveProviderDisplayLabel, "function");
+  it("derives the provider display label from the given provider id and degrades safely", () => {
+    assert.equal(typeof providerDisplayLabel, "function");
 
     const registry = { getProviderDisplayName: (provider) => (provider === "faux" ? "Faux Provider" : provider) };
-    assert.equal(resolveProviderDisplayLabel(registry, { provider: "faux" }), "Faux Provider");
+    assert.equal(providerDisplayLabel(registry, "faux"), "Faux Provider");
 
-    // Absent registry, absent provider or a throwing registry never fail the run.
-    assert.equal(resolveProviderDisplayLabel(undefined, { provider: "faux" }), undefined);
-    assert.equal(resolveProviderDisplayLabel(registry, undefined), undefined);
-    assert.equal(resolveProviderDisplayLabel(registry, {}), undefined);
+    // EZE-487: an absent runtime, an absent provider id, an empty label or a
+    // throwing runtime degrade to null: the label never comes from a model.
+    assert.equal(providerDisplayLabel(undefined, "faux"), null);
+    assert.equal(providerDisplayLabel(registry, null), null);
+    assert.equal(providerDisplayLabel(registry, undefined), null);
+    assert.equal(providerDisplayLabel({ getProviderDisplayName: () => "   " }, "faux"), null);
     assert.equal(
-      resolveProviderDisplayLabel(
+      providerDisplayLabel(
         {
           getProviderDisplayName() {
             throw new Error("registry exploded");
           },
         },
-        { provider: "faux" },
+        "faux",
       ),
-      undefined,
+      null,
     );
+    // A runtime without the display method is a miss, not a failure.
+    assert.equal(providerDisplayLabel({}, "faux"), null);
   });
 
   it("passes the observatory singleton to all three child runners", () => {

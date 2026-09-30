@@ -85,6 +85,26 @@ function findModel(modelRuntime: any, spec: string): any {
   return undefined;
 }
 
+/**
+ * Resolve the display label for a provider id through the caller's registry or
+ * session runtime. The label must derive from the CHILD's own provider id, never
+ * from the parent's model: presentation only — a missing runtime, a missing
+ * method, an empty label or a throwing runtime degrades to `null` and never
+ * fails a delegation (EZE-487).
+ */
+export function providerDisplayLabel(
+  modelRuntime: { getProviderDisplayName?: (provider: string) => string } | null | undefined,
+  providerId: string | null | undefined,
+): string | null {
+  if (!modelRuntime || !providerId) return null;
+  try {
+    const label = modelRuntime.getProviderDisplayName?.(providerId);
+    return typeof label === "string" && label.trim() ? label.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 interface AgentConfig {
   model?: string;
   thinkingLevel?: string;

@@ -361,7 +361,11 @@ describe("right rail product composition", () => {
       record({ id: "worker-3", role: "worker" }),
     ]);
 
-    const text = renderRightRail(snapOf(state), T0, { width: 46, height: 12 }).join("\n");
+    // EZE-487: with an active delegation the rail reports the child's real
+    // Modelo/Proveedor rows, so the Status block is two lines taller. The
+    // contract under pressure is unchanged: every active child first, then the
+    // collapsed Todos line.
+    const text = renderRightRail(snapOf(state), T0, { width: 46, height: 14 }).join("\n");
     assert.match(text, /Worker activo/u, text);
     assert.match(text, /Todos · \d+\/\d+/u, text);
   });

@@ -25,7 +25,7 @@ import {
   type VerifyRunResult,
   type VerifyVerdict,
 } from "./handoff.ts";
-import { resolveAgentThinkingLevel, resolveVerifyModel } from "./model.ts";
+import { providerDisplayLabel, resolveAgentThinkingLevel, resolveVerifyModel } from "./model.ts";
 import type { AiesThinkingLevel } from "../aies-models/capabilities.ts";
 import type { AgentObservatory, AgentStatus } from "./observatory.ts";
 import type { SandboxConfigOptions } from "./sandbox.ts";
@@ -282,8 +282,6 @@ export interface RunVerifyOptions {
   sandboxOptions?: SandboxConfigOptions;
   /** Session-local presentation registry; the runner only opens and closes a record. */
   observatory?: AgentObservatory;
-  /** Provider display label pre-resolved by the caller; the registry falls back to the id. */
-  providerLabel?: string;
 }
 
 /** A protocol error is never a domain verdict: it is a failed observation. */
@@ -348,7 +346,9 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
       modelId: identity.modelId,
       modelLabel: identity.modelLabel,
       providerId: identity.providerId,
-      providerLabel: options.providerLabel ?? null,
+      // EZE-487: the display label derives from the child's own provider id, never
+      // from a label pre-resolved against the parent model.
+      providerLabel: providerDisplayLabel(modelRuntime, identity.providerId),
       at: Date.now(),
     });
 

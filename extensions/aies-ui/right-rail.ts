@@ -311,8 +311,28 @@ function railStatusRows(
   runEndedAt: number | undefined,
 ): StatusRow[] {
   const ticket = snapshot.ticket?.active && snapshot.ticket.identifier ? singleLine(snapshot.ticket.identifier) : undefined;
-  const model = singleLine(snapshot.model?.label ?? snapshot.model?.id ?? "") || undefined;
-  const provider = singleLine(snapshot.model?.provider ?? "") || undefined;
+  // EZE-487: while a delegation is active, the child runs a model that may differ
+  // from the parent's session model, so the Modelo/Proveedor rows report the
+  // running child's real metadata from the observatory record. With no active
+  // delegation the rail keeps reading the parent's snapshot model.
+  const activeRole = snapshot.delegations?.activeRole;
+  const runningChild = activeRole
+    ? Array.isArray(snapshot.agents)
+      ? snapshot.agents.find((agent) => agent.role === activeRole && agent.status === "running")
+      : undefined
+    : undefined;
+  const model =
+    singleLine(
+      (
+        runningChild
+          ? runningChild.modelLabel ?? runningChild.modelId
+          : snapshot.model?.label ?? snapshot.model?.id
+      ) ?? "",
+    ) || undefined;
+  const provider =
+    singleLine(
+      (runningChild ? runningChild.providerLabel ?? runningChild.providerId : snapshot.model?.provider) ?? "",
+    ) || undefined;
   const pressure = isContextPressure(snapshot) ? " !" : "";
   const compacting = isCompacting(snapshot) ? " · compactando…" : "";
   const elapsed = activeRunElapsed(snapshot, now, runEndedAt);

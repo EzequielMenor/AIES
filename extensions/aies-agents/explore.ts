@@ -9,7 +9,7 @@
  */
 
 import { parseExploreHandoff, type ExploreHandoff, type ExploreStatus } from "./handoff.ts";
-import { resolveAgentThinkingLevel, resolveExploreModel } from "./model.ts";
+import { providerDisplayLabel, resolveAgentThinkingLevel, resolveExploreModel } from "./model.ts";
 import type { AiesThinkingLevel } from "../aies-models/capabilities.ts";
 import type { AgentObservatory, AgentStatus } from "./observatory.ts";
 import {
@@ -40,8 +40,6 @@ export interface RunExploreOptions {
   tgrepRunner?: TgrepRunner;
   /** Session-local presentation registry; the runner only opens and closes a record. */
   observatory?: AgentObservatory;
-  /** Provider display label pre-resolved by the caller; the registry falls back to the id. */
-  providerLabel?: string;
 }
 
 /** Map the Explore domain status onto the registry lifecycle. */
@@ -97,7 +95,9 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
       modelId: identity.modelId,
       modelLabel: identity.modelLabel,
       providerId: identity.providerId,
-      providerLabel: options.providerLabel ?? null,
+      // EZE-487: the display label derives from the child's own provider id, never
+      // from a label pre-resolved against the parent model.
+      providerLabel: providerDisplayLabel(modelRuntime, identity.providerId),
       at: Date.now(),
     });
 
