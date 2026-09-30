@@ -256,21 +256,33 @@ function overlayContextFor(
   };
 }
 
-/** Open the TUI overlay and resolve the confirmed selection, or `null` on cancel. */
-async function openOverlay(ctx: ExtensionContext, context: OverlayContext): Promise<ModelsSelection | null> {
+/** Keep the TUI overlay open across saves; resolve only on explicit cancellation. */
+async function openOverlay(
+  ctx: ExtensionContext,
+  context: OverlayContext,
+  save: (selection: ModelsSelection) => Promise<RoleAssignment | undefined>,
+): Promise<void> {
   let state = createOverlayState({ hasScoped: context.hasScoped });
 
   const custom = ctx.ui?.custom;
-  if (typeof custom !== "function") return null;
+  if (typeof custom !== "function") return;
 
-  const result = await custom(
+  await custom(
     (tui, theme, keybindings, done) => {
       const keys = overlayKeys(keybindings);
       let settled = false;
+      let saving = false;
+      const requestRender = (): void => {
+        try {
+          (tui as { requestRender?: () => void })?.requestRender?.();
+        } catch {
+          // A host without an explicit render request repaints on the next tick.
+        }
+      };
       return {
         render: (width: number) => renderOverlayLines(state, context, theme as OverlayTheme | undefined, width),
         handleInput: (data: string): void => {
-          if (settled) return;
+          if (settled || saving) return;
           const input = keys.decode(data, state.step);
           if (!input) return;
           state = reduceOverlayKey(state, input, context);
@@ -280,19 +292,33 @@ async function openOverlay(ctx: ExtensionContext, context: OverlayContext): Prom
             return;
           }
           if (state.step === "done" && state.model) {
-            settled = true;
-            done({
+            saving = true;
+            const selection: ModelsSelection = {
               role: state.role ?? "parent",
               option: state.model,
               ...(state.thinking ? { thinkingLevel: state.thinking } : {}),
-            } satisfies ModelsSelection);
+            };
+            void (async () => {
+              try {
+                const assignment = await save(selection);
+                if (assignment) {
+                  context = {
+                    ...context,
+                    assignments: context.assignments.map((entry) =>
+                      entry.role === assignment.role ? assignment : entry),
+                  };
+                }
+              } catch (error) {
+                notify(ctx, `No se pudo guardar ${ROLE_LABELS[selection.role]}: ${error instanceof Error ? error.message : String(error)}`, "error");
+              } finally {
+                state = { ...createOverlayState(), roleIndex: state.roleIndex, scope: state.scope };
+                saving = false;
+                requestRender();
+              }
+            })();
             return;
           }
-          try {
-            (tui as { requestRender?: () => void })?.requestRender?.();
-          } catch {
-            // A host without an explicit render request repaints on the next tick.
-          }
+          requestRender();
         },
         invalidate(): void {},
       };
@@ -307,8 +333,6 @@ async function openOverlay(ctx: ExtensionContext, context: OverlayContext): Prom
       },
     },
   );
-
-  return (result as ModelsSelection | null | undefined) ?? null;
 }
 
 /** Apply a confirmed selection: session switch and/or isolated persistence. */
@@ -317,9 +341,14 @@ async function applySelection(
   ctx: ExtensionContext,
   selection: ModelsSelection,
   agentDir: string | undefined,
-): Promise<void> {
+): Promise<RoleAssignment | undefined> {
   const label = ROLE_LABELS[selection.role];
   const suffix = selection.thinkingLevel ? ` · ${selection.thinkingLevel}` : "";
+  const assignment: RoleAssignment = {
+    role: selection.role,
+    model: selection.option.value,
+    ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
+  };
 
   if (selection.role === "parent") {
     const accepted = await sessionModelSetter(pi, ctx)(selection.option.model);
@@ -343,10 +372,10 @@ async function applySelection(
     });
     if (!persisted.ok) {
       notify(ctx, `Modelo Parent ${selection.option.value}${suffix} activo, pero no se guardó el default: ${persisted.error}`, "error");
-      return;
+      return assignment;
     }
     notify(ctx, `${label}: ${selection.option.value}${suffix}`, "info");
-    return;
+    return assignment;
   }
 
   const written = writeChildPreference(agentDir, selection.role as AiesChildRole, {
@@ -358,6 +387,7 @@ async function applySelection(
     return;
   }
   notify(ctx, `${label}: ${selection.option.value}${suffix}`, "info");
+  return assignment;
 }
 
 /**
@@ -412,9 +442,8 @@ export async function handleModelsCommand(pi: ExtensionAPI, ctx: ExtensionContex
     return;
   }
 
-  const selection = await openOverlay(ctx, overlayContextFor(projection, ctx, preferences));
-  if (!selection) return;
-  await applySelection(pi, ctx, selection, agentDir);
+  await openOverlay(ctx, overlayContextFor(projection, ctx, preferences),
+    (selection) => applySelection(pi, ctx, selection, agentDir));
 }
 
 /** Register the AIES model picker. Presentation and preference only. */

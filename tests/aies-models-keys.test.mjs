@@ -13,10 +13,10 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 
 import { projectModelOption } from "../extensions/aies-models/capabilities.ts";
 import { AIES_CONFIG_FILE } from "../extensions/aies-models/config.ts";
@@ -49,6 +49,8 @@ function useAgentDir() {
   });
   return dir;
 }
+
+beforeEach(() => useAgentDir());
 
 afterEach(() => {
   while (envRestorers.length) envRestorers.pop()();
@@ -182,6 +184,18 @@ function press(session, ...keys) {
   for (const key of keys) session.component.handleInput(key);
 }
 
+/** Wait for persistence and the return to roles, then explicitly close the modal. */
+async function finishSave(session, command) {
+  for (let attempts = 0; !session.component.render(80).join("\n").includes("elegí el rol"); attempts++) {
+    assert.ok(attempts < 200, "save must return to the role view");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(session.doneCalls.length, 0, "save must keep the same modal open");
+  press(session, "\x1b");
+  await command;
+  assert.deepEqual(session.doneCalls, [null]);
+}
+
 describe("raw key decoding (fallback)", () => {
   it("maps arrows, vim keys, effort keys, confirm, escape and quit outside the model step", () => {
     assert.equal(decodeOverlayKey("\x1b[A"), "up");
@@ -245,8 +259,8 @@ describe("raw key decoding (fallback)", () => {
     session.component.handleInput("\x1b[A"); // raw up -> parent
     assert.equal(selectedRole(session.component), "Parent");
     press(session, "\r", "\r", "\r"); // confirm through
-    await command;
-    assert.equal(session.doneCalls[0].role, "parent");
+    await finishSave(session, command);
+    assert.equal(selectedRole(session.component), "Parent");
   });
 });
 
@@ -260,8 +274,8 @@ describe("arrow up/down symmetry", () => {
       session.component.handleInput(up); // up back to parent
       assert.equal(selectedRole(session.component), "Parent", `up=${JSON.stringify(up)}`);
       press(session, "\r", "\r", "\r");
-      await command;
-      assert.equal(session.doneCalls[0].role, "parent");
+      await finishSave(session, command);
+      assert.equal(selectedRole(session.component), "Parent");
     }
   });
 
@@ -272,8 +286,8 @@ describe("arrow up/down symmetry", () => {
       session.component.handleInput(down);
       assert.equal(selectedRole(session.component), "Explore", `down=${JSON.stringify(down)}`);
       press(session, "\r", "\r", "\r");
-      await command;
-      assert.equal(session.doneCalls[0].role, "explore");
+      await finishSave(session, command);
+      assert.equal(selectedRole(session.component), "Explore");
     }
   });
 
@@ -289,8 +303,8 @@ describe("arrow up/down symmetry", () => {
     session.component.handleInput("\x1b[1;1A"); // Kitty-style up
     assert.equal(selectedRole(session.component), "Parent");
     press(session, "\r", "\r", "\r");
-    await command;
-    assert.equal(session.doneCalls[0].role, "parent");
+    await finishSave(session, command);
+    assert.equal(selectedRole(session.component), "Parent");
   });
 });
 
@@ -412,8 +426,8 @@ describe("type-ahead search in the model step", () => {
     session.component.handleInput("\x1b[B"); // arrow down
     assert.equal(selectedLabel(session.component), "Beta");
     press(session, "\r", "\r"); // model -> thinking -> done
-    await command;
-    assert.equal(session.doneCalls[0].option.id, "Beta");
+    await finishSave(session, command);
+    assert.ok(selectedLabel(session.component).includes("faux/Beta"));
   });
 });
 
@@ -562,8 +576,8 @@ describe("effort selection with left/right", () => {
       session.component.handleInput(left);
       assert.equal(selectedLabel(session.component), "off", `left=${JSON.stringify(left)}`);
       session.component.handleInput("\r"); // thinking -> done
-      await command;
-      assert.equal(session.doneCalls[0].thinkingLevel, "off");
+      await finishSave(session, command);
+      assert.ok(selectedLabel(session.component).includes(" · off"));
     }
   });
 
@@ -576,8 +590,8 @@ describe("effort selection with left/right", () => {
     session.component.handleInput("\x1b[1;1C"); // Kitty-style right
     assert.equal(selectedLabel(session.component), "minimal");
     session.component.handleInput("\r");
-    await command;
-    assert.equal(session.doneCalls[0].thinkingLevel, "minimal");
+    await finishSave(session, command);
+    assert.ok(selectedLabel(session.component).includes(" · minimal"));
   });
 });
 
@@ -667,9 +681,9 @@ describe("confirm via Enter and Ctrl+S", () => {
     session.component.handleInput("\x13"); // role -> provider (Ctrl+S)
     session.component.handleInput("\x13"); // provider -> model (Ctrl+S)
     session.component.handleInput("\x13"); // model -> done (Ctrl+S)
-    await command;
-    assert.equal(session.doneCalls[0].role, "parent");
-    assert.equal(session.doneCalls[0].option.id, "m1");
+    await finishSave(session, command);
+    assert.equal(selectedRole(session.component), "Parent");
+    assert.ok(selectedLabel(session.component).includes("faux/m1"));
     assert.equal(existsSync(join(agentDir, "settings.json")), true);
   });
 
@@ -681,9 +695,9 @@ describe("confirm via Enter and Ctrl+S", () => {
     session.component.handleInput("\x1b[115;5u"); // role -> provider
     session.component.handleInput("\x1b[115;5u"); // provider -> model
     session.component.handleInput("\x1b[115;5u"); // model -> done
-    await command;
-    assert.equal(session.doneCalls[0].role, "parent");
-    assert.equal(session.doneCalls[0].option.id, "m1");
+    await finishSave(session, command);
+    assert.equal(selectedRole(session.component), "Parent");
+    assert.ok(selectedLabel(session.component).includes("faux/m1"));
   });
 
   it("navigates the role step with j and the model step with arrows", async () => {
@@ -697,9 +711,9 @@ describe("confirm via Enter and Ctrl+S", () => {
     session.component.handleInput("\x1b[B"); // arrow down: pick second model
     assert.equal(selectedLabel(session.component), models[1].name);
     press(session, "\r"); // model -> done (non-reasoning)
-    await command;
-    assert.equal(session.doneCalls[0].role, "explore");
-    assert.equal(session.doneCalls[0].option.id, "m2");
+    await finishSave(session, command);
+    assert.equal(selectedRole(session.component), "Explore");
+    assert.ok(selectedLabel(session.component).includes("faux/m2"));
   });
 });
 
@@ -723,9 +737,9 @@ describe("shared modal frame", () => {
     assert.equal(selectedRole(session.component), "Parent");
 
     press(session, "\r", "\r", "\r"); // role -> provider -> model -> done (non-reasoning)
-    await command;
-    assert.equal(session.doneCalls[0].role, "parent");
-    assert.equal(session.doneCalls[0].option.id, "m1");
+    await finishSave(session, command);
+    assert.equal(selectedRole(session.component), "Parent");
+    assert.ok(selectedLabel(session.component).includes("faux/m1"));
   });
 
   it("keeps every framed line inside a narrow render width", async () => {
@@ -743,6 +757,70 @@ describe("shared modal frame", () => {
 });
 
 describe("overlay lifecycle", () => {
+  it("ignores repeated confirmation while a save is in flight", async () => {
+    const host = createHost({ models: [model()] });
+    let accept;
+    let switches = 0;
+    host.pi.setModel = () => {
+      switches++;
+      return new Promise((resolve) => { accept = resolve; });
+    };
+    const { command, session } = open(host);
+    press(session, "\r", "\r", "\r", "\r", "\x13");
+    assert.equal(switches, 1);
+    assert.equal(session.doneCalls.length, 0);
+    accept(true);
+    await finishSave(session, command);
+    assert.match(selectedLabel(session.component), /faux\/faux-1 · off/);
+  });
+
+  it("keeps the old assignment visible after a failed save and allows retry", async () => {
+    const agentDir = useAgentDir();
+    const file = join(agentDir, AIES_CONFIG_FILE);
+    const original = JSON.stringify({ agents: { explore: { model: "faux/old" } } });
+    writeFileSync(file, original);
+    const host = createHost({ models: [model({ id: "new" })] });
+    const { command, session } = open(host);
+    writeFileSync(file, "invalid JSON");
+    press(session, "j", "\r", "\r", "\r");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(selectedLabel(session.component), /faux\/old/);
+    assert.equal(session.doneCalls.length, 0);
+    writeFileSync(file, original);
+    press(session, "\r", "\r", "\r");
+    await finishSave(session, command);
+    assert.match(selectedLabel(session.component), /faux\/new · off/);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).agents.explore.model, "faux/new");
+  });
+
+  it("saves multiple roles in the same modal and refreshes their assignments", async () => {
+    const agentDir = useAgentDir();
+    const host = createHost({ models: [
+      model({ provider: "alpha", id: "old" }),
+      model({ provider: "beta", id: "new", reasoning: true }),
+    ] });
+    const { command, session } = open(host);
+    press(session, "j", "\r", "j", "\r", "\r", "l", "\r");
+    assert.equal(session.doneCalls.length, 0, "saving must not close the modal");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(selectedRole(session.component), "Explore");
+    assert.match(selectedLabel(session.component), /beta\/new · minimal/);
+    assert.equal(JSON.parse(readFileSync(join(agentDir, AIES_CONFIG_FILE), "utf8")).agents.explore.model, "beta/new");
+
+    press(session, "j", "\r", "\r", "\r"); // Worker: alpha/old, no thinking step
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(selectedRole(session.component), "Worker");
+    assert.match(selectedLabel(session.component), /alpha\/old · off/);
+    const saved = JSON.parse(readFileSync(join(agentDir, AIES_CONFIG_FILE), "utf8")).agents;
+    assert.equal(saved.explore.thinkingLevel, "minimal");
+    assert.equal(saved.worker.model, "alpha/old");
+    assert.equal(host.sessions.length, 1);
+    assert.equal(session.doneCalls.length, 0);
+    press(session, "\x1b");
+    await command;
+    assert.deepEqual(session.doneCalls, [null]);
+  });
+
   it("ignores input after close and calls done exactly once", async () => {
     useAgentDir();
     const host = createHost({ models: [option({ id: "m1", reasoning: true })] });
@@ -789,8 +867,8 @@ describe("overlay lifecycle", () => {
     second.session.component.handleInput("\r"); // role -> provider
     second.session.component.handleInput("\r"); // provider -> model
     second.session.component.handleInput("\r"); // model -> done
-    await second.command;
+    await finishSave(second.session, second.command);
     assert.equal(host.sessions.length, 2);
-    assert.equal(second.session.doneCalls[0].role, "parent");
+    assert.equal(selectedRole(second.session.component), "Parent");
   });
 });
