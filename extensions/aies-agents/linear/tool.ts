@@ -57,7 +57,7 @@ export const TicketParamsSchema = Type.Object({
   remote: Type.Optional(
     Type.Any({
       description:
-        "Answer to a pending Linear remote call: the value the `mcp` proxy tool returned for the call named in the directive. Pass it verbatim, optionally wrapped as { key, value }. Never invent it. When present, the pending action is resumed.",
+        "Fallback answer to a pending Linear remote call: the value the `mcp` proxy tool returned for the call named in the directive. AIES normally captures that result automatically and resumes the action, so you rarely need this; pass it verbatim only when the action is not resumed on its own, optionally wrapped as { key, value }. Never invent it.",
     }),
   ),
 });
@@ -132,6 +132,7 @@ const TICKET_ERROR_MESSAGE: Record<string, string> = {
   invalid_transition: "transición inválida",
   remote_conflict: "conflicto remoto",
   no_pending_remote: "sin operación pendiente",
+  remote_mismatch: "respuesta para otra petición",
   no_active_ticket: "no hay ticket activo",
   ticket_in_progress: "otro ticket en curso",
   verify_gate_denied: "verificación denegada",
@@ -242,9 +243,9 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
     name: "aies_ticket",
     label: "AIES Ticket",
     description:
-      "Manage the active Linear work unit ticket for this session. The Parent session is the sole owner of Linear workflow. AIES does not speak MCP itself: you perform every Linear read and write with the `mcp` proxy tool. An action that needs the remote answers `remote_required` with the exact `mcp` call to run; run it, then repeat the same action with `remote` set to the value `mcp` returned. Use 'load' to activate an exact ticket, 'start' when beginning implementation, 'complete' to mark Done (strictly enforces valid fresh Verify PASS for behavior changes), 'block' to record a blocker with evidence, and 'show' to inspect the active ticket contract.",
+      "Manage the active Linear work unit ticket for this session. The Parent session is the sole owner of Linear workflow. AIES does not speak MCP itself: you perform every Linear read and write with the `mcp` proxy tool. An action that needs the remote answers `remote_required` with the exact `mcp` call to run; run it and AIES captures the result automatically and resumes the action, so you do not have to copy the value back. Only if an action is not resumed on its own should you repeat it with `remote` set to the value `mcp` returned (fallback). Use 'load' to activate an exact ticket, 'start' when beginning implementation, 'complete' to mark Done (strictly enforces valid fresh Verify PASS for behavior changes), 'block' to record a blocker with evidence, and 'show' to inspect the active ticket contract.",
     promptGuidelines: [
-      "Linear is reached only through the `mcp` proxy tool: when `aies_ticket` answers `remote_required`, run the exact `mcp` call it names and repeat the same `aies_ticket` action with `remote` set to the value `mcp` returned. Never invent a value.",
+      "Linear is reached only through the `mcp` proxy tool: when `aies_ticket` answers `remote_required`, run exactly the `mcp` call it names; AIES captures that result automatically and resumes the pending action, so do not re-pass it. Only as a fallback, if the action is not resumed, repeat the same `aies_ticket` action with `remote` set to the value `mcp` returned. Never invent a value.",
     ],
     renderShell: "self",
     renderCall(args, theme, context) {

@@ -12,7 +12,7 @@
  */
 
 const REMOTE_STEP =
-  "If aies_ticket answers remote_required, run exactly the mcp call it names and repeat the same aies_ticket call with `remote` set to what mcp returned until it reports the result.";
+  "If aies_ticket answers remote_required, run the exact mcp call it names; AIES captures the result automatically, so pass `remote` only as a fallback.";
 
 /** Load one ticket through the Parent, satisfying every remote directive. */
 export function ticketLoadPrompt(ticketId: string): string {

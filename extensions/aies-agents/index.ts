@@ -30,7 +30,7 @@ import {
 import { TicketManager } from "./linear/manager.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
-import type { TicketSnapshot } from "./linear/types.ts";
+import type { TicketOperationResult, TicketSnapshot } from "./linear/types.ts";
 import { AGENTS_CHANNEL, observatory, type ObservatorySnapshot } from "./observatory.ts";
 import {
   applyMcpStatusEvent,
@@ -50,6 +50,21 @@ import { resetPermissionTelemetry } from "./permissions.ts";
 
 /** Native tools that change the work unit when the parent uses them directly. */
 const PARENT_MUTATION_TOOLS = ["edit", "write"];
+
+/**
+ * Model-facing summary appended to a captured `mcp` tool result so the Parent sees
+ * the resumed Linear outcome (the loaded contract, the next `remote_required`
+ * directive to run, or a clear failure) without a second `aies_ticket` call.
+ */
+function describeCapturedOutcome(result: TicketOperationResult): string {
+  const parts = ["AIES captured this `mcp` result automatically and resumed the pending Linear operation."];
+  if (result.contract) parts.push(result.contract);
+  if (result.message) parts.push(result.message);
+  const instruction =
+    result.details && typeof result.details.instruction === "string" ? result.details.instruction : undefined;
+  if (instruction) parts.push(instruction);
+  return parts.join("\n\n");
+}
 
 let activeTicketManager: TicketManager | undefined;
 
@@ -244,6 +259,24 @@ export default function aiesAgents(pi: ExtensionAPI): void {
       }
     }
 
+    // EZE-490: deterministically capture a `mcp` proxy result that satisfies the
+    // pending Linear remote call and resume the operation here, so the Parent never
+    // has to copy/serialize the payload back through `remote`. This runs BEFORE the
+    // context-governor hygiene filter and only fires for a matching pending call.
+    let capturedContent: undefined | (typeof event.content) = undefined;
+    if (event.toolName === "mcp" && !event.isError) {
+      const input = event.input as { server?: unknown; tool?: unknown; args?: unknown } | undefined;
+      if (input && typeof input.tool === "string") {
+        const resumed = await ticketManager.captureRemote(
+          { server: input.server, tool: input.tool, args: input.args },
+          event.content,
+        );
+        if (resumed) {
+          capturedContent = [...event.content, { type: "text", text: describeCapturedOutcome(resumed) }];
+        }
+      }
+    }
+
     // Feed current context usage to governor
     try {
       governor.updateUsage(ctx.getContextUsage());
@@ -254,11 +287,11 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     // Apply tool output hygiene and oversized truncation (handoffs already bypassed)
     const filter = governor.processToolResult({
       toolName: event.toolName,
-      content: event.content,
+      content: capturedContent ?? event.content,
       isError: event.isError,
     });
 
-    if (filter.modified) {
+    if (filter.modified || capturedContent) {
       return { content: filter.content };
     }
   });

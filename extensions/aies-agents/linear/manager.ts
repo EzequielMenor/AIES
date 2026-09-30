@@ -18,6 +18,7 @@ import {
   formatCompactContract,
   hasUsableIssueIdentity,
   normalizeTicketContract,
+  readIssueIdentity,
   readIssueState,
 } from "./contract.ts";
 import {
@@ -29,7 +30,9 @@ import {
 import {
   HostMediatedLinearTransport,
   isLinearRemoteRequired,
+  linearRemoteKey,
   LinearTransportError,
+  normalizeStatuses,
   unwrapMcpAnswer,
   type LinearTransport,
 } from "./transport.ts";
@@ -59,6 +62,18 @@ export interface TicketManagerOptions {
    * Parent for a call that cannot succeed.
    */
   getMcpDiagnostic?: () => McpDiagnostic;
+}
+
+/** Build a clear `invalid_remote_payload` refusal for a captured/handed answer. */
+function invalidRemotePayload(
+  directive: LinearRemoteDirective,
+  reason: string,
+): TicketOperationResult {
+  return {
+    ok: false,
+    error: "invalid_remote_payload",
+    message: `Linear ${directive.tool} returned an unusable answer: ${reason}. The operation was not completed and no partial ticket was activated.`,
+  };
 }
 
 export class TicketManager {
@@ -114,6 +129,11 @@ export class TicketManager {
     return this.pendingRemote ? { ...this.pendingRemote.directive } : null;
   }
 
+  /** Stable key of the pending call, used to match a captured `mcp` result. */
+  getPendingRemoteKey(): string | null {
+    return this.pendingRemote ? this.pendingRemote.directive.key : null;
+  }
+
   /** Current MCP diagnosis, or null when no probe is wired in. */
   getMcpDiagnostic(): McpDiagnostic | null {
     return this.mcpProbe ? this.mcpProbe() : null;
@@ -124,6 +144,13 @@ export class TicketManager {
    * the interrupted operation. Replay is pure: every remote value comes from an
    * answer the Parent supplied, so re-running the operation cannot repeat a remote
    * write.
+   *
+   * When an explicit `key` is supplied it must name the pending call: an answer for
+   * a different request is refused with `remote_mismatch` and the pending directive
+   * is left intact, so a misrouted value never clobbers an operation in flight. The
+   * captured payload is validated against the directive before the replay runs, so a
+   * truncated or identity-less answer fails clearly instead of activating a partial
+   * ticket.
    */
   async submitRemote(value: unknown, key?: string): Promise<TicketOperationResult> {
     const pending = this.pendingRemote;
@@ -135,10 +162,109 @@ export class TicketManager {
           "No Linear remote call is pending. Repeat the action without `remote` to receive the directive for the call that is still needed.",
       };
     }
+    if (key && key.trim()) {
+      const explicitKey = key.trim();
+      if (explicitKey !== pending.directive.key) {
+        return {
+          ok: false,
+          error: "remote_mismatch",
+          message: `The supplied remote answer is for a different Linear call and was refused; the pending operation was left intact. Pending call: ${pending.directive.key}`,
+        };
+      }
+    }
+    const answer = unwrapMcpAnswer(value);
+    const invalid = this.validatePendingAnswer(pending.directive, answer);
+    if (invalid) {
+      this.clearRemoteSession();
+      return invalid;
+    }
     const resolvedKey = key && key.trim() ? key.trim() : pending.directive.key;
-    this.remoteAnswers = { ...this.remoteAnswers, [resolvedKey]: unwrapMcpAnswer(value) };
+    this.remoteAnswers = { ...this.remoteAnswers, [resolvedKey]: answer };
     this.pendingRemote = null;
     return this.run(pending.action, pending.input);
+  }
+
+  /**
+   * Deterministically capture a `mcp` proxy result observed by the `tool_result`
+   * handler and resume the pending Linear operation without any LLM-mediated
+   * reproduction of the payload. The `input` is the `mcp` call's own
+   * `{ server, tool, args }`; it must match the pending directive exactly, computed
+   * with `linearRemoteKey`. When there is no pending remote, or the call does not
+   * match, this returns `null` and leaves the operation untouched (the manual
+   * `remote` fallback still applies).
+   */
+  async captureRemote(
+    input: { server?: unknown; tool?: unknown; args?: unknown },
+    value: unknown,
+  ): Promise<TicketOperationResult | null> {
+    const pending = this.pendingRemote;
+    if (!pending) return null;
+    const server = typeof input.server === "string" ? input.server : "";
+    const tool = typeof input.tool === "string" ? input.tool : "";
+    const args =
+      input.args && typeof input.args === "object" && !Array.isArray(input.args)
+        ? (input.args as Record<string, unknown>)
+        : {};
+    if (linearRemoteKey(server, tool, args) !== pending.directive.key) return null;
+    return this.submitRemote(value, pending.directive.key);
+  }
+
+  /**
+   * Reject a captured/handed-back answer that cannot satisfy the pending directive
+   * before the replay runs, so a corrupt or unrelated payload never activates a
+   * partial ticket. Returns an error result, or `null` when the answer is usable.
+   */
+  private validatePendingAnswer(
+    directive: LinearRemoteDirective,
+    answer: unknown,
+  ): TicketOperationResult | null {
+    if (directive.tool === "get_issue" || directive.tool === "save_issue") {
+      // A genuine `null` for `get_issue` still means "not found" and is handled by
+      // the replay; anything that is present but not a usable issue object is corrupt.
+      if (answer === null || answer === undefined) return null;
+      if (typeof answer !== "object" || Array.isArray(answer)) {
+        return invalidRemotePayload(
+          directive,
+          "the captured payload is not a JSON object (it looks truncated or corrupt)",
+        );
+      }
+      if (!hasUsableIssueIdentity(answer)) {
+        return invalidRemotePayload(
+          directive,
+          "the captured issue payload carries no usable identity (no identifier or id)",
+        );
+      }
+      const requestedId =
+        typeof directive.args.id === "string" ? directive.args.id.trim() : "";
+      if (requestedId) {
+        const identity = readIssueIdentity(answer) ?? "";
+        if (identity.toLowerCase() !== requestedId.toLowerCase()) {
+          return invalidRemotePayload(
+            directive,
+            `the captured issue identity '${identity}' does not match the requested ticket '${requestedId}'`,
+          );
+        }
+      }
+      return null;
+    }
+    if (directive.tool === "list_issue_statuses") {
+      const wrapped =
+        answer && typeof answer === "object" && !Array.isArray(answer)
+          ? (answer as { statuses?: unknown; states?: unknown; nodes?: unknown })
+          : undefined;
+      const arrayLike =
+        Array.isArray(answer) ||
+        (wrapped !== undefined &&
+          (Array.isArray(wrapped.statuses) || Array.isArray(wrapped.states) || Array.isArray(wrapped.nodes)));
+      if (!arrayLike || normalizeStatuses(answer).length === 0) {
+        return invalidRemotePayload(
+          directive,
+          "the captured workflow-state payload is not a non-empty status array",
+        );
+      }
+      return null;
+    }
+    return null;
   }
 
   async loadTicket(ticketId: string, options?: { force?: boolean }): Promise<TicketOperationResult> {

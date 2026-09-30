@@ -269,7 +269,7 @@ export function readRemoteAnswer(value: unknown): { key?: string; value: unknown
   return { value };
 }
 
-function normalizeStatuses(value: unknown): LinearStatus[] {
+export function normalizeStatuses(value: unknown): LinearStatus[] {
   if (Array.isArray(value)) return value as LinearStatus[];
   if (value && typeof value === "object") {
     const record = value as { statuses?: unknown; states?: unknown; nodes?: unknown };
