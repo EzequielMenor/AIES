@@ -496,23 +496,23 @@ describe("command wiring", () => {
       modelRegistry: { getAvailable: () => [model({ reasoning: true })] },
       ui: {
         notify() {},
-        custom(factory, options) {
+        async custom(factory, options) {
           overlayOptions = options;
+          let close;
+          const closed = new Promise((resolve) => { close = resolve; });
           component = factory(
             { requestRender() {} },
             { fg: (_color, text) => text, bold: (text) => text },
             { matches: () => false },
-            () => {},
+            close,
           );
-          assert.ok(component, "the overlay factory must return a component");
-          return new Promise((resolve) => {
-            // Confirm through role -> provider -> model -> thinking -> done.
-            component.handleInput("\r");
-            component.handleInput("\r");
-            component.handleInput("\r");
-            component.handleInput("\r");
-            resolve({ role: "worker", option: option({ id: "faux-1" }), thinkingLevel: "high" });
-          });
+          for (const key of ["j", "j", "\r", "\r", "\r", "l", "l", "l", "l", "\r"]) {
+            component.handleInput(key);
+          }
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.ok(component.render(80).join("\n").includes("faux/faux-1 · high"));
+          component.handleInput("\x1b");
+          return closed;
         },
       },
     };
@@ -552,8 +552,23 @@ describe("command wiring", () => {
       modelRegistry: { getAvailable: () => [model()] },
       ui: {
         notify: (message, type) => notifications.push({ message, type }),
-        custom: () =>
-          Promise.resolve({ role: "parent", option: option({ id: "faux-1" }), thinkingLevel: "off" }),
+        async custom(factory) {
+          let close;
+          const closed = new Promise((resolve) => { close = resolve; });
+          const component = factory(
+            { requestRender() {} },
+            { fg: (_color, text) => text },
+            { matches: () => false },
+            close,
+          );
+          for (const key of ["\r", "\r", "\r"]) component.handleInput(key);
+          await new Promise((resolve) => setImmediate(resolve));
+          const view = component.render(80).join("\n");
+          assert.ok(view.includes("elegí el rol"));
+          assert.ok(view.includes("sin preferencia"), "a rejected model must not appear assigned");
+          component.handleInput("\x1b");
+          return closed;
+        },
       },
     };
 
