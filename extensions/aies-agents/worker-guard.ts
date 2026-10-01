@@ -1,0 +1,55 @@
+/**
+ * Command security guard for Worker child agents (AIES-004).
+ *
+ * Worker implements: its shell may run tests, builds and development checks, but
+ * it may not run destructive, remote or out-of-workspace commands. The shared
+ * mechanics and the rule list live in `command-guard.ts`; this module is only the
+ * Worker-facing entry point, kept so the AIES-004 surface does not move.
+ */
+
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+import {
+  checkCommandPolicy,
+  createGuardedBashToolDefinition,
+  type CommandPermissionResult,
+  type GuardedBashRunner,
+  type GuardedBashSchema,
+} from "./command-guard.ts";
+import type { SandboxConfigOptions } from "./sandbox.ts";
+
+export type WorkerBashRunner = GuardedBashRunner;
+
+/**
+ * Validate whether a command is safe and permitted for a Worker.
+ */
+export function isCommandPermittedInWorker(
+  command: string,
+  workspaceRoot: string,
+): CommandPermissionResult {
+  return checkCommandPolicy(command, workspaceRoot, "worker");
+}
+
+/**
+ * Creates a guarded bash ToolDefinition for Worker child agents.
+ */
+export function createWorkerBashToolDefinition(
+  cwd: string,
+  options?: { runner?: WorkerBashRunner; sandboxOptions?: SandboxConfigOptions },
+): ToolDefinition<typeof GuardedBashSchema> {
+  return createGuardedBashToolDefinition({
+    workspaceRoot: cwd,
+    policy: "worker",
+    runner: options?.runner,
+    sandboxOptions: options?.sandboxOptions,
+    description:
+      "Execute bash commands within the workspace (e.g. tests, builds, typecheck, git status/diff). Destructive commands (git clean, reset --hard, push, sudo) are strictly blocked.",
+    promptSnippet: "bash: Execute targeted tests, builds, and checks safely in a single batch.",
+    promptGuidelines: [
+      "Use bash to run the specific tests, typecheck, build, or git status/diff required by the work unit.",
+      "Combine related checks in one command (e.g. 'npm run check && npm run build') instead of multiple turns.",
+      "Do NOT run unrequested repo-wide linters/formatters or inspect CI workflows; conclude once assigned checks pass.",
+      "Destructive commands like git clean, git reset --hard, git push, and sudo are blocked.",
+    ],
+  });
+}

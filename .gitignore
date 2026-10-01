@@ -1,26 +1,24 @@
+# Local Pi runtime state (legacy artifact from a non-isolated Pi run)
+.atl/
+
+# Node
 node_modules/
-dist/
-dist-test/
-.astro/
+npm-debug.log*
+
+# Local verification artifacts
+.verification/
+
+# Root runtime state if accidentally created in repo
+/auth.json
+/models.json
+/models-store.json
+/trust.json
+/sessions/
+# pi-mcp-adapter runtime state: belongs in $AIES_HOME, never in the repository
+/mcp.json
+/mcp-cache.json
+/mcp-oauth/
+/mcp-oauth-encrypted/
+
+# macOS
 .DS_Store
-.env
-.env.local
-*.log
-
-# Editors / tooling locales (no se sincronizan a la nube)
-.aies/
-.codegraph/
-.cursor/
-.kilo/
-.projectmem/
-.impeccable/
-
-# Notas privadas / outputs generados
-.tui-*.md
-repomix-output.xml
-scratch_test_dir/
-
-.projectmem/events.jsonl
-.projectmem/watch.pid
-.projectmem/watch.log
-.projectmem/structure.json

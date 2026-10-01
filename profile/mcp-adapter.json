@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "auth": "oauth",
+      "lifecycle": "lazy"
+    }
+  },
+  "settings": {
+    "scriptMode": false,
+    "toolResultRendering": "compact",
+    "collapsedResultLines": 1,
+    "notifyOnStartupConnect": false,
+    "mcpFooterStatus": "off"
+  }
+}

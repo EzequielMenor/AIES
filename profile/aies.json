@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "agents": {
+    "explore": {
+      "model": null
+    },
+    "worker": {
+      "model": null
+    },
+    "verify": {
+      "model": null
+    }
+  },
+  "permissions": {
+    "sandbox": true
+  },
+  "context": {
+    "targetTokens": 80000,
+    "pressureTokens": 100000,
+    "compactTokens": 120000,
+    "ceilingTokens": 150000
+  }
+}

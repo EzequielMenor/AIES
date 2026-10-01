@@ -1,0 +1,585 @@
+/**
+ * AIES-010C Agent Observatory wiring (T3): the real child execution seam.
+ *
+ * The pure registry is already covered by `agent-observatory.test.mjs`. This
+ * suite proves the registry is fed from the real child path without touching the
+ * registry API:
+ *
+ * 1. One event-driven `session.subscribe(...)` listener per child, fed only on
+ *    `tool_execution_start` and sampled on `turn_end` / `agent_settled` /
+ *    `agent_end`. No timers, no polling.
+ * 2. The last sampled usage survives a session that stops answering or throws on
+ *    dispose, and a throwing observer never fails the child run.
+ * 3. `runExploreAgent` / `runWorkerAgent` / `runVerifyAgent` open and close
+ *    exactly one record with real usage and a compact fact line.
+ * 4. The registry stays empty when no observatory is supplied.
+ */
+
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { createFauxCore, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+
+import * as sessionModule from "../extensions/aies-agents/session.ts";
+import { providerDisplayLabel, resolveAgentThinkingLevel } from "../extensions/aies-agents/model.ts";
+import { AgentObservatory, observatory } from "../extensions/aies-agents/observatory.ts";
+import { runExploreAgent } from "../extensions/aies-agents/explore.ts";
+import { runVerifyAgent, VERIFY_COMPLETE_TOOL } from "../extensions/aies-agents/verify.ts";
+import { runWorkerAgent } from "../extensions/aies-agents/worker.ts";
+
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
+
+async function fauxRuntime() {
+  const faux = fauxProvider();
+  const runtime = await ModelRuntime.create();
+  runtime.registerNativeProvider(faux.provider);
+  return { faux, runtime, model: faux.models[0] };
+}
+
+/**
+ * A fake AgentSession: it records its subscriptions, can stop answering its
+ * stats, and exposes the raw listeners so a test can emit AgentSession events.
+ */
+function fakeSession(stats = { tokens: { total: 0 }, cost: 0 }) {
+  const listeners = [];
+  let subscriptions = 0;
+  let unsubscribed = 0;
+  let responsive = true;
+
+  const session = {
+    subscribe(listener) {
+      subscriptions += 1;
+      listeners.push(listener);
+      return () => {
+        unsubscribed += 1;
+        const index = listeners.indexOf(listener);
+        if (index >= 0) listeners.splice(index, 1);
+      };
+    },
+    getSessionStats() {
+      if (!responsive) throw new Error("session no longer answers");
+      return stats;
+    },
+  };
+
+  return {
+    session,
+    emit(event) {
+      for (const listener of [...listeners]) listener(event);
+    },
+    goSilent() {
+      responsive = false;
+    },
+    get subscriptions() {
+      return subscriptions;
+    },
+    get unsubscribed() {
+      return unsubscribed;
+    },
+  };
+}
+
+function exploreJson(overrides = {}) {
+  return `\`\`\`json
+${JSON.stringify(
+  {
+    status: "done",
+    summary: "Investigated the artifact.",
+    evidence: [{ file: "extensions/aies-agents/session.ts" }],
+    issues: [],
+    next: [],
+    ...overrides,
+  },
+  null,
+  2,
+)}
+\`\`\``;
+}
+
+function workerJson(overrides = {}) {
+  return `\`\`\`json
+${JSON.stringify(
+  {
+    status: "done",
+    summary: "Implemented the work unit.",
+    changes: [{ file: "a.ts" }, { file: "b.ts" }],
+    checks: [{ check: "npm test", result: "ok" }],
+    issues: [],
+    next: [],
+    ...overrides,
+  },
+  null,
+  2,
+)}
+\`\`\``;
+}
+
+describe("AIES-010C child session observatory seam", () => {
+  it("attaches exactly one listener and samples usage only on lifecycle boundaries", () => {
+    const obs = new AgentObservatory();
+    const id = obs.begin({ role: "worker", at: 1000 });
+    const stats = { tokens: { total: 0 }, cost: 0 };
+    const fake = fakeSession(stats);
+
+    const unsubscribe = sessionModule.attachChildObservatory(fake.session, obs, id);
+    assert.equal(typeof unsubscribe, "function");
+    assert.equal(fake.subscriptions, 1, "exactly one session.subscribe listener");
+
+    // A start event is not a lifecycle boundary: nothing is sampled yet.
+    fake.emit({ type: "agent_start" });
+    assert.equal(obs.snapshot()[0].totalTokens, 0);
+
+    // A tool lifecycle start is observed mechanically with the real args.
+    fake.emit({ type: "tool_execution_start", toolName: "edit", args: { path: "extensions/a/b.ts" } });
+    const afterTool = obs.snapshot()[0];
+    assert.equal(afterTool.toolCount, 1);
+    assert.equal(afterTool.currentActivity, "Editando a/b.ts");
+    assert.deepEqual(afterTool.changedPaths, ["extensions/a/b.ts"]);
+    assert.equal(Number.isFinite(afterTool.activities[0].at), true);
+
+    // Usage is sampled from the session stats on each lifecycle boundary.
+    stats.tokens.total = 1234;
+    stats.cost = 0.25;
+    fake.emit({ type: "turn_end" });
+    assert.equal(obs.snapshot()[0].totalTokens, 1234);
+    assert.equal(obs.snapshot()[0].cost, 0.25);
+
+    stats.tokens.total = 1500;
+    fake.emit({ type: "agent_settled" });
+    assert.equal(obs.snapshot()[0].totalTokens, 1500);
+
+    stats.tokens.total = 1700;
+    fake.emit({ type: "agent_end" });
+    assert.equal(obs.snapshot()[0].totalTokens, 1700);
+
+    unsubscribe();
+    assert.equal(fake.unsubscribed, 1);
+  });
+
+  it("keeps the last sampled usage when the session stops answering or dispose throws", () => {
+    const obs = new AgentObservatory();
+    const id = obs.begin({ role: "verify", at: 1000 });
+    const fake = fakeSession({ tokens: { total: 500 }, cost: 0.12 });
+
+    sessionModule.attachChildObservatory(fake.session, obs, id);
+    fake.emit({ type: "turn_end" });
+    assert.equal(obs.snapshot()[0].totalTokens, 500);
+
+    // The session no longer answers getSessionStats: the guard must swallow it
+    // and the last real sample must stay.
+    fake.goSilent();
+    assert.doesNotThrow(() => fake.emit({ type: "agent_settled" }));
+    assert.equal(obs.snapshot()[0].totalTokens, 500);
+    assert.equal(obs.snapshot()[0].cost, 0.12);
+  });
+
+  it("never lets a throwing observer or an unavailable subscribe fail the run", () => {
+    const throwingObservatory = {
+      observe() {
+        throw new Error("observe exploded");
+      },
+      updateUsage() {
+        throw new Error("updateUsage exploded");
+      },
+    };
+    const fake = fakeSession({ tokens: { total: 5 }, cost: 0 });
+    const unsubscribe = sessionModule.attachChildObservatory(fake.session, throwingObservatory, "worker-1");
+
+    assert.doesNotThrow(() =>
+      fake.emit({ type: "tool_execution_start", toolName: "read", args: { path: "a.ts" } }),
+    );
+    assert.doesNotThrow(() => fake.emit({ type: "turn_end" }));
+    assert.doesNotThrow(() => unsubscribe());
+
+    const brokenSession = {
+      subscribe() {
+        throw new Error("no subscribe here");
+      },
+      getSessionStats() {
+        return { tokens: { total: 0 }, cost: 0 };
+      },
+    };
+    let noop;
+    assert.doesNotThrow(() => {
+      noop = sessionModule.attachChildObservatory(brokenSession, new AgentObservatory(), "worker-2");
+    });
+    assert.doesNotThrow(() => noop());
+  });
+});
+
+describe("AIES-010C runner observatory wiring", () => {
+  it("closes an explore record with real child usage after the session is disposed", async () => {
+    const { faux, runtime, model } = await fauxRuntime();
+    faux.setResponses([fauxAssistantMessage([{ type: "text", text: exploreJson() }])]);
+
+    const obs = new AgentObservatory();
+    const handoff = await runExploreAgent({
+      task: "Map the observatory seam",
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      observatory: obs,
+    });
+
+    assert.equal(handoff.status, "done");
+    assert.equal(obs.snapshot().length, 1, "begin and finish run exactly once");
+
+    const [record] = obs.snapshot();
+    assert.equal(record.role, "explore");
+    assert.equal(record.status, "completed");
+    assert.equal(record.modelId, "faux-1");
+    assert.equal(record.modelLabel, "Faux Model");
+    assert.equal(record.providerId, "faux");
+    // EZE-487: the label derives from the child provider id through the runtime;
+    // a session ModelRuntime exposes no display-name method, so the registry
+    // falls back to the id itself — never a label resolved from another model.
+    assert.equal(record.providerLabel, "faux");
+    assert.equal(record.currentActivity, null);
+    assert.equal(record.finishedAt > 0, true);
+    assert.ok(record.totalTokens > 0, "real usage sampled from the child session");
+    assert.equal(Number.isFinite(record.cost), true);
+    assert.match(record.result, /hallazgo/u);
+    assert.equal(String(record.result).includes("\n"), false);
+    assert.equal(String(record.result).includes(handoff.summary), false);
+  });
+
+  it("closes a worker record with a compact changes and checks fact line", async () => {
+    const { faux, runtime, model } = await fauxRuntime();
+    faux.setResponses([fauxAssistantMessage([{ type: "text", text: workerJson() }])]);
+
+    const obs = new AgentObservatory();
+    const handoff = await runWorkerAgent({
+      task: "Implement the work unit",
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      observatory: obs,
+    });
+
+    assert.equal(handoff.status, "done");
+    const [record] = obs.snapshot();
+    assert.equal(record.role, "worker");
+    assert.equal(record.status, "completed");
+    assert.equal(record.result, "2 archivos modificados · 1 check");
+    assert.ok(record.totalTokens > 0);
+  });
+
+  it("maps a verify PASS to a completed record with an N/M criteria fact line", async () => {
+    const { faux, runtime, model } = await fauxRuntime();
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall(
+          VERIFY_COMPLETE_TOOL,
+          {
+            status: "pass",
+            summary: "Inspected the artifact.",
+            // EZE-488: a PASS sent through the completion tool is index-addressed.
+            criteria: [{ index: 1, criterion: "c", status: "pass", evidence: "file.js:1 shows 2000" }],
+            checks: [],
+            defects: [],
+            next: [],
+          },
+          "c1",
+        ),
+      ]),
+      fauxAssistantMessage([{ type: "text", text: "done" }]),
+    ]);
+
+    const obs = new AgentObservatory();
+    const result = await runVerifyAgent({
+      task: "Verify the timeout change",
+      criteria: ["c"],
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      observatory: obs,
+    });
+
+    assert.equal(result.status, "pass");
+    const [record] = obs.snapshot();
+    assert.equal(record.role, "verify");
+    assert.equal(record.status, "completed");
+    assert.equal(record.result, "1/1 criterios");
+    assert.ok(record.totalTokens > 0);
+  });
+
+  it("maps a verify protocol error to a failed record with a compact Spanish fact", async () => {
+    const { faux, runtime, model } = await fauxRuntime();
+    faux.setResponses([fauxAssistantMessage([{ type: "text", text: "no completion here" }])]);
+
+    const obs = new AgentObservatory();
+    const result = await runVerifyAgent({
+      task: "Verify the timeout change",
+      criteria: ["c"],
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      observatory: obs,
+    });
+
+    assert.equal(result.kind, "protocol_error");
+    const [record] = obs.snapshot();
+    assert.equal(record.role, "verify");
+    assert.equal(record.status, "failed");
+    assert.equal(record.result, "error de protocolo");
+  });
+
+  it("still closes the record as failed when the child never runs", async () => {
+    const { runtime, model } = await fauxRuntime();
+    const obs = new AgentObservatory();
+
+    const handoff = await runExploreAgent({
+      task: "Explore an aborted run",
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+      observatory: obs,
+      signal: AbortSignal.abort(),
+    });
+
+    assert.equal(handoff.status, "failed");
+    assert.equal(obs.snapshot().length, 1);
+    assert.equal(obs.snapshot()[0].status, "failed");
+    assert.equal(obs.snapshot()[0].finishedAt > 0, true);
+  });
+
+  it("leaves the session registry empty when no observatory is supplied", async () => {
+    const { faux, runtime, model } = await fauxRuntime();
+    faux.setResponses([fauxAssistantMessage([{ type: "text", text: exploreJson() }])]);
+
+    observatory.reset();
+    const handoff = await runExploreAgent({
+      task: "Run without an observatory",
+      cwd: REPO_ROOT,
+      agentDir: REPO_ROOT,
+      modelRuntime: runtime,
+      model,
+    });
+
+    assert.equal(handoff.status, "done");
+    assert.deepEqual(observatory.snapshot(), []);
+  });
+});
+
+describe("AIES-010C delegate provider label resolution", () => {
+  it("derives the provider display label from the given provider id and degrades safely", () => {
+    assert.equal(typeof providerDisplayLabel, "function");
+
+    const registry = { getProviderDisplayName: (provider) => (provider === "faux" ? "Faux Provider" : provider) };
+    assert.equal(providerDisplayLabel(registry, "faux"), "Faux Provider");
+
+    // EZE-487: an absent runtime, an absent provider id, an empty label or a
+    // throwing runtime degrade to null: the label never comes from a model.
+    assert.equal(providerDisplayLabel(undefined, "faux"), null);
+    assert.equal(providerDisplayLabel(registry, null), null);
+    assert.equal(providerDisplayLabel(registry, undefined), null);
+    assert.equal(providerDisplayLabel({ getProviderDisplayName: () => "   " }, "faux"), null);
+    assert.equal(
+      providerDisplayLabel(
+        {
+          getProviderDisplayName() {
+            throw new Error("registry exploded");
+          },
+        },
+        "faux",
+      ),
+      null,
+    );
+    // A runtime without the display method is a miss, not a failure.
+    assert.equal(providerDisplayLabel({}, "faux"), null);
+  });
+
+  it("passes the observatory singleton to all three child runners", () => {
+    const delegateSource = new URL("../extensions/aies-agents/delegate.ts", import.meta.url);
+    const text = readFileSync(delegateSource, "utf8");
+    assert.match(text, /import\s*\{[^}]*observatory[^}]*\}\s*from\s*"\.\/observatory\.ts"/u);
+    assert.ok(
+      (text.match(/\bobservatory,/gu) ?? []).length >= 3,
+      "each child runner receives the observatory singleton",
+    );
+  });
+});
+
+describe("AIES-010D T12 model and thinking wiring", () => {
+  it("distinguishes a real session runtime from a resolution registry", () => {
+    assert.equal(sessionModule.isSessionModelRuntime({ getAuth() {}, streamSimple() {} }), true);
+    assert.equal(sessionModule.isSessionModelRuntime({ find() {}, getAvailable() {} }), false);
+    assert.equal(sessionModule.isSessionModelRuntime(undefined), false);
+    assert.equal(sessionModule.isSessionModelRuntime({ getAuth() {} }), false);
+  });
+
+  it("forwards the delegating registry as the modelRuntime resolution source", () => {
+    const text = readFileSync(new URL("../extensions/aies-agents/delegate.ts", import.meta.url), "utf8");
+    assert.ok(
+      (text.match(/modelRuntime: ctx\.modelRegistry/gu) ?? []).length === 3,
+      "explore, worker and verify each receive ctx.modelRegistry as modelRuntime",
+    );
+  });
+
+  it("validates a configured thinking level against model capabilities", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-thinking-"));
+    try {
+      const reasoning = { provider: "faux", id: "faux-1", reasoning: true };
+      writeFileSync(join(dir, "aies.json"), JSON.stringify({ agents: { explore: { thinkingLevel: "high" } } }));
+      assert.equal(resolveAgentThinkingLevel("explore", reasoning, dir), "high");
+
+      // An unsupported configured level is dropped, never clamped to a neighbour.
+      writeFileSync(join(dir, "aies.json"), JSON.stringify({ agents: { explore: { thinkingLevel: "max" } } }));
+      assert.equal(resolveAgentThinkingLevel("explore", reasoning, dir), undefined);
+
+      // A non-reasoning model can only ever run with off, so a stored level is invalid.
+      assert.equal(
+        resolveAgentThinkingLevel("explore", { provider: "faux", id: "plain", reasoning: false }, dir),
+        undefined,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the configured thinking level to the real child session", async () => {
+    const faux = fauxProvider({ models: [{ id: "faux-1", name: "Faux Model", reasoning: true }] });
+    const runtime = await ModelRuntime.create();
+    runtime.registerNativeProvider(faux.provider);
+    const model = faux.models[0];
+
+    const dir = mkdtempSync(join(tmpdir(), "aies-thinking-run-"));
+    let observedReasoning;
+    try {
+      writeFileSync(join(dir, "aies.json"), JSON.stringify({ agents: { explore: { thinkingLevel: "high" } } }));
+      faux.setResponses([
+        (_context, options) => {
+          observedReasoning = options?.reasoning;
+          return fauxAssistantMessage([{ type: "text", text: exploreJson() }]);
+        },
+      ]);
+
+      const handoff = await runExploreAgent({
+        task: "Apply the configured thinking level",
+        cwd: REPO_ROOT,
+        agentDir: dir,
+        modelRuntime: runtime,
+        model,
+      });
+
+      assert.equal(handoff.status, "done");
+      assert.equal(observedReasoning, "high", "the child session must run with the configured level");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("EZE-454 child provider runtime wiring", () => {
+  const PROVIDER = "faux-ext";
+  const MODEL = "faux-ext-1";
+
+  function extensionConfig(core) {
+    return {
+      name: "Faux Extension",
+      api: core.api,
+      baseUrl: "http://localhost:0",
+      apiKey: "$FAUX_EXT_KEY",
+      streamSimple: core.streamSimple,
+      models: core.models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        reasoning: model.reasoning,
+        input: model.input,
+        cost: model.cost,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      })),
+    };
+  }
+
+  it("distinguishes the public ModelRegistry facade from a genuine ModelRuntime", () => {
+    assert.equal(sessionModule.isSessionModelRuntime({ getAuth() {}, streamSimple() {} }), true);
+    assert.equal(sessionModule.isSessionModelRegistry({ getAuth() {}, streamSimple() {} }), false);
+    assert.equal(sessionModule.isSessionModelRegistry({ find() {}, getAvailable() {} }), false);
+    assert.equal(
+      sessionModule.isSessionModelRegistry({
+        find() {},
+        getAvailable() {},
+        getRegisteredProviderConfig() {},
+      }),
+      true,
+    );
+  });
+
+  it("builds an isolated child runtime carrying only the selected registered provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aies-eze454-runtime-"));
+    const previous = process.env.FAUX_EXT_KEY;
+    delete process.env.FAUX_EXT_KEY;
+    try {
+      writeFileSync(
+        join(dir, "auth.json"),
+        JSON.stringify({ [PROVIDER]: { type: "api_key", key: "stored-only-key" } }),
+      );
+      const core = createFauxCore({
+        provider: PROVIDER,
+        models: [
+          {
+            id: MODEL,
+            name: "Faux Extension Model",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 10000,
+            maxTokens: 1000,
+          },
+        ],
+      });
+      const parentRuntime = await ModelRuntime.create({
+        authPath: join(dir, "auth.json"),
+        modelsPath: null,
+      });
+      parentRuntime.registerProvider(PROVIDER, extensionConfig(core));
+      const registry = new ModelRegistry(parentRuntime);
+      const model = registry.find(PROVIDER, MODEL);
+
+      const child = await sessionModule.createChildModelRuntime(dir, model, registry);
+
+      assert.ok(child, "a facade with a registered provider config yields an isolated child runtime");
+      assert.equal(sessionModule.isSessionModelRuntime(child), true);
+      assert.deepEqual(child.getRegisteredProviderIds(), [PROVIDER], "only the selected provider is copied");
+      assert.equal(
+        child.getProviderAuthStatus(PROVIDER).source,
+        "stored",
+        "the child runtime reads the isolated agentDir auth.json",
+      );
+      assert.equal(child.getRegisteredProviderConfig("anthropic"), undefined);
+
+      // A facade without a registered config for the provider keeps Pi's default
+      // child runtime, so built-in and models.json providers are unaffected.
+      const noConfig = await sessionModule.createChildModelRuntime(
+        dir,
+        { provider: "anthropic", id: "claude-opus-4-8" },
+        registry,
+      );
+      assert.equal(noConfig, undefined);
+    } finally {
+      if (previous === undefined) delete process.env.FAUX_EXT_KEY;
+      else process.env.FAUX_EXT_KEY = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps child extensions and skills disabled", () => {
+    const text = readFileSync(new URL("../extensions/aies-agents/session.ts", import.meta.url), "utf8");
+    assert.match(text, /noExtensions:\s*true/u, "child provider handoff must not re-enable extensions");
+    assert.match(text, /noSkills:\s*true/u, "child provider handoff must not re-enable skills");
+  });
+});

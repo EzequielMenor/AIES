@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# aies - AIES launcher.
+#
+# AIES is a harness layer on top of Pi. This script is not a CLI and not a
+# runtime: it points the official `pi` binary at an isolated Pi profile and then
+# gets out of the way. Everything pi already knows how to do is inherited
+# through argument passthrough.
+#
+# Contract:
+#   aies --aies-info    print the resolved profile paths and exit
+#   aies --aies-*       reserved for AIES; unknown ones fail loudly
+#   aies <anything>     handed to pi verbatim (exec, no re-parsing)
+#
+set -euo pipefail
+
+# Resolve this script through symlinks before deriving the repository root:
+# installed as ~/.local/bin/aies -> <repo>/bin/aies, BASH_SOURCE is the symlink
+# path and would point AIES_REPO at the symlink's directory instead.
+AIES_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$AIES_SOURCE" ]; do
+  AIES_TARGET="$(readlink -- "$AIES_SOURCE")"
+  case "$AIES_TARGET" in
+    /*) AIES_SOURCE="$AIES_TARGET" ;;
+    *) AIES_SOURCE="$(dirname -- "$AIES_SOURCE")/$AIES_TARGET" ;;
+  esac
+done
+AIES_REPO="$(cd -- "$(dirname -- "$AIES_SOURCE")/.." && pwd -P)"
+
+CANONICAL_AIES_HOME="$HOME/.local/share/aies"
+
+print_info=0
+allow_ephemeral=0
+explicit_home=""
+filtered_args=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --aies-info)
+      print_info=1
+      shift
+      ;;
+    --aies-ephemeral)
+      allow_ephemeral=1
+      shift
+      ;;
+    --aies-home)
+      if [ $# -lt 2 ]; then
+        printf 'aies: --aies-home requires a directory path\n' >&2
+        exit 2
+      fi
+      explicit_home="$2"
+      shift 2
+      ;;
+    --aies-home=*)
+      explicit_home="${1#--aies-home=}"
+      shift
+      ;;
+    --aies-*)
+      printf 'aies: unknown AIES flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      filtered_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# Profile resolution precedence:
+# 1. Explicit CLI flag: --aies-home <path> (always respected, interactive or non-interactive)
+# 2. Explicit ephemeral opt-in: --aies-ephemeral or AIES_EPHEMERAL=1 (allows temporary paths in interactive sessions)
+# 3. Inherited persistent/non-temp custom AIES_HOME (e.g. ~/my-profile, always respected)
+# 4. Inherited suspicious temporary AIES_HOME (/tmp/*, etc.) in interactive use ([ -t 0 ]) without (1) or (2):
+#    sanitized with warning, falls back to CANONICAL_AIES_HOME ($HOME/.local/share/aies).
+# 5. Default: CANONICAL_AIES_HOME ($HOME/.local/share/aies)
+if [ -n "$explicit_home" ]; then
+  AIES_HOME="$explicit_home"
+elif [ -n "${AIES_HOME:-}" ]; then
+  case "$AIES_HOME" in "~/"*) AIES_HOME="$HOME/${AIES_HOME#\~/}" ;; esac
+  case "$AIES_HOME" in
+    /tmp/*|/private/tmp/*|/var/folders/*|${TMPDIR:-/tmp}/*)
+      if [ "$allow_ephemeral" -eq 0 ] && [ "${AIES_EPHEMERAL:-0}" -ne 1 ] && [ -t 0 ]; then
+        printf 'aies: ignoring inherited temporary AIES_HOME (%s); using canonical profile (%s)\n' "$AIES_HOME" "$CANONICAL_AIES_HOME" >&2
+        printf 'aies: pass --aies-ephemeral or --aies-home to intentionally use a temporary profile\n' >&2
+        AIES_HOME="$CANONICAL_AIES_HOME"
+      fi
+      ;;
+  esac
+else
+  AIES_HOME="$CANONICAL_AIES_HOME"
+fi
+case "$AIES_HOME" in "~/"*) AIES_HOME="$HOME/${AIES_HOME#\~/}" ;; esac
+export AIES_HOME
+AIES_AGENT_DIR="$AIES_HOME/agent"
+
+if ! command -v pi >/dev/null 2>&1; then
+  printf 'aies: the official pi binary is not on PATH\n' >&2
+  exit 127
+fi
+
+bash "$AIES_REPO/scripts/bootstrap-profile.sh" --aies-home "$AIES_HOME" >/dev/null
+
+# Isolate the profile. An inherited agent dir or session dir would silently
+# break the isolation this project depends on.
+export PI_CODING_AGENT_DIR="$AIES_AGENT_DIR"
+unset PI_CODING_AGENT_SESSION_DIR
+
+# The MCP adapter would otherwise merge host-global MCP configs that live outside
+# the isolated profile (~/.config/mcp/mcp.json, ~/.agents/mcp.json) and the active
+# project's .mcp.json. AIES declares exactly one MCP server, in its own profile.
+export PI_MCP_CONFIG_MODE=exclusive
+
+if [ "$print_info" -eq 1 ]; then
+  printf 'AIES_REPO=%s\n' "$AIES_REPO"
+  printf 'AIES_HOME=%s\n' "$AIES_HOME"
+  printf 'PI_CODING_AGENT_DIR=%s\n' "$AIES_AGENT_DIR"
+  printf 'pi_bin=%s\n' "$(command -v pi)"
+  printf 'pi_version=%s\n' "$(pi --version)"
+  exit 0
+fi
+
+# pi subcommands manage state or print information; session flags do not apply.
+if [ ${#filtered_args[@]} -gt 0 ]; then
+  case " install remove uninstall update list config auth " in
+    *" ${filtered_args[0]} "*) exec pi "${filtered_args[@]}" ;;
+  esac
+fi
+
+# Session runs: AIES owns its skills, so cross-harness global skills stay out.
+# Repo skills are added explicitly once the directory has content.
+pi_args=(--no-skills)
+if [ -n "$(ls -A "$AIES_REPO/skills" 2>/dev/null)" ]; then
+  pi_args+=(--skill "$AIES_REPO/skills")
+fi
+
+if [ ${#filtered_args[@]} -gt 0 ]; then
+  exec pi "${pi_args[@]}" "${filtered_args[@]}"
+fi
+
+exec pi "${pi_args[@]}"
