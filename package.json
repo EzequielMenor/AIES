@@ -29,7 +29,7 @@
   "scripts": {
     "bootstrap": "bash scripts/bootstrap-profile.sh",
     "check:isolation": "bash scripts/check-isolation.sh",
-    "test": "node --test"
+    "test": "bash scripts/test-harness.sh"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.85.1",

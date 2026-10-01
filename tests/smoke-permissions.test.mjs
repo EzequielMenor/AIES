@@ -56,6 +56,7 @@ import {
   toSnapshot,
 } from "../extensions/aies-runtime/state.ts";
 import { renderFooter, renderStatusReport } from "../extensions/aies-runtime/status.ts";
+import { nestedSandboxSkip } from "./helpers/nested-sandbox.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
@@ -80,7 +81,7 @@ describe("AIES-006 Real Smoke: Permission Boundaries End-to-End", () => {
     }
   });
 
-  it("enforces boundaries across Worker and Verify and achieves verified PASS", async () => {
+  it("enforces boundaries across Worker and Verify and achieves verified PASS", { skip: nestedSandboxSkip() }, async () => {
     const startedAt = Date.now();
     const faux = fauxProvider();
     const runtime = await ModelRuntime.create();
