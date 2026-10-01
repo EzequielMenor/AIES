@@ -1121,6 +1121,60 @@ environment variable rather than an implicit tolerance.
 
 ---
 
+## D31 - Stale-runtime guard: Verify fails fast when startup modules changed (EZE-492)
+
+**Decision.** Pi loads every AIES extension module once, at process start, through
+its own jiti instance with `moduleCache:false` (docs/ARCHITECTURE.md), so the set of
+loaded modules is frozen for the process lifetime; and `executeChildSession`
+(`session.ts`) creates each child — Explore, Worker, Verify — **in-process** via
+`createAgentSession`, never as a separate OS process. A Verify child launched after
+the Parent edited an `extensions/*.ts` file therefore runs the already-imported
+(stale) module code while the working tree already holds the fix. `extensions/aies-
+agents/runtime-freshness.ts` detects this and the Verify branch of `delegate.ts`
+fails fast before spawning the child:
+
+1. The runtime-loaded set is the module files (`\.ts|tsx|js|jsx|mjs|cjs`) under the
+   AIES `extensions/` tree, resolved from this module's own `import.meta.url` through
+   `realpathSync` (so the `$AIES_HOME` symlink maps to the real repo and the check is
+   independent of the session cwd, since AIES also runs on other repositories), plus
+   one explicit non-module resource: `extensions/aies-provider-commandcode/models.json`,
+   which is read once at startup by `loadCommandCodeCatalog` (`readFileSync`) before
+   `registerProvider()`. It is tracked through an allowlist, not a generic `.json`
+   match, so it stays runtime-loaded like a module while docs, tests, READMEs and
+   prompts are still ignored.
+2. The baseline is the process start, `Math.round(Date.now() - process.uptime() *
+   1000)`; a module file is stale when its `mtimeMs` is **strictly later** than that
+   baseline. A freshly launched process is always clean.
+3. When any file is stale, the Verify delegation returns `status: "blocked"`,
+   `error: "stale_runtime"` and a Spanish, fail-fast message (D18) that names the
+   stale modules, explains that a same-process PASS would prove the OLD code rather
+   than the working tree, and instructs to exit AIES and relaunch (`aies`) before
+   re-delegating. The Explore and Worker branches are untouched; there is **no
+   environment-variable override**, because the invariant is deliberate.
+4. Only `extensions/` counts. `Agents/*.md` prompts are re-read per delegation
+   (`readFileSync` in `session.ts`), and docs, tests and scripts are never
+   runtime-loaded, so a change to them does not block a verification.
+
+**Rejected alternatives.** Hot reload / module-cache invalidation was rejected: it
+reopens the exact failure mode (a half-reloaded runtime whose mutual state is
+undefined), fights Pi's fixed module set, and cannot safely re-bind already-
+registered tools. An auto-restart of the whole session was rejected as
+surprising and outside the launcher contract. A declarative `changedPaths` scoping
+(warn only when the edit touches a module the delegation depends on) was rejected
+because no reliable per-module dependency graph exists here and an under-estimate
+reintroduces silent stale evidence. All of them trade a rare, honest block for a
+common, incorrect PASS.
+
+**Consequence.** An extension edit mid-session now requires relaunching AIES before
+any Verify can be accepted; that is the intended, visible cost, and it replaces the
+EZE-488 failure mode in which a stale runtime produced a misleading PASS that looked
+like real verification. Checks that run in fresh subprocesses (for example
+`npm test`, which spawns its own `node --test`) keep their own module set and are
+never affected, so the Worker's own test evidence stays valid inside the same
+session.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)
