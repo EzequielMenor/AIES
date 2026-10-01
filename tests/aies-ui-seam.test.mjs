@@ -366,7 +366,7 @@ describe("AIES UI seam", () => {
     assert.equal(node.type, "hstack");
     const railText = node.entries.at(-1).component.render(60).join("\n");
     assert.match(railText, /Proyecto/u, railText);
-    assert.match(railText, /Rama\s+feat\/aies-010d-fullscreen-shell/u, railText);
+    assert.match(railText, /Rama\s+feat\/aies-010d-fullscreen-sh…/u, railText);
     assert.match(railText, /✧ AIES · EZE-424/u, railText);
     assert.match(railText, /Status/u, railText);
     assert.match(railText, /Agents/u, railText);

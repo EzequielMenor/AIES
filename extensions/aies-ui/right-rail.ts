@@ -29,10 +29,11 @@
  * facts and adds the project and git branch the rail is there to show.
  */
 
+import { runStartedAt } from "../aies-runtime/state.ts";
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import type { AgentsSnapshot } from "./agents.ts";
 import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { activeRunElapsed, agentFact, sectionHeading, statusBox, statusTitle, type StatusRow } from "./panel.ts";
+import { agentFact, sectionHeading, statusBox, statusTitle, type StatusRow } from "./panel.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, GLYPH, isCompacting, isContextPressure, SPACING, STAGE_TONE, type Stage } from "./vocabulary.ts";
 import { deriveTodos, renderTodos } from "./todos.ts";
@@ -169,11 +170,11 @@ export interface RightRailOptions {
 const MAX_RAIL_AGENTS = 3;
 
 /**
- * The longest Status label (`Proveedor`) fixes the value column: every label is
+ * The longest Status label (`Tiempo total`) fixes the value column: every label is
  * padded to it plus one space, so all values start at the same column and the
  * token/cost buckets below align with them.
  */
-const LABEL_COLUMN = "Proveedor".length + 1;
+const LABEL_COLUMN = "Tiempo total".length + 1;
 
 /**
  * The one glyph per workflow stage. It reuses the shared glyph vocabulary rather
@@ -243,7 +244,7 @@ function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): Rai
 
   return ordered.map((record) => {
     const elapsed = railElapsed(record, now);
-    const fact = elapsed ? `${agentFact(record)} · ${elapsed}` : agentFact(record);
+    const fact = elapsed ? `${agentFact(record)} · agente ${elapsed}` : agentFact(record);
     // Each child is painted with the tone of its own lifecycle state.
     return { text: fact, painted: paint.fg(agentStatusTone(record.status), fact), active: record.status === "running" };
   });
@@ -335,7 +336,12 @@ function railStatusRows(
     ) || undefined;
   const pressure = isContextPressure(snapshot) ? " !" : "";
   const compacting = isCompacting(snapshot) ? " · compactando…" : "";
-  const elapsed = activeRunElapsed(snapshot, now, runEndedAt);
+  // The total belongs to the run, never to the active delegation or child.
+  const startedAt = runStartedAt(snapshot);
+  const endAt = typeof runEndedAt === "number" && Number.isFinite(runEndedAt)
+    ? Math.min(runEndedAt, now)
+    : now;
+  const elapsed = startedAt === undefined ? undefined : formatDuration(Math.max(0, endAt - startedAt));
   const stage = deriveStage(snapshot);
 
   const rows = [
@@ -351,7 +357,7 @@ function railStatusRows(
     railFact(paint, "Proveedor", provider),
     railFact(paint, "Contexto", `${formatTokens(snapshot.contextTokens)}${pressure}${compacting}`),
     // No run, no clock: IDLE stays a dash instead of a session timer.
-    railFact(paint, "Tiempo", elapsed ?? "—"),
+    railFact(paint, "Tiempo total", elapsed ?? "—"),
   ].filter((row): row is StatusRow => Boolean(row));
 
   return [...rows, ...railUsageRows(snapshot, paint)];

@@ -302,7 +302,7 @@ describe("right rail product composition", () => {
     assert.match(text, /Modelo\s+Qwen 3\.8 Flash/u);
     assert.match(text, /Proveedor\s+openrouter/u);
     assert.match(text, /Contexto\s+42k/u);
-    assert.match(text, /Tiempo\s+00:31/u);
+    assert.match(text, /Tiempo total\s+00:31/u);
     // Tokens and cost never collapse into a single truncated line.
     assert.match(text, /Tokens/u);
     assert.match(text, /Main\s+12k/u);
@@ -322,7 +322,7 @@ describe("right rail product composition", () => {
     state = applyModel(state, { id: "qwen3.8-flash", provider: "openrouter", name: "Qwen 3.8 Flash" });
     const text = renderRightRail(snapOf(state), T0, { width: 46 }).join("\n");
 
-    assert.match(text, /Tiempo\s+—/u, text);
+    assert.match(text, /Tiempo total\s+—/u, text);
     assert.equal(text.includes("00:00"), false, text);
   });
 
@@ -348,7 +348,7 @@ describe("right rail product composition", () => {
       T0,
     );
     const text = renderRightRail(snapOf(state), T0 + 120_000, { width: 60, runEndedAt: T0 + 60_000 }).join("\n");
-    assert.match(text, /Tiempo\s+01:00/u, text);
+    assert.match(text, /Tiempo total\s+01:00/u, text);
     assert.equal(text.includes("02:00"), false, text);
   });
 
@@ -513,7 +513,7 @@ describe("right rail projection", () => {
     }).join("\n");
 
     assert.match(text, /Proyecto\s+AIES/u);
-    assert.match(text, /Rama\s+feat\/aies-010d-fullscreen-shell/u);
+    assert.match(text, /Rama\s+feat\/aies-010d-fullscreen-sh…/u);
     assert.match(text, /✧ AIES · EZE-417 · WORK/u);
     assert.ok(text.length > 0);
     assert.ok(text.split("\n").every((line) => line.length <= 60), text);
@@ -546,7 +546,7 @@ describe("right rail projection", () => {
     assert.match(text, /Agents/u);
     assert.match(text, /en espera/u, `the empty Agents section must stay explicit:\n${text}`);
     // IDLE has no run: the time row stays but reads as a dash, never a session clock.
-    assert.match(text, /Tiempo\s+—/u, text);
+    assert.match(text, /Tiempo total\s+—/u, text);
     assert.equal(text.includes("00:00"), false, text);
   });
 
@@ -576,7 +576,7 @@ describe("right rail projection", () => {
 
     const idle = renderRightRail(snapOf(state), T0 + 90_000, { width: 60 }).join("\n");
     assert.equal(idle.includes("01:30"), false, `the session elapsed leaked into the rail:\n${idle}`);
-    assert.match(idle, /Tiempo\s+—/u, idle);
+    assert.match(idle, /Tiempo total\s+—/u, idle);
 
     state = applyRunStart(state, T0 + 60_000);
     const running = renderRightRail(snapOf(state), T0 + 90_000, { width: 60 }).join("\n");
