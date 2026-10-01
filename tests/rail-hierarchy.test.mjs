@@ -33,8 +33,8 @@ import { STAGE_TONE } from "../extensions/aies-ui/vocabulary.ts";
 
 const T0 = 1_700_000_000_000;
 
-/** The value column the longest Status label (`Proveedor`) fixes. */
-const VALUE_COLUMN = 10;
+/** The value column the longest Status label (`Tiempo total`) fixes. */
+const VALUE_COLUMN = 13;
 
 /** A minimal `AgentRecord` the observatory would produce. */
 function record(overrides = {}) {
@@ -134,7 +134,7 @@ describe("right rail hierarchy: titles and tones", () => {
     const paint = recordingPaint();
     renderRightRail(snapOf(richState()), T0 + 31_000, { width: 46, paint, project: "/repo/AIES", branch: "main" });
 
-    const labels = ["Proyecto", "Rama", "Ticket", "Etapa", "Modelo", "Proveedor", "Contexto", "Tiempo"];
+    const labels = ["Proyecto", "Rama", "Ticket", "Etapa", "Modelo", "Proveedor", "Contexto", "Tiempo total"];
     for (const label of labels) {
       assert.ok(
         callsWith(paint, "muted", (text) => text.trim() === label).length > 0,
@@ -210,7 +210,7 @@ describe("right rail hierarchy: alignment and layout invariance", () => {
       .filter((line) => line.startsWith("│ "))
       .map(cellOf);
 
-    for (const label of ["Proyecto", "Rama", "Ticket", "Etapa", "Modelo", "Proveedor", "Contexto", "Tiempo"]) {
+    for (const label of ["Proyecto", "Rama", "Ticket", "Etapa", "Modelo", "Proveedor", "Contexto", "Tiempo total"]) {
       const row = cell.find((line) => line.startsWith(label));
       assert.ok(row, `no "${label}" row`);
       const valueStart = label.length + row.slice(label.length).search(/\S/u);

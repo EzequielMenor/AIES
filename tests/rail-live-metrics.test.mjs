@@ -3,7 +3,7 @@
  *
  * The rail must report REAL live telemetry:
  *
- * - Tiempo is the current stage's elapsed time (delegation first, then run),
+ * - Tiempo total is the run's elapsed time, independent of delegation stages,
  *   frozen at the run's end, and `—` when nothing is in flight.
  * - Coste is rendered only from observed data: an unobserved bucket is `—`, a
  *   genuinely observed `0` is `$0.00`, and Total sums only observed buckets.
@@ -117,34 +117,67 @@ describe("run usage observed-cost semantics", () => {
 });
 
 describe("right rail live time (Tiempo)", () => {
-  it("times the active delegation stage even without a recorded run start", () => {
+  it("does not mistake a delegation start for a total run start", () => {
     const state = applyDelegationStart(createState(T0), "worker", T0);
     const text = renderRightRail(snapOf(state), T0 + 31_000, { width: 46 }).join("\n");
-    assert.equal(railStatusValue(text, "Tiempo"), "00:31");
+    assert.equal(railStatusValue(text, "Tiempo total"), "—");
   });
 
-  it("prefers the active stage start over the run start", () => {
+  it("uses the run start rather than the active stage start", () => {
     let state = applyRunStart(createState(T0), T0);
     state = applyDelegationStart(state, "worker", T0 + 20_000);
     const text = renderRightRail(snapOf(state), T0 + 31_000, { width: 46 }).join("\n");
-    assert.equal(railStatusValue(text, "Tiempo"), "00:11", "the current stage is what the clock measures");
+    assert.equal(railStatusValue(text, "Tiempo total"), "00:31", "the total measures the entire run");
+  });
+
+  it("keeps total elapsed across Explore → Worker → Verify and child completion", () => {
+    let state = applyRunStart(createState(T0 - 60_000), T0);
+    const totalAt = (now) => railStatusValue(renderRightRail(snapOf(state), now, { width: 46 }).join("\n"), "Tiempo total");
+    assert.equal(totalAt(T0), "00:00");
+    state = applyDelegationStart(state, "explore", T0 + 5_000);
+    assert.equal(totalAt(T0 + 15_000), "00:15");
+    state = applyDelegationEnd(state, "done", T0 + 20_000);
+    assert.equal(totalAt(T0 + 20_000), "00:20");
+    state = applyDelegationStart(state, "worker", T0 + 25_000);
+    assert.equal(totalAt(T0 + 35_000), "00:35");
+    state = applyDelegationEnd(state, "done", T0 + 40_000);
+    assert.equal(totalAt(T0 + 40_000), "00:40");
+    state = applyDelegationStart(state, "verify", T0 + 45_000);
+    assert.equal(totalAt(T0 + 55_000), "00:55");
+    state = applyDelegationEnd(state, "done", T0 + 60_000);
+    assert.equal(totalAt(T0 + 65_000), "01:05");
+    assert.equal(state.runUsage.startedAt, T0);
+  });
+
+  it("distinguishes child time from the total and freezes a finished child's duration", () => {
+    let state = applyRunStart(createState(T0), T0);
+    state = applyDelegationStart(state, "worker", T0 + 20_000);
+    state = { ...state, agents: [record({ startedAt: T0 + 20_000, currentActivity: "Editing" })] };
+    let text = renderRightRail(snapOf(state), T0 + 31_000, { width: 46 }).join("\n");
+    assert.equal(railStatusValue(text, "Tiempo total"), "00:31");
+    assert.match(text, /Worker activo · agente 00:11/u);
+    state = applyDelegationEnd(state, "done", T0 + 35_000);
+    state = { ...state, agents: [record({ startedAt: T0 + 20_000, finishedAt: T0 + 35_000, status: "completed" })] };
+    text = renderRightRail(snapOf(state), T0 + 50_000, { width: 46 }).join("\n");
+    assert.equal(railStatusValue(text, "Tiempo total"), "00:50");
+    assert.match(text, /Worker completado · agente 00:15/u);
   });
 
   it("falls back to the run start while the run is active without a stage", () => {
     const state = applyRunStart(createState(T0), T0 + 60_000);
     const text = renderRightRail(snapOf(state), T0 + 90_000, { width: 46 }).join("\n");
-    assert.equal(railStatusValue(text, "Tiempo"), "00:30");
+    assert.equal(railStatusValue(text, "Tiempo total"), "00:30");
   });
 
   it("freezes the run time at the DONE moment", () => {
     const state = applyRunStart(createState(T0), T0);
     const text = renderRightRail(snapOf(state), T0 + 120_000, { width: 46, runEndedAt: T0 + 60_000 }).join("\n");
-    assert.equal(railStatusValue(text, "Tiempo"), "01:00");
+    assert.equal(railStatusValue(text, "Tiempo total"), "01:00");
   });
 
   it("shows a dash at IDLE and never a fake 00:00", () => {
     const text = renderRightRail(snapOf(createState(T0)), T0 + 90_000, { width: 46 }).join("\n");
-    assert.equal(railStatusValue(text, "Tiempo"), "—");
+    assert.equal(railStatusValue(text, "Tiempo total"), "—");
     assert.equal(text.includes("00:00"), false, text);
   });
 
@@ -152,7 +185,7 @@ describe("right rail live time (Tiempo)", () => {
     let state = applyDelegationStart(createState(T0), "worker", T0);
     state = applyDelegationEnd(state, "done", T0 + 5_000);
     const text = renderRightRail(snapOf(state), T0 + 90_000, { width: 46 }).join("\n");
-    assert.equal(railStatusValue(text, "Tiempo"), "—");
+    assert.equal(railStatusValue(text, "Tiempo total"), "—");
     assert.equal(text.includes("00:05"), false, text);
   });
 });

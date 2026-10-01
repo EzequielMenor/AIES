@@ -17,6 +17,7 @@ import { getPermissionTelemetry, recordPermissionDenial } from "../extensions/ai
 import { AGENTS_CHANNEL, observatory } from "../extensions/aies-agents/observatory.ts";
 import { setActiveContinuationController } from "../extensions/aies-agents/autonomy/controller.ts";
 import aiesRuntime from "../extensions/aies-runtime/index.ts";
+import { renderRightRail } from "../extensions/aies-ui/right-rail.ts";
 import { deriveStage } from "../extensions/aies-ui/vocabulary.ts";
 
 const ROOT = "/repo";
@@ -135,6 +136,7 @@ function createHarness(bus) {
     },
     start: (reason = "startup") => emitAll("session_start", { reason }),
     shutdown: (reason = "quit") => emitAll("session_shutdown", { reason }),
+    settled: () => emitAll("agent_settled"),
     toolCall: (toolName, input = {}) => emitAll("tool_call", { toolName, input }),
     toolResult: (toolName, content = "ok", details = {}) => emitAll("tool_result", { toolName, content, details }),
     async agentsView() {
@@ -166,6 +168,42 @@ describe("EZE-485 session boundary (/new clean reset)", () => {
   afterEach(() => {
     setActiveContinuationController(undefined);
     resetSessionState();
+  });
+
+  it("EZE-469 starts a fresh rail total after the actual /new boundary", async (t) => {
+    let now = T0;
+    t.mock.method(Date, "now", () => now);
+    const harness = createHarness(bus);
+    const startRun = async () => {
+      setActiveContinuationController({ getState: () => ({ enabled: true, ticketId: "EZE-469", continuationCount: 0, stopReason: null }) });
+      await harness.toolResult("aies_ticket");
+      await harness.settled();
+    };
+    const rail = () => {
+      const snapshot = harness.appendedEntries.filter((entry) => entry.type === "aies-metrics").at(-1)?.data;
+      assert.ok(snapshot, "runtime persisted its real snapshot");
+      return renderRightRail(snapshot, now, { width: 46 }).join("\n");
+    };
+    await harness.start("startup");
+    await startRun();
+    now = T0 + 90_000;
+    await harness.settled();
+    assert.match(rail(), /Tiempo total\s+01:30/u);
+
+    await harness.shutdown("new");
+    setActiveContinuationController(undefined);
+    harness.setSessionId("session-b");
+    harness.setEntries([]);
+    now = T0 + 120_000;
+    await harness.start("new");
+    await harness.settled();
+    assert.match(rail(), /Tiempo total\s+—/u);
+    await startRun();
+    assert.match(rail(), /Tiempo total\s+00:00/u);
+    now = T0 + 130_000;
+    await harness.settled();
+    assert.match(rail(), /Tiempo total\s+00:10/u);
+    await harness.shutdown();
   });
 
   it("resets all ephemeral state across /new and attributes subsequent child work cleanly to Session B", async () => {
