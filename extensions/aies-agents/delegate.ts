@@ -27,6 +27,7 @@ import {
 } from "./handoff.ts";
 import { observatory } from "./observatory.ts";
 import type { DelegationRole } from "./routing.ts";
+import { checkRuntimeFreshness, formatStaleRuntimeMessage } from "./runtime-freshness.ts";
 import {
   applyVerifyResult,
   applyVerifyStart,
@@ -347,6 +348,27 @@ export function createDelegateTool(
         if (invalid) {
           return {
             content: [{ type: "text", text: `${VERIFY_REQUEST_REJECTED} ${invalid}` }],
+            isError: true,
+          };
+        }
+
+        // Stale-runtime guard (EZE-492, D31): children run in-process and reuse
+        // the modules loaded at process start, so a Verify spawned after the
+        // Parent edited an extensions/*.ts file would prove the OLD code, not the
+        // working tree. Fail fast before launching the child.
+        const runtimeFreshness = checkRuntimeFreshness();
+        if (!runtimeFreshness.fresh) {
+          return {
+            content: [{ type: "text", text: formatStaleRuntimeMessage(runtimeFreshness) }],
+            details: {
+              status: "blocked",
+              error: "stale_runtime",
+              runtimeFreshness: {
+                startedAt: runtimeFreshness.startedAt,
+                stalePaths: runtimeFreshness.stalePaths,
+              },
+              verification: toVerificationReport(current),
+            },
             isError: true,
           };
         }
