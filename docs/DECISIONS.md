@@ -1048,6 +1048,79 @@ model. This closes the EZE-454 root cause recorded in EZE-453's evidence.
 
 ---
 
+## D30 - Cross-repo ticket guard: the Linear project against the session git toplevel (EZE-489)
+
+**Decision.** The ticket contract keeps no repository or workspace field, and
+D14 is deliberate about that: Linear is the source of truth for the work unit,
+never for repo context, so no ticket payload is ever asked to name a checkout.
+The reliable offline signal is therefore the ticket's **Linear project name**
+compared with the **git toplevel of the Parent session cwd**, evaluated by
+`extensions/aies-agents/repo-guard.ts` on every `tool_call`:
+
+1. The effective root of `ctx.cwd` is `git rev-parse --show-toplevel` (no shell,
+   realpath when readable), falling back to the realpath of the cwd; the identity
+   is cached per cwd because the hook sees every tool call.
+2. Names are compared normalized: lowercase with spaces, `-`, `_` and `.` removed
+   (`Mi-Porfolio` and `miporfolio` are the same repository).
+3. A ticket with **no project** is `unknown` and never blocks, so project-less
+   tickets keep working exactly as before.
+4. An optional explicit binding table `repos` in `$PI_CODING_AGENT_DIR/aies.json`
+   (e.g. `{"repos": {"AIES": "/abs/path/to/AIES"}}`) matches the raw project name
+   or its normalized form and compares realpaths instead of names, case-insensitive
+   on macOS. This is the zero-false-positive path and it is what names the correct
+   cwd in the message. No machine-specific absolute path is committed: the
+   repository template `profile/aies.json` ships without a `repos` key.
+5. The `repos` binding stays the primary, deterministic source of the expected
+   root. When no binding resolves, the message enrichment falls back to a search
+   bounded to two levels under the parent of the actual toplevel: the direct
+   children of that parent together with the children of those children, both levels
+   always enumerated and unioned by realpath (the EZE-488 shape, where the expected
+   repo sits one level deeper than the wrong cwd). A candidate is a directory whose normalized basename equals
+   the normalized project name and that contains `.git`; non-directories, dotfiles,
+   `node_modules` and `.git` are skipped and at most 500 entries are read per
+   directory. Resolution requires uniqueness: zero candidates or more than one leave
+   the root unresolved, so an ambiguous filesystem can never produce a fabricated
+   path, and the message then only names the binding to add. The resolved root is a
+   realpath. That lookup is message-only and can never change the decision.
+6. `AIES_ALLOW_REPO_MISMATCH=1` disables the guard. It is an explicit decision
+   escape hatch, not a prompt-level instruction.
+
+The blocked surface under a real mismatch is the mutation surface: `aies_delegate`
+with role `worker` or `verify`, `aies_ticket` with action `start`, `edit`,
+`write`, and `bash` whenever `checkCommandPolicy(command, effectiveRoot, "verify")`
+does not allow it — plus one local rule, because the shared policy does not carry
+it: a mutating `git branch <name>` is a mutation, while a bare `git branch`, `-l`,
+`--list` and `--show-current` stay read-only. `aies_ticket` `load`, `show`,
+`block`, `comment` and `refresh` are never blocked, and **`explore` stays
+allowed**: reading the other repository is precisely the diagnosis a mismatch
+needs. The block reason is Spanish (D18) with paths, commands, repo names and
+ticket identifiers verbatim; it names the ticket, both repositories, the actual
+root, states that nothing was delegated and no file was modified, gives the
+relaunch command, and quotes the override variable.
+
+**Why.** EZE-488 dogfooding proved the hole: a session launched in
+`Mi-Porfolio` held an AIES ticket, Explore read AIES by absolute path, the Worker
+was correctly contained to the wrong root and blocked, and the Parent then
+implemented directly in AIES — creating a branch and editing files — with no
+protection at all. Containment alone was not enough because every child inherits
+the Parent cwd (`delegate.ts` passes `cwd: ctx.cwd`), so a wrong session root
+propagates: the guard has to run before any work unit starts, in the Parent, and
+it has to fail closed on mutation while keeping read access and diagnostics open.
+A name comparison against a path field in the ticket was rejected because it would
+contradict D14 and would need every ticket edited; a purely prompt-based
+instruction was rejected because the defect was exactly a Parent ignoring
+instructions while nothing enforced them.
+
+**Consequence.** A mismatched session costs one blocked tool call and an
+executable relaunch instruction instead of a wrong-repository branch, so the
+recovery is a new session in the right workspace rather than a manual cleanup.
+Sessions without an active ticket pay nothing (the guard short-circuits before any
+`git` resolution), and the check is cached per cwd. The override is now the only
+way to work a foreign ticket in place, and it is a deliberate, visible
+environment variable rather than an implicit tolerance.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

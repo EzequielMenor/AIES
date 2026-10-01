@@ -411,6 +411,19 @@ Syscall containment uses `@anthropic-ai/sandbox-runtime` (Apple Seatbelt `sandbo
 - **Symlink Escape Protection**: Symlink traversals are resolved to canonical target paths by the OS kernel. Symlinks inside permitted output roots pointing to source, or inside the workspace pointing outside, fail on write with OS-level permission denial (`Operation not permitted`), leaving target files untouched.
 - **Graceful Degradation**: If sandboxing is disabled (`AIES_SANDBOX=0`) or unsupported on the host platform, Worker logs a warning and falls back to unsandboxed execution. Verify strictly refuses execution (`throw new Error(...)`) because independent verification requires OS-level enforcement to guarantee artifact integrity.
 
+### 4. Cross-repository ticket guard (EZE-489)
+
+Containment is relative to the Parent session cwd, so a session launched in the
+wrong workspace propagates that wrong root to every child: containment alone stops
+the Worker but leaves the Parent free to mutate the real repository
+(`extensions/aies-agents/repo-guard.ts`, D30). Before any delegation, ticket
+`start`, `edit`, `write` or mutating `bash` runs, the Parent compares the active
+ticket's Linear project against the git toplevel of `ctx.cwd` — optionally pinned
+by the `repos` binding in `$PI_CODING_AGENT_DIR/aies.json` — and blocks with a
+relaunch instruction when they disagree. Read-only tools and `explore`
+stay available for diagnosis, a ticket with no project never blocks, and
+`AIES_ALLOW_REPO_MISMATCH=1` is the explicit override.
+
 ## Context governor (AIES-007)
 
 AIES-007 establishes the **Context Governor** (`extensions/aies-agents/context-governor.ts`)

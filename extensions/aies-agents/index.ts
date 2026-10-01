@@ -28,6 +28,7 @@ import {
   type ContextGovernor,
 } from "./context-governor.ts";
 import { TicketManager } from "./linear/manager.ts";
+import { checkTicketRepo, repoGuardBlockReason } from "./repo-guard.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
 import type { TicketOperationResult, TicketSnapshot } from "./linear/types.ts";
@@ -191,6 +192,21 @@ export default function aiesAgents(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     const input = event.input as Record<string, unknown> | undefined;
+
+    // EZE-489: the ticket's repository and this session's repository must agree.
+    // Fast path first: no active ticket or an explicit override means no git
+    // resolution at all, so an ordinary session pays nothing for this guard.
+    const activeTicket = ticketManager.getActiveTicket();
+    if (activeTicket && process.env.AIES_ALLOW_REPO_MISMATCH !== "1") {
+      const decision = checkTicketRepo(
+        { identifier: activeTicket.identifier, project: activeTicket.project },
+        ctx.cwd,
+      );
+      if (decision.status === "mismatch") {
+        const reason = repoGuardBlockReason(event.toolName, input, decision, decision.actualRoot);
+        if (reason) return { block: true, reason };
+      }
+    }
 
     // Check hard guardrails before tool execution (routing limits + context governor ceiling)
     const guard = checkRoutingGuardrail(
