@@ -15,9 +15,9 @@ trap 'rm -rf "$probe"' EXIT
 AIES_HOME="$probe" bash "$AIES_REPO/bin/aies" --aies-info
 printf '\n'
 
-printf '== automated checks (node --test)\n'
+printf '== automated checks (node --test, temporary profile per execution)\n'
 cd "$AIES_REPO"
-node --test
+bash "$AIES_REPO/scripts/test-harness.sh"
 
 cat <<'EOF'
 

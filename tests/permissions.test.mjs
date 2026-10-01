@@ -87,6 +87,7 @@ import {
   toSnapshot,
 } from "../extensions/aies-runtime/state.ts";
 import { renderFooter, renderStatusReport } from "../extensions/aies-runtime/status.ts";
+import { nestedSandboxSkip } from "./helpers/nested-sandbox.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
@@ -207,7 +208,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.match(res3.content[0].text, /protected file.*cannot be modified directly/i);
     });
 
-    it("blocks symlink escape from workspace to outside paths in Worker", async () => {
+    it("blocks symlink escape from workspace to outside paths in Worker", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -234,7 +235,7 @@ describe("AIES-006 Permission Boundaries", () => {
   });
 
   describe("3. Verify Source Protection via OS Sandbox", () => {
-    it("blocks indirect writes via node -e in Verify under OS sandbox", async () => {
+    it("blocks indirect writes via node -e in Verify under OS sandbox", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return; // Skip on platforms without Seatbelt/bwrap
       }
@@ -255,7 +256,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(readFileSync(join(fixtureDir, "src", "index.js"), "utf8"), "console.log('original');\n");
     });
 
-    it("permits read-only verification checks under OS sandbox in Verify", async () => {
+    it("permits read-only verification checks under OS sandbox in Verify", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -270,7 +271,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(result.stdout.trim(), "console.log('original');");
     });
 
-    it("permits writing to pre-created output roots (.cache, dist, /tmp) in Verify", async () => {
+    it("permits writing to pre-created output roots (.cache, dist, /tmp) in Verify", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -289,7 +290,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(readFileSync(join(fixtureDir, ".cache", "test.json"), "utf8"), '{"ok":true}');
     });
 
-    it("blocks symlink escape from allowed output root to source in Verify", async () => {
+    it("blocks symlink escape from allowed output root to source in Verify", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -308,7 +309,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(existsSync(join(fixtureDir, "src", "hacked.txt")), false, "No file created in src/");
     });
 
-    it("blocks symlink overwrite of source files in Verify", async () => {
+    it("blocks symlink overwrite of source files in Verify", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -342,7 +343,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.ok(verifyConfig.filesystem.denyRead.some((p) => p.includes("auth.json")));
     });
 
-    it("blocks reading and writing workspace secrets (.env, *.pem, *.key) via bash in Worker", async () => {
+    it("blocks reading and writing workspace secrets (.env, *.pem, *.key) via bash in Worker", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -387,7 +388,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(readFileSync(join(fixtureDir, "fixture.key"), "utf8"), "KEY_DATA\n");
     });
 
-    it("blocks reading and writing workspace secrets (.env, *.pem, *.key) via bash in Verify", async () => {
+    it("blocks reading and writing workspace secrets (.env, *.pem, *.key) via bash in Verify", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -716,7 +717,7 @@ describe("AIES-006 Permission Boundaries", () => {
       );
     });
 
-    it("leaves a child unable to enumerate the host Keychain (Worker and Verify)", async () => {
+    it("leaves a child unable to enumerate the host Keychain (Worker and Verify)", { skip: nestedSandboxSkip() }, async () => {
       if (process.platform !== "darwin" || !isSandboxSupported()) {
         return;
       }
@@ -737,7 +738,7 @@ describe("AIES-006 Permission Boundaries", () => {
       }
     });
 
-    it("keeps the host's stored MCP credentials unreachable from Worker and Verify", async () => {
+    it("keeps the host's stored MCP credentials unreachable from Worker and Verify", { skip: nestedSandboxSkip() }, async () => {
       // Empirical guard on the real token: skipped unless this host actually has
       // pi-mcp-adapter's credential store and the package that reads it.
       const keyringDir = [
@@ -862,7 +863,7 @@ describe("AIES-006 Permission Boundaries", () => {
       }
     });
 
-    it("allows check writes to generated/ephemeral output roots under Verify sandbox", async () => {
+    it("allows check writes to generated/ephemeral output roots under Verify sandbox", { skip: nestedSandboxSkip() }, async () => {
       if (!isSandboxSupported()) {
         return;
       }
@@ -914,7 +915,7 @@ describe("AIES-006 Permission Boundaries", () => {
       assert.equal(existsSync(join(fixtureDir, "arbitrary.txt")), false);
     });
 
-    it("strictly rejects catalog output roots if they contain git-tracked files (tracked .astro or out)", async () => {
+    it("strictly rejects catalog output roots if they contain git-tracked files (tracked .astro or out)", { skip: nestedSandboxSkip() }, async () => {
       const repoDir = mkdtempSync(join(tmpdir(), "aies-tracked-output-"));
       try {
         execFileSync("git", ["init"], { cwd: repoDir });

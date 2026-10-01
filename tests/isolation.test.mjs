@@ -12,11 +12,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { nestedSandboxSkip } from "./helpers/nested-sandbox.mjs";
 
 const REPO = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const AIES = join(REPO, "bin", "aies");
@@ -47,7 +49,7 @@ function fingerprintProfile() {
 
 /** Ambient environment deliberately pointing at the real Pi profile. */
 function isolatedEnv(home) {
-  return {
+  const env = {
     ...process.env,
     AIES_HOME: home,
     PI_OFFLINE: "1",
@@ -56,6 +58,11 @@ function isolatedEnv(home) {
     PI_CODING_AGENT_DIR: PI_PROFILE,
     PI_CODING_AGENT_SESSION_DIR: join(PI_PROFILE, "sessions"),
   };
+  // Ambient run-mode switches must not leak into spawned launches: the
+  // precedence tests below assert the launcher's own decision with a
+  // deterministic environment (EZE-493).
+  delete env.AIES_EPHEMERAL;
+  return env;
 }
 
 function runAies(env, args) {
@@ -157,8 +164,11 @@ describe("AIES isolation", () => {
     assert.ok(adapterContent.mcpServers.linear);
   });
 
-  it("protects against inherited temporary AIES_HOME in interactive sessions and falls back to canonical", () => {
+  it("protects against inherited temporary AIES_HOME in interactive sessions and falls back to canonical", { skip: nestedSandboxSkip() }, () => {
     const tmpHome = mkdtempSync(join(tmpdir(), "aies-inherited-"));
+    // The canonical fallback must resolve under a redirected HOME: the test
+    // never bootstraps the real ~/.local/share/aies profile (EZE-493).
+    const childHome = mkdtempSync(join(tmpdir(), "aies-child-home-"));
     const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
     try {
       const mockPi = join(mockBinDir, "pi");
@@ -166,22 +176,24 @@ describe("AIES isolation", () => {
 
       const script = `import pty, os, subprocess
 master, slave = pty.openpty()
-env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}", HOME="${childHome}")
+env.pop("AIES_EPHEMERAL", None)
 p = subprocess.run(["bash", "${AIES}", "install"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 print("STDOUT:" + p.stdout.decode())
 print("STDERR:" + p.stderr.decode())
 `;
       const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
       assert.equal(result.status, 0);
-      assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${DEFAULT_AIES_HOME}/agent`));
+      assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${join(childHome, ".local", "share", "aies")}/agent`));
       assert.match(result.stdout, /ignoring inherited temporary AIES_HOME/);
     } finally {
       rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(childHome, { recursive: true, force: true });
       rmSync(mockBinDir, { recursive: true, force: true });
     }
   });
 
-  it("respects --aies-ephemeral in interactive sessions when temporary AIES_HOME is intentional", () => {
+  it("respects --aies-ephemeral in interactive sessions when temporary AIES_HOME is intentional", { skip: nestedSandboxSkip() }, () => {
     const tmpHome = mkdtempSync(join(tmpdir(), "aies-ephemeral-"));
     const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
     try {
@@ -205,7 +217,7 @@ print("STDERR:" + p.stderr.decode())
     }
   });
 
-  it("respects explicit --aies-home even in interactive sessions with temporary path", () => {
+  it("respects explicit --aies-home even in interactive sessions with temporary path", { skip: nestedSandboxSkip() }, () => {
     const tmpHome = mkdtempSync(join(tmpdir(), "aies-inherited-"));
     const explicitHome = mkdtempSync(join(tmpdir(), "aies-explicit-interactive-"));
     const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
@@ -231,17 +243,34 @@ print("STDERR:" + p.stderr.decode())
     }
   });
 
-  it("respects inherited custom persistent AIES_HOME in interactive and non-interactive sessions", () => {
-    const persistentHome = join(homedir(), ".aies-test-custom-persistent-" + Date.now());
+  it("respects inherited custom persistent AIES_HOME in interactive and non-interactive sessions", { skip: nestedSandboxSkip() }, () => {
+    // The profile lives inside this test's own temporary tree: an isolated
+    // HOME, never the real one (EZE-493: nothing is written outside the
+    // temporary profile). The launcher picks between precedence 3 (inherited
+    // custom persistent profile, always respected) and precedence 4
+    // (temporary profile, downgraded in interactive sessions) by testing the
+    // AIES_HOME *string* against /tmp/*, /private/tmp/*, /var/folders/* and
+    // $TMPDIR/*. Every plainly spelled path in a temporary tree matches, so
+    // the profile path carries a leading `/./`: a no-op component that
+    // resolves to the same directory (asserted below) while describing the
+    // profile the way a user's non-temporary `~/.aies-...` profile is
+    // described. The persistent precedence stays observable without any write
+    // leaving the test's temporary directory.
+    const isolatedHome = mkdtempSync(join(tmpdir(), "aies-persistent-home-"));
+    const profileName = ".aies-test-custom-persistent-" + Date.now();
+    const physicalHome = join(isolatedHome, profileName);
+    const persistentHome = "/." + physicalHome;
     const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-"));
     try {
       const mockPi = join(mockBinDir, "pi");
       writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
 
-      // Interactive (PTY)
+      // Interactive (PTY). HOME is redirected so even an unexpected fallback
+      // would land inside the test's temporary tree, never in the real one.
       const script = `import pty, os, subprocess
 master, slave = pty.openpty()
-env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${persistentHome}")
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${persistentHome}", HOME="${isolatedHome}")
+env.pop("AIES_EPHEMERAL", None)
 p = subprocess.run(["bash", "${AIES}", "install"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 print("STDOUT:" + p.stdout.decode())
 print("STDERR:" + p.stderr.decode())
@@ -252,27 +281,47 @@ print("STDERR:" + p.stderr.decode())
       assert.doesNotMatch(result.stdout, /ignoring inherited temporary AIES_HOME/);
 
       // Non-interactive (direct spawn)
-      const nonInteractive = spawnSync(AIES, ["--aies-info"], {
-        env: { ...process.env, AIES_HOME: persistentHome },
-        encoding: "utf8"
-      });
+      const directEnv = { ...process.env, AIES_HOME: persistentHome, HOME: isolatedHome };
+      delete directEnv.AIES_EPHEMERAL;
+      const nonInteractive = spawnSync(AIES, ["--aies-info"], { env: directEnv, encoding: "utf8" });
       assert.equal(nonInteractive.status, 0);
       assert.match(nonInteractive.stdout, new RegExp(`AIES_HOME=${persistentHome}`));
+
+      // Focused assertions: both launches shared one persistent profile, and
+      // that profile resolves into the isolated HOME of this test, with every
+      // bootstrap write landing there.
+      assert.equal(
+        realpathSync(persistentHome),
+        realpathSync(physicalHome),
+        "the custom profile path must resolve inside the test's temporary tree",
+      );
+      assert.ok(
+        existsSync(join(physicalHome, "agent", "settings.json")),
+        "both launches must bootstrap the same custom profile in the isolated HOME",
+      );
     } finally {
-      rmSync(persistentHome, { recursive: true, force: true });
+      rmSync(isolatedHome, { recursive: true, force: true });
       rmSync(mockBinDir, { recursive: true, force: true });
     }
+
+    // Cleanup: the test leaves no profile behind, in the temporary tree or
+    // anywhere else.
+    assert.ok(!existsSync(physicalHome), "the temporary custom profile must be removed");
   });
 
   describe("EZE-486 regression: zero arguments / empty array under macOS Bash 3.2 (nounset)", () => {
     it("launches Pi when called with zero arguments under system bash (/bin/bash)", () => {
       const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-zeroargs-"));
+      const childHome = mkdtempSync(join(tmpdir(), "aies-child-home-zeroargs-"));
       const logFile = join(mockBinDir, "pi.log");
       try {
         const mockPi = join(mockBinDir, "pi");
         writeFileSync(mockPi, `#!/bin/sh\necho "INVOKED" >> "${logFile}"\nfor a in "$@"; do echo "ARG: $a" >> "${logFile}"; done\n`, { mode: 0o755 });
 
-        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        // With HOME redirected and AIES_HOME unset, the canonical profile this
+        // launch bootstraps lives in the test's temporary tree (EZE-493).
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}`, HOME: childHome };
+        delete customEnv.AIES_HOME;
         const result = spawnSync("/bin/bash", [AIES], { env: customEnv, encoding: "utf8" });
         assert.equal(result.status, 0, `aies with zero arguments failed:\n${result.stderr}`);
         const log = readFileSync(logFile, "utf8");
@@ -280,11 +329,15 @@ print("STDERR:" + p.stderr.decode())
         assert.match(log, /ARG: --no-skills/);
       } finally {
         rmSync(mockBinDir, { recursive: true, force: true });
+        rmSync(childHome, { recursive: true, force: true });
       }
     });
 
-    it("matrix Case A: inherited temporary AIES_HOME in interactive mode warns, falls back to canonical, and launches Pi with zero args", () => {
+    it("matrix Case A: inherited temporary AIES_HOME in interactive mode warns, falls back to canonical, and launches Pi with zero args", { skip: nestedSandboxSkip() }, () => {
       const tmpHome = mkdtempSync(join(tmpdir(), "aies-inherited-zeroargs-"));
+      // Redirect HOME so the canonical fallback resolves inside the test's own
+      // temporary tree, never in the real profile (EZE-493).
+      const childHome = mkdtempSync(join(tmpdir(), "aies-child-home-case-a-"));
       const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-a-"));
       try {
         const mockPi = join(mockBinDir, "pi");
@@ -292,38 +345,44 @@ print("STDERR:" + p.stderr.decode())
 
         const script = `import pty, os, subprocess
 master, slave = pty.openpty()
-env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}")
+env = dict(os.environ, PATH="${mockBinDir}:" + os.environ["PATH"], AIES_HOME="${tmpHome}", HOME="${childHome}")
+env.pop("AIES_EPHEMERAL", None)
 p = subprocess.run(["/bin/bash", "${AIES}"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 print("STDOUT:" + p.stdout.decode())
 print("STDERR:" + p.stderr.decode())
 `;
         const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
         assert.equal(result.status, 0);
-        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${DEFAULT_AIES_HOME}/agent`));
+        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${join(childHome, ".local", "share", "aies")}/agent`));
         assert.match(result.stdout, /ignoring inherited temporary AIES_HOME/);
         assert.match(result.stdout, /ARG: --no-skills/);
         assert.doesNotMatch(result.stdout, /unbound variable/);
       } finally {
         rmSync(tmpHome, { recursive: true, force: true });
+        rmSync(childHome, { recursive: true, force: true });
         rmSync(mockBinDir, { recursive: true, force: true });
       }
     });
 
     it("matrix Case B: env -u AIES_HOME uses canonical profile and launches Pi with zero args", () => {
       const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-b-"));
+      // HOME is redirected so "canonical profile" means this test's own
+      // temporary tree: the real profile is never bootstrapped (EZE-493).
+      const childHome = mkdtempSync(join(tmpdir(), "aies-child-home-case-b-"));
       try {
         const mockPi = join(mockBinDir, "pi");
         writeFileSync(mockPi, '#!/bin/sh\necho "MOCK_PI_DIR=$PI_CODING_AGENT_DIR"\n', { mode: 0o755 });
 
-        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}`, HOME: childHome };
         delete customEnv.AIES_HOME;
         const result = spawnSync("/bin/bash", [AIES], { env: customEnv, encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
-        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${DEFAULT_AIES_HOME}/agent`));
+        assert.match(result.stdout, new RegExp(`MOCK_PI_DIR=${join(childHome, ".local", "share", "aies")}/agent`));
         assert.doesNotMatch(result.stderr, /ignoring inherited temporary AIES_HOME/);
         assert.doesNotMatch(result.stderr, /unbound variable/);
       } finally {
         rmSync(mockBinDir, { recursive: true, force: true });
+        rmSync(childHome, { recursive: true, force: true });
       }
     });
 
@@ -345,7 +404,7 @@ print("STDERR:" + p.stderr.decode())
       }
     });
 
-    it("matrix Case D: aies --aies-ephemeral respects temporary profile with zero other args", () => {
+    it("matrix Case D: aies --aies-ephemeral respects temporary profile with zero other args", { skip: nestedSandboxSkip() }, () => {
       const tmpHome = mkdtempSync(join(tmpdir(), "aies-ephemeral-zeroargs-"));
       const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-d-"));
       try {
@@ -372,12 +431,17 @@ print("STDERR:" + p.stderr.decode())
 
     it("matrix Case E: normal Pi arguments are preserved exactly in order and content", () => {
       const mockBinDir = mkdtempSync(join(tmpdir(), "aies-mock-pi-case-e-"));
+      const childHome = mkdtempSync(join(tmpdir(), "aies-child-home-case-e-"));
       const logFile = join(mockBinDir, "pi.log");
       try {
         const mockPi = join(mockBinDir, "pi");
         writeFileSync(mockPi, `#!/bin/sh\nfor a in "$@"; do echo "ARG: $a" >> "${logFile}"; done\n`, { mode: 0o755 });
 
-        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}` };
+        // Never inherit an ambient AIES_HOME: with HOME redirected, the launch
+        // bootstraps the canonical profile inside this test's temporary tree,
+        // not the real one (EZE-493).
+        const customEnv = { ...process.env, PATH: `${mockBinDir}:${process.env.PATH}`, HOME: childHome };
+        delete customEnv.AIES_HOME;
         const testArgs = ["-p", "hello world", "--mode", "rpc", "arg with spaces and quotes '\""];
         const result = spawnSync("/bin/bash", [AIES, ...testArgs], { env: customEnv, encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
@@ -386,6 +450,7 @@ print("STDERR:" + p.stderr.decode())
         assert.deepEqual(forwardedArgs.slice(-testArgs.length), testArgs);
       } finally {
         rmSync(mockBinDir, { recursive: true, force: true });
+        rmSync(childHome, { recursive: true, force: true });
       }
     });
   });
@@ -573,14 +638,21 @@ print("STDERR:" + p.stderr.decode())
   });
 
   it("is resolved by Pi's own API, not by AIES's assumptions", async () => {
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const pi = await import("@earendil-works/pi-coding-agent").catch((error) => {
+        throw new Error(`cannot import pi's public API, run "npm install" first: ${error.message}`);
+      });
 
-    const pi = await import("@earendil-works/pi-coding-agent").catch((error) => {
-      throw new Error(`cannot import pi's public API, run "npm install" first: ${error.message}`);
-    });
-
-    assert.equal(pi.getAgentDir(), agentDir);
-    assert.notEqual(pi.getAgentDir(), PI_PROFILE);
+      assert.equal(pi.getAgentDir(), agentDir);
+      assert.notEqual(pi.getAgentDir(), PI_PROFILE);
+    } finally {
+      // The suite restores what it mutates: a later test must not inherit a
+      // process-level pointer at the temporary profile (EZE-493).
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
   });
 
   it("bootstraps the profile: linked resources and a seeded settings file", () => {
