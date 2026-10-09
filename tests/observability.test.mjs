@@ -558,7 +558,10 @@ describe("verification observability (AIES-005)", () => {
     assert.equal(footer.includes("VERIFY"), false, footer);
   });
 
-  it("names an in-flight verification and settles to DONE on a valid pass", async () => {
+  // EZE-503: this is the *no-ticket* contract. With no ticket in play a valid PASS
+  // is the last real step of the run, so it still settles DONE. An active ticket is
+  // held by the checks below until Linear is observed completed.
+  it("names an in-flight verification and settles to DONE on a valid pass with no ticket in play", async () => {
     const host = createHost();
     await host.start();
 
@@ -669,6 +672,148 @@ describe("verification observability (AIES-005)", () => {
 
     await host.emit("session_shutdown", { reason: "quit" });
     assert.equal(host.appended.at(-1).data.verification.status, "fail");
+  });
+});
+
+/**
+ * EZE-503: a Verify PASS is a verdict about the artifact, never the ticket's end.
+ *
+ * The runtime used to project DONE straight from a valid PASS, so a ticket run the
+ * user still held (a review or a commit they kept) printed a completion card, its
+ * headline and a `Linear ✓ Done` row no Linear call ever produced. These checks pin
+ * the corrected projection: an active ticket stays in its verified, pre-completion
+ * stage until the observed ticket actually reaches Linear's completed state, while a
+ * run with no ticket in play is untouched.
+ */
+describe("EZE-503 a PASS is not the ticket's completion", () => {
+  /** A valid Verify PASS as the delegation tool reports it. */
+  function verifyPass() {
+    return {
+      toolName: "aies_delegate",
+      input: { role: "verify" },
+      content: [{ type: "text", text: "### Verify Result" }],
+      isError: false,
+      details: { verification: { status: "pass", attempts: 1, repairs: 0, maxRepairs: 2, valid: true } },
+    };
+  }
+
+  /** The open ticket, as `aies_ticket show` reports it while nothing was completed. */
+  function openTicket() {
+    return {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "Active Ticket [workState: working]" }],
+      isError: false,
+      details: {
+        ticket: { identifier: "EZE-503", title: "PASS is not Done", status: "In Progress", statusType: "started" },
+        workState: "working",
+      },
+    };
+  }
+
+  /** The real refusal of `aies_ticket complete` while the user kept the last step. */
+  function heldCompletion() {
+    return {
+      toolName: "aies_ticket",
+      content: [
+        {
+          type: "text",
+          text: 'Done Gate HELD: Pending final action: the user asked to hold the commit ("no commit todavía"). ' +
+            "Nothing was sent to Linear and the ticket stays open.",
+        },
+      ],
+      isError: true,
+      details: {
+        error: "pending_final_action",
+        ticket: { identifier: "EZE-503", title: "PASS is not Done", status: "In Progress", statusType: "started" },
+        workState: "working",
+      },
+    };
+  }
+
+  /** The same ticket after Linear really moved to its completed state. */
+  function completedTicket() {
+    return {
+      toolName: "aies_ticket",
+      content: [{ type: "text", text: "Completed EZE-503." }],
+      isError: false,
+      details: {
+        ticket: { identifier: "EZE-503", title: "PASS is not Done", status: "Done", statusType: "completed" },
+        workState: "complete",
+      },
+    };
+  }
+
+  const summaries = (host) => host.appended.filter((entry) => entry.type === "aies-summary");
+
+  /** A verified ticket run the user holds: PASS, the refusal, then the turn ends. */
+  async function heldRun() {
+    const host = createHost();
+    await host.start();
+    await host.emit("tool_result", openTicket());
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await host.emit("tool_result", verifyPass());
+    await host.emit("agent_settled", {});
+    await host.emit("tool_result", heldCompletion());
+    await host.emit("turn_end", { message: { role: "assistant" } });
+    return host;
+  }
+
+  it("keeps a held ticket run out of DONE: no card, no headline, no DONE stage", async () => {
+    const host = await heldRun();
+
+    assert.deepEqual(summaries(host), [], "a held completion must publish no summary card");
+    assert.equal(
+      host.notifications.some((item) => /completad|tarea completada/iu.test(item.message)),
+      false,
+      `no completion headline may reach the user: ${JSON.stringify(host.notifications)}`,
+    );
+
+    const footer = host.footerText();
+    assert.equal(footer.includes("DONE"), false, footer);
+    assert.match(footer, /FINALIZING$/u, footer);
+    assert.match(field(await host.overview(), "etapa"), /FINALIZING/u);
+  });
+
+  it("holds across the settled pass and every later render of the same run", async () => {
+    const host = createHost();
+    await host.start();
+    await host.emit("tool_result", openTicket());
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await host.emit("tool_result", verifyPass());
+    assert.equal(summaries(host).length, 0, "the verdict alone completes nothing");
+
+    await host.emit("agent_settled", {});
+    await host.emit("turn_end", { message: { role: "assistant" } });
+    await host.emit("tool_result", { toolName: "read", content: "x" });
+
+    assert.equal(summaries(host).length, 0, `the held run reached a final DONE: ${JSON.stringify(summaries(host))}`);
+    assert.equal(host.footerText().includes("DONE"), false, host.footerText());
+  });
+
+  it("reaches DONE exactly once when the held step is released and Linear is observed completed", async () => {
+    const host = await heldRun();
+    assert.deepEqual(summaries(host), []);
+
+    await host.emit("tool_result", completedTicket());
+
+    const done = summaries(host);
+    assert.equal(done.length, 1, "the permitted completion still reaches DONE, once");
+    assert.equal(done[0].data.kind, "done");
+    assert.equal(done[0].data.ticket, "EZE-503");
+    assert.equal(done[0].data.linear, "Done", "the row reports the status the observer read");
+    assert.match(host.footerText(), /DONE$/u);
+  });
+
+  it("writes no Linear row the observer never read", async () => {
+    const host = createHost();
+    await host.start();
+    await host.emit("tool_call", toolCall("aies_delegate", { role: "verify" }));
+    await host.emit("tool_result", verifyPass());
+    await host.emit("turn_end", { message: { role: "assistant" } });
+
+    const done = summaries(host);
+    assert.equal(done.length, 1, "a run with no ticket in play still completes");
+    assert.equal("linear" in done[0].data, false, `DONE invented a Linear status: ${JSON.stringify(done[0].data)}`);
   });
 });
 

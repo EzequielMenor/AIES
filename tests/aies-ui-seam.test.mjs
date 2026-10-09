@@ -681,7 +681,9 @@ describe("AIES UI seam", () => {
       false,
       "the durable DONE summary never projects the raw child summary",
     );
-    assert.equal(done[0].data.linear, "Done");
+    // EZE-503: this run never observed a Linear status on the ticket, so the card
+    // reports none instead of inventing a `Done` no Linear call confirmed.
+    assert.equal("linear" in done[0].data, false, JSON.stringify(done[0].data));
 
     // A second identical event must not fire the transition again.
     await host.emit("tool_result", { toolName: "read", content: "z" });

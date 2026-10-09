@@ -812,6 +812,33 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   }
 
   /**
+   * Whether a valid Verify PASS may close the run.
+   *
+   * EZE-503: PASS proves the work unit, never the ticket. While a ticket is
+   * active the DONE surface belongs to the observed Linear completion, so a run
+   * the user held (review, commit, closing the ticket) keeps its verified,
+   * pre-completion stage and prints no completion card. A run with no ticket in
+   * play has nothing left to complete, so a valid PASS settles it as before.
+   */
+  function passMayCloseRun(snapshot: AgentsSnapshot): boolean {
+    if (snapshot.ticket?.active) return ticketReachedCompletion(snapshot);
+    return true;
+  }
+
+  /**
+   * The PASS completion path: a settled, valid verdict with no child still
+   * running, and no held final step standing between it and the ticket.
+   */
+  function emitDoneOnPass(ctx: ExtensionContext): void {
+    if (doneEmitted) return;
+    const verification = state.verification;
+    if (!verification || verification.status !== "pass" || verification.valid !== true) return;
+    if (state.delegations?.activeRole) return;
+    if (!passMayCloseRun(uiSnapshot())) return;
+    emitDone(ctx);
+  }
+
+  /**
    * Edge-triggered DONE emission, independent of the autonomy controller: the
    * moment the observed ticket reaches the completed state, with a single latch
    * so a long run of renders cannot append more than one card. Observing a
@@ -850,11 +877,12 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
   function doneSummary(): { data: DoneSummaryInput & { kind: "done" }; headline: string } {
     const snapshot = uiSnapshot();
     const ticket = currentTicket();
-    const data: DoneSummaryInput & { kind: "done" } = {
-      kind: "done",
-      ticket,
-      linear: snapshot.ticket?.status ?? "Done",
-    };
+    const data: DoneSummaryInput & { kind: "done" } = { kind: "done", ticket };
+    // EZE-503: only a status the observer actually read from Linear is reported.
+    // With no observed status the card omits the row instead of inventing a
+    // `Linear ✓ Done` no Linear call ever confirmed.
+    const linearStatus = typeof snapshot.ticket?.status === "string" ? snapshot.ticket.status.trim() : "";
+    if (linearStatus) data.linear = linearStatus;
     // The run's own start, never the session's: a session that opened long before
     // the ticket would otherwise report a meaningless duration.
     const runStart = runStartedAt(snapshot);
@@ -1590,14 +1618,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     guard(() => {
       if (event.message.role === "assistant") {
         state = applyStopReason(state, event.message.stopReason, Date.now());
-        if (
-          state.verification?.status === "pass" &&
-          state.verification.valid &&
-          !state.delegations?.activeRole &&
-          !doneEmitted
-        ) {
-          emitDone(ctx);
-        }
+        emitDoneOnPass(ctx);
       }
       render(ctx);
     });
@@ -1608,14 +1629,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       if (state.delegations.activeRole) {
         state = applyDelegationEnd(state, "interrupted", Date.now());
       }
-      if (
-        state.verification?.status === "pass" &&
-        state.verification.valid &&
-        !state.delegations?.activeRole &&
-        !doneEmitted
-      ) {
-        emitDone(ctx);
-      }
+      emitDoneOnPass(ctx);
       render(ctx);
       persist();
     });

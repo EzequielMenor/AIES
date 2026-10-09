@@ -1175,6 +1175,55 @@ session.
 
 ---
 
+## D32 - Pending final action: an explicit user hold outranks Verify PASS (EZE-503)
+
+**Decision.** A Verify PASS is a verdict about the work unit, never an authorisation
+to close it. In the EZE-492 and EZE-493 sessions the Parent treated `PASS ->
+aies_ticket complete` as unconditional and Linear reached `Done` while the user had
+just said "no commit todavía" / "quiero revisarlo antes" and the tree was still
+uncommitted. The missing rule lives in `extensions/aies-agents/linear/pending-action.ts`
+(pure) and is enforced at the three points where a PASS turns into Done:
+
+1. **Capture.** The `input` handler of `extensions/aies-agents/index.ts` records one
+   user message at a time. Only explicit wording creates a hold (the held step and a
+   hold marker must appear in the same clause); interrogative clauses ("¿puedo
+   commitear?") and clauses that merely report state ("no hay commits nuevos") are
+   dropped, and an input that says nothing about finalization leaves the hold in
+   place. `source: "extension"` — AIES' own hidden continuation instructions — never
+   speaks for the user. A release must be explicit too ("ya lo revisé, podés
+   commitear", "lgtm"); a bare "dale"/"seguí" does not lift a hold.
+2. **Done Gate.** `checkDoneGate()` evaluates the hold before the verification rule
+   and answers with its own code (`pending_final_action`, not a Verify failure), so
+   the refusal cannot be mistaken for missing evidence. `performComplete()` returns
+   without any transport call: the ticket stays open, the verification record is
+   untouched and no completion comment is posted.
+3. **No bypass, no autopilot.** While a hold stands, a direct `mcp save_issue` that
+   names the active ticket and a completion **state name** is blocked in `tool_call`
+   (the EZE-492 bypass), and `evaluateContinuation()` pauses with `user_required`
+   instead of continuing toward Linear completion, so no follow-up turn can push the
+   ticket closed. An opaque status id is never guessed at, and any other Linear write
+   is untouched.
+
+`force: true` on `complete` is the single way through, and it stands for the user's
+confirmation of the held step, never for the Parent's impatience.
+
+**Rejected alternatives.** Inferring a hold from `git status` (uncommitted changes
+therefore block Done) was rejected: it would make a commit universally required,
+including for docs-only units and for users who commit later by design, which is the
+opposite defect. NLP intent detection or delegating the reading to the model was
+rejected as neither deterministic nor testable. Making the Parent responsible for
+remembering the wording was rejected because that is exactly how EZE-492 lost it: the
+PASS overwrote the instruction. Clearing the hold on any new user input was rejected
+because a continuation-style "seguí" would then silently re-open the Done path.
+
+**Consequence.** Completion now needs both a valid PASS and the absence of an
+explicit user hold. The cost is a possible false refusal when a user sentence merely
+resembles an instruction to wait; the refusal names the recorded words, so the Parent
+can ask and continue with `force: true` in one step. A wrong PASS-driven Done, which
+is what this replaces, was unrecoverable from inside the session.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

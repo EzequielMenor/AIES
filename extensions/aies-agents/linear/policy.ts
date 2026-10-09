@@ -7,16 +7,26 @@
  * 3. Done Gate: Behavior-bearing changes REQUIRE a valid fresh Verify PASS.
  *    Stale PASS, none, fail, or blocked DENY completion.
  *    Docs-only changes complete without Verify child when requiresVerification is false.
- * 4. Remote freshness & conflict check before completion.
+ * 4. EZE-503: an explicit user request to keep the last step (review or commit)
+ *    outranks any verdict: while it stands, completion is denied without touching
+ *    the verification record.
+ * 5. Remote freshness & conflict check before completion.
  */
 
 import { isVerificationValid, requiresVerification, type VerificationState } from "../verification.ts";
 import { readIssueState } from "./contract.ts";
+import { describePendingFinalAction, type PendingFinalAction } from "./pending-action.ts";
 import type { ActiveTicket, LinearIssueRaw, LinearStatus, TicketWorkState } from "./types.ts";
 
 export interface DoneGateResult {
   allowed: boolean;
   reason: string;
+  /**
+   * Which rule refused. A pending final action is reported as itself instead of as
+   * a Verify failure, so the Parent, the autonomy controller and the collapsed tool
+   * row never claim the evidence is missing when it is not.
+   */
+  code?: "pending_final_action" | "verify_gate_denied";
 }
 
 export interface TicketSwitchCheck {
@@ -56,11 +66,18 @@ export function canSwitchTicket(
   };
 }
 
+/** A refusal raised by the verification authority, named as such for the caller. */
+function denied(reason: string): DoneGateResult {
+  return { allowed: false, code: "verify_gate_denied", reason };
+}
+
 /**
  * Programmatic Done Gate enforcement.
  *
- * Request Linear completed
- *         ↓
+ * Request Linear complete
+ *         │
+ *         ├── explicit pending final action asked by the user? ──► DENY (PASS kept)
+ *         ▼
  * requiresVerification?
  *         │
  *        yes ──► valid fresh Verify PASS?
@@ -74,7 +91,20 @@ export function canSwitchTicket(
 export function checkDoneGate(
   verification: VerificationState,
   changedPaths: string[],
+  pendingFinalAction?: PendingFinalAction | null,
 ): DoneGateResult {
+  // EZE-503: Verify proves the work unit; only the user can authorise the last
+  // step. The hold is evaluated first so it also covers a docs-only change (where
+  // no Verify run is required), and it exists only while the user asked for it, so
+  // a commit is never universally required.
+  if (pendingFinalAction) {
+    return {
+      allowed: false,
+      code: "pending_final_action",
+      reason: `Pending final action: ${describePendingFinalAction(pendingFinalAction)}.`,
+    };
+  }
+
   const requirement = requiresVerification(changedPaths);
 
   // Docs-only or trivial change does not require Verify child
@@ -87,39 +117,26 @@ export function checkDoneGate(
 
   // Behavior-bearing change requires independent verification
   if (verification.status === "none") {
-    return {
-      allowed: false,
-      reason: "Verification required: no verification run has been executed (status: none)",
-    };
+    return denied("Verification required: no verification run has been executed (status: none)");
   }
 
   if (verification.status === "fail") {
-    return {
-      allowed: false,
-      reason: "Verification failed: cannot complete ticket with failing verification (status: fail)",
-    };
+    return denied("Verification failed: cannot complete ticket with failing verification (status: fail)");
   }
 
   if (verification.status === "blocked") {
-    return {
-      allowed: false,
-      reason: "Verification blocked: cannot complete ticket while verification is blocked (status: blocked)",
-    };
+    return denied("Verification blocked: cannot complete ticket while verification is blocked (status: blocked)");
   }
 
   if (verification.status === "running") {
-    return {
-      allowed: false,
-      reason: "Verification in progress: cannot complete ticket while verification is running",
-    };
+    return denied("Verification in progress: cannot complete ticket while verification is running");
   }
 
   if (verification.status === "pass") {
     if (!isVerificationValid(verification)) {
-      return {
-        allowed: false,
-        reason: `Verification is stale: verified revision ${verification.verifiedRevision ?? "none"} does not match current revision ${verification.revision}`,
-      };
+      return denied(
+        `Verification is stale: verified revision ${verification.verifiedRevision ?? "none"} does not match current revision ${verification.revision}`,
+      );
     }
     return {
       allowed: true,
@@ -127,10 +144,7 @@ export function checkDoneGate(
     };
   }
 
-  return {
-    allowed: false,
-    reason: `Cannot complete ticket: unknown verification status "${verification.status}"`,
-  };
+  return denied(`Cannot complete ticket: unknown verification status "${verification.status}"`);
 }
 
 /**
