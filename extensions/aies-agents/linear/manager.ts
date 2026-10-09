@@ -9,6 +9,11 @@
  * completed and fails with a `remote_required` directive for the next missing one.
  * The manager keeps the in-flight directive plus every answer collected for it, so
  * `submitRemote` resumes the interrupted operation instead of restarting it.
+ *
+ * EZE-503 adds one piece of session state to the same owner: the explicit user
+ * request to keep the last step ("no commit todavía"). It is recorded from the
+ * user's own input, survives the work that follows, and outranks a fresh Verify
+ * PASS at the Done Gate.
  */
 
 import type { McpDiagnostic } from "../mcp/integration.ts";
@@ -27,6 +32,7 @@ import {
   detectRemoteConflict,
   resolveTargetStatus,
 } from "./policy.ts";
+import { readFinalActionDirective, type PendingFinalAction } from "./pending-action.ts";
 import {
   HostMediatedLinearTransport,
   isLinearRemoteRequired,
@@ -89,6 +95,9 @@ export class TicketManager {
   /** Answers already collected for the in-flight operation, keyed by directive key. */
   private remoteAnswers: Record<string, unknown> = {};
 
+  /** EZE-503: an explicit user request to hold the final step, if one stands. */
+  private pendingFinalAction: PendingFinalAction | null = null;
+
   constructor(options: TicketManagerOptions) {
     this.transportOverride = options.transport;
     this.getVerification = options.getVerification;
@@ -122,6 +131,24 @@ export class TicketManager {
         this.changedPaths.add(p.trim());
       }
     }
+  }
+
+  /**
+   * Read one submitted user input (EZE-503). Only explicit wording changes the
+   * hold: an input that says nothing about finalization leaves it in place, so a
+   * Verify PASS, a continuation turn or a plain "seguí" can never quietly re-open
+   * the Done path the user paused. Returns the state that stands afterwards.
+   */
+  recordUserInput(text: string): PendingFinalAction | null {
+    const directive = readFinalActionDirective(text);
+    if (!directive) return this.pendingFinalAction;
+    this.pendingFinalAction = directive.kind === "hold" ? directive.pending : null;
+    return this.pendingFinalAction;
+  }
+
+  /** The held final step, or null when the user never asked to keep one. */
+  getPendingFinalAction(): PendingFinalAction | null {
+    return this.pendingFinalAction ? { ...this.pendingFinalAction } : null;
   }
 
   /** The Linear call the Parent still has to perform, if any. */
@@ -275,8 +302,17 @@ export class TicketManager {
     return this.run("start", {});
   }
 
-  async completeTicket(options?: { evidence?: string; comment?: string }): Promise<TicketOperationResult> {
-    return this.run("complete", { evidence: options?.evidence, comment: options?.comment });
+  async completeTicket(options?: {
+    evidence?: string;
+    comment?: string;
+    /** The user confirmed the held step; see `performComplete`. */
+    force?: boolean;
+  }): Promise<TicketOperationResult> {
+    return this.run("complete", {
+      evidence: options?.evidence,
+      comment: options?.comment,
+      force: options?.force === true,
+    });
   }
 
   async blockTicket(options: { evidence: string; comment?: string }): Promise<TicketOperationResult> {
@@ -329,6 +365,7 @@ export class TicketManager {
       workState: this.workState,
       lastKnownLinearStatus: this.activeTicket.status,
       changedPaths: Array.from(this.changedPaths),
+      pendingFinalAction: this.pendingFinalAction ? { ...this.pendingFinalAction } : null,
       persistedAt: Date.now(),
     };
   }
@@ -338,12 +375,14 @@ export class TicketManager {
     this.activeTicket = { ...snapshot.activeTicket };
     this.workState = snapshot.workState ?? "loaded";
     this.changedPaths = new Set(snapshot.changedPaths ?? []);
+    this.pendingFinalAction = snapshot.pendingFinalAction ?? null;
   }
 
   reset(): void {
     this.activeTicket = null;
     this.workState = "loaded";
     this.changedPaths.clear();
+    this.pendingFinalAction = null;
     this.clearRemoteSession();
   }
 
@@ -378,6 +417,7 @@ export class TicketManager {
         return this.performComplete({
           evidence: typeof input.evidence === "string" ? input.evidence : undefined,
           comment: typeof input.comment === "string" ? input.comment : undefined,
+          force: input.force === true,
         });
       case "block":
         return this.performBlock({
@@ -436,6 +476,8 @@ export class TicketManager {
     this.activeTicket = normalizeTicketContract(raw);
     this.workState = "loaded";
     this.changedPaths.clear();
+    // The held step belonged to the previous work unit, not to this ticket.
+    this.pendingFinalAction = null;
 
     return {
       ok: true,
@@ -491,16 +533,31 @@ export class TicketManager {
   }
 
   private async performComplete(
-    options?: { evidence?: string; comment?: string },
+    options?: { evidence?: string; comment?: string; force?: boolean },
   ): Promise<TicketOperationResult> {
     const active = this.activeTicket;
     if (!active) {
       return { ok: false, error: "no_active_ticket", message: "No active ticket loaded." };
     }
 
+    // EZE-503: `force` is the only way past a held final step, and it stands for
+    // the user's confirmation of the held review/commit, never for impatience.
+    if (options?.force) this.pendingFinalAction = null;
+
     const verification = this.getVerification();
-    const gate = checkDoneGate(verification, Array.from(this.changedPaths));
+    const gate = checkDoneGate(verification, Array.from(this.changedPaths), this.pendingFinalAction);
     if (!gate.allowed) {
+      if (gate.code === "pending_final_action") {
+        return {
+          ok: false,
+          error: "pending_final_action",
+          message:
+            `Done Gate HELD: ${gate.reason} Nothing was sent to Linear and the ticket stays open; ` +
+            `the verification record is unchanged (status ${verification.status}, revision ${verification.revision}). ` +
+            "Report the pending step to the user and wait: complete only after they confirm it, " +
+            "or repeat with force: true as their explicit confirmation.",
+        };
+      }
       return { ok: false, error: "verify_gate_denied", message: `Done Gate DENIED: ${gate.reason}` };
     }
 

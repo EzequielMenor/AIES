@@ -16,6 +16,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { describeMcpDiagnostic, type McpDiagnostic } from "../mcp/integration.ts";
 import { formatCompactContract } from "./contract.ts";
 import type { TicketManager } from "./manager.ts";
+import { describePendingFinalAction } from "./pending-action.ts";
 import { readRemoteAnswer } from "./transport.ts";
 
 export const TicketParamsSchema = Type.Object({
@@ -51,7 +52,8 @@ export const TicketParamsSchema = Type.Object({
   ),
   force: Type.Optional(
     Type.Boolean({
-      description: "Force ticket switch even if another ticket is currently in progress.",
+      description:
+        "Force ticket switch even if another ticket is currently in progress. On 'complete' it also lifts a pending final action the user asked for: set it only when the user explicitly confirmed that held step, never to get rid of the refusal.",
     }),
   ),
   remote: Type.Optional(
@@ -136,6 +138,7 @@ const TICKET_ERROR_MESSAGE: Record<string, string> = {
   no_active_ticket: "no hay ticket activo",
   ticket_in_progress: "otro ticket en curso",
   verify_gate_denied: "verificación denegada",
+  pending_final_action: "queda una acción pendiente para el usuario",
   sync_error: "error de sincronización",
   comment_failed: "no se pudo comentar",
   refresh_failed: "no se pudo actualizar",
@@ -243,9 +246,10 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
     name: "aies_ticket",
     label: "AIES Ticket",
     description:
-      "Manage the active Linear work unit ticket for this session. The Parent session is the sole owner of Linear workflow. AIES does not speak MCP itself: you perform every Linear read and write with the `mcp` proxy tool. An action that needs the remote answers `remote_required` with the exact `mcp` call to run; run it and AIES captures the result automatically and resumes the action, so you do not have to copy the value back. Only if an action is not resumed on its own should you repeat it with `remote` set to the value `mcp` returned (fallback). Use 'load' to activate an exact ticket, 'start' when beginning implementation, 'complete' to mark Done (strictly enforces valid fresh Verify PASS for behavior changes), 'block' to record a blocker with evidence, and 'show' to inspect the active ticket contract.",
+      "Manage the active Linear work unit ticket for this session. The Parent session is the sole owner of Linear workflow. AIES does not speak MCP itself: you perform every Linear read and write with the `mcp` proxy tool. An action that needs the remote answers `remote_required` with the exact `mcp` call to run; run it and AIES captures the result automatically and resumes the action, so you do not have to copy the value back. Only if an action is not resumed on its own should you repeat it with `remote` set to the value `mcp` returned (fallback). Use 'load' to activate an exact ticket, 'start' when beginning implementation, 'complete' to mark Done (strictly enforces valid fresh Verify PASS for behavior changes, and never closes over an explicit pending action the user asked to keep), 'block' to record a blocker with evidence, and 'show' to inspect the active ticket contract.",
     promptGuidelines: [
       "Linear is reached only through the `mcp` proxy tool: when `aies_ticket` answers `remote_required`, run exactly the `mcp` call it names; AIES captures that result automatically and resumes the pending action, so do not re-pass it. Only as a fallback, if the action is not resumed, repeat the same `aies_ticket` action with `remote` set to the value `mcp` returned. Never invent a value.",
+      "A Verify PASS is never by itself permission to mark Done (EZE-503): when the user kept a final step (for example \"no commit todavía\", \"quiero revisarlo antes\", \"déjalo pendiente de review\"), leave the ticket open, report the pending step and stop. `complete` refuses with `pending_final_action` and so does a direct `mcp save_issue` into a Done state; use force: true on 'complete' only after the user confirmed that step.",
     ],
     renderShell: "self",
     renderCall(args, theme, context) {
@@ -310,6 +314,7 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
             result = await manager.completeTicket({
               evidence: params.evidence,
               comment: params.comment,
+              force: params.force === true,
             });
             break;
           }
@@ -358,12 +363,15 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
             }
             const contract = formatCompactContract(active);
             const state = manager.getWorkState();
+            const pending = manager.getPendingFinalAction();
+            const held = pending ? `\n\nPending final action: ${describePendingFinalAction(pending)}. Done stays held until the user confirms that step.` : "";
             return {
-              content: [{ type: "text" as const, text: `Active Ticket [workState: ${state}]:\n\n${contract}` }],
+              content: [{ type: "text" as const, text: `Active Ticket [workState: ${state}]:\n\n${contract}${held}` }],
               details: {
                 active: true,
                 ticket: active,
                 workState: state,
+                ...(pending ? { pendingFinalAction: pending } : {}),
               },
               isError: false,
             };

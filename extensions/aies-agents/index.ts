@@ -28,6 +28,7 @@ import {
   type ContextGovernor,
 } from "./context-governor.ts";
 import { TicketManager } from "./linear/manager.ts";
+import { linearCompletionBypassReason } from "./linear/pending-action.ts";
 import { checkTicketRepo, repoGuardBlockReason } from "./repo-guard.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
@@ -190,6 +191,16 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     }),
   );
 
+  pi.on("input", async (event) => {
+    // EZE-503: this is the only place real user input arrives, and the held final
+    // step is read from the user's own words ("no commit todavía", "quiero
+    // revisarlo antes"). AIES' own hidden instructions are `source: "extension"`
+    // and never speak for the user, so a continuation turn cannot set or lift a hold.
+    if (event?.source === "extension") return;
+    const text = typeof event?.text === "string" ? event.text : "";
+    if (text) ticketManager.recordUserInput(text);
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     const input = event.input as Record<string, unknown> | undefined;
 
@@ -206,6 +217,15 @@ export default function aiesAgents(pi: ExtensionAPI): void {
         const reason = repoGuardBlockReason(event.toolName, input, decision, decision.actualRoot);
         if (reason) return { block: true, reason };
       }
+    }
+
+    // EZE-503: a held final step also blocks the bypass used in the EZE-492
+    // session, a direct `mcp save_issue` into a Done state. The verification record
+    // and the open ticket are left exactly as they were.
+    const pendingFinalAction = ticketManager.getPendingFinalAction();
+    if (pendingFinalAction && activeTicket) {
+      const held = linearCompletionBypassReason(event.toolName, input, activeTicket, pendingFinalAction);
+      if (held) return { block: true, reason: held };
     }
 
     // Check hard guardrails before tool execution (routing limits + context governor ceiling)

@@ -2,6 +2,8 @@
  * AIES-008: Linear Ticket Workflow Types.
  */
 
+import type { PendingFinalAction } from "./pending-action.ts";
+
 export type TicketWorkState =
   | "loaded"
   | "working"
@@ -115,5 +117,10 @@ export interface TicketSnapshot {
   workState: TicketWorkState;
   lastKnownLinearStatus: string;
   changedPaths: string[];
+  /**
+   * EZE-503: the explicit user request that holds the last step, kept across a
+   * resume so a session reload cannot quietly re-open the Done path the user paused.
+   */
+  pendingFinalAction?: PendingFinalAction | null;
   persistedAt: number;
 }

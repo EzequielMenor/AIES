@@ -589,7 +589,13 @@ Marking a ticket as Done in Linear is governed strictly by the verification auth
 ```
 Request Linear complete
           │
-  requiresVerification?
+  explicit pending final action requested by the user ("no commit todavía")?
+          │            │
+         yes ──► DENY (verify evidence kept, nothing sent to Linear)   no
+          │                                                             │
+          └─────────────────────────────────────────────────────────────┘
+          ↓
+ requiresVerification?
           │
          yes ──► valid fresh Verify PASS?
           │               │           │
@@ -601,6 +607,7 @@ Request Linear complete
 ```
 
 - **Behavior-Bearing Changes**: Changes touching code or configuration strictly require a valid, fresh Verify PASS (`verifiedRevision === revision && verification.status === "pass"`). Any other status (`none`, `fail`, `blocked`, `running`, or stale PASS) programmatically denies completion.
+- **Pending Final Action (EZE-503, D32)**: A PASS is never an authorisation to close. While an explicit user request to keep the last step stands (recorded from real user input in `linear/pending-action.ts`), completion is denied with its own code `pending_final_action` — before the verification rule, so a docs-only change is held too — the verification record is left untouched, and no Linear call is emitted. A direct `mcp save_issue` into a completed state for the active ticket is blocked by the same rule, and bounded autonomy pauses with `user_required` instead of continuing toward Done. `force: true` on `complete` stands for the user's confirmation.
 - **Documentation Changes**: Changes touching only documentation (`.md`, `.txt`, docs directories) complete without requiring a Verify child session.
 - **Remote Refresh & Conflict Detection**: `completeTicket()` always queries the remote issue immediately before updating status. If the remote ticket was marked `completed` or `canceled` externally, completion is blocked to avoid overwriting remote work.
 - **Preserved PASS on Network Error**: If Linear is unreachable during completion, the operation reports a sync error, but the local verified PASS remains intact; the Worker is never asked to re-run.

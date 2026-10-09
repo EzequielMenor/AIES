@@ -7,6 +7,7 @@ import { isVerificationValid, planVerification } from "../verification.ts";
 import type { RoutingState } from "../routing.ts";
 import type { ContextGovernor } from "../context-governor.ts";
 import type { TicketManager } from "../linear/manager.ts";
+import { describePendingFinalAction } from "../linear/pending-action.ts";
 import type {
   AutonomyState,
   AutonomyStopReason,
@@ -208,6 +209,17 @@ export function evaluateContinuation(options: EvaluateContinuationOptions): Cont
   // 18. Normal progression cases:
   // - Verified PASS, ready for Linear completion
   if (vPlan.action === "done") {
+    // EZE-503: a PASS proves the work unit, it does not authorise the last step.
+    // While the user kept one (review, commit), autonomy pauses for the human
+    // instead of pushing the ticket to Done.
+    const pendingFinalAction = ticketManager.getPendingFinalAction();
+    if (pendingFinalAction) {
+      return {
+        decision: "user_required",
+        reason: `Artifact verified PASS, but it is held for the user: ${describePendingFinalAction(pendingFinalAction)}`,
+        stopReason: "user_required",
+      };
+    }
     return {
       decision: "continue",
       reason: "Artifact verified PASS; ready for Linear completion",
