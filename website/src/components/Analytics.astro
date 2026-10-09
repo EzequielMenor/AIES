@@ -1,0 +1,19 @@
+---
+// Analytics component - Google Analytics 4
+// Configure PUBLIC_GA_MEASUREMENT_ID in .env to enable
+const measurementId = import.meta.env.PUBLIC_GA_MEASUREMENT_ID;
+---
+
+{measurementId && (
+  <>
+    <script async src={`https://www.googletagmanager.com/gtag/js?id=${measurementId}`}></script>
+    <script define:vars={{ measurementId }}>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag('js', new Date());
+      gtag('config', measurementId);
+    </script>
+  </>
+)}

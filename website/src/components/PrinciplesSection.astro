@@ -1,0 +1,107 @@
+---
+// PrinciplesSection.astro — 05. Filosofía & Principios
+---
+
+<section id="principios" class="py-16 border-t border-[var(--color-border)] space-y-8 scroll-mt-16" data-animate="true">
+  <!-- Section Header -->
+  <div class="flex items-baseline justify-between border-b border-[var(--color-border)] pb-3 text-[var(--color-text)]">
+    <div class="space-y-1">
+      <span class="text-xs font-mono text-[var(--color-text-muted)] block">05 &mdash; Filosofía</span>
+      <h2 class="font-serif text-3xl sm:text-4xl font-normal tracking-tight">Principios Fundamentales</h2>
+    </div>
+    <span class="text-xs font-mono text-[var(--color-text-muted)] hidden sm:inline-block">01-Concept / Principles.md</span>
+  </div>
+
+  <p class="text-sm sm:text-base text-[var(--color-text-muted)] font-light leading-relaxed max-w-2xl">
+    AIES no es un experimento improvisado. La especificación formal está regida por <strong class="text-[var(--color-text)] font-normal">20 principios arquitectónicos (P-01..P-20)</strong> y <strong class="text-[var(--color-text)] font-normal">10 ADRs (Architecture Decision Records)</strong>.
+  </p>
+
+  <!-- Principles List Grid -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <!-- P-01 -->
+    <div class="p-5 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-2">
+      <div class="flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>Principio P-01</span>
+        <span class="text-cyan-400">Especialización</span>
+      </div>
+      <h4 class="font-serif text-lg text-[var(--color-text)] font-normal">Unicidad de Rol</h4>
+      <p class="text-xs text-[var(--color-text-muted)] font-light leading-relaxed">
+        Un agente desempeña exactamente un rol durante una unidad de trabajo. No existen agentes "híbridos" que exploren, editen y verifiquen en el mismo contexto.
+      </p>
+    </div>
+
+    <!-- P-04 -->
+    <div class="p-5 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-2">
+      <div class="flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>Principio P-04</span>
+        <span class="text-emerald-400">Eficiencia</span>
+      </div>
+      <h4 class="font-serif text-lg text-[var(--color-text)] font-normal">Aislamiento Estricto de Contexto</h4>
+      <p class="text-xs text-[var(--color-text-muted)] font-light leading-relaxed">
+        Ningún subagente hereda el historial completo de la conversación previa. Solo recibe el extracto factual necesario para ejecutar su tarea atómica.
+      </p>
+    </div>
+
+    <!-- P-07 -->
+    <div class="p-5 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-2">
+      <div class="flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>Principio P-07</span>
+        <span class="text-amber-400">Rigor</span>
+      </div>
+      <h4 class="font-serif text-lg text-[var(--color-text)] font-normal">Verificación Desacoplada</h4>
+      <p class="text-xs text-[var(--color-text-muted)] font-light leading-relaxed">
+        La verificación no es una sugerencia del programador ni una auto-afirmación del generador de código. Es una capacidad ejecutada por un worker independiente con veredicto PASS/FAIL.
+      </p>
+    </div>
+
+    <!-- P-09 -->
+    <div class="p-5 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-2">
+      <div class="flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>Principio P-09</span>
+        <span class="text-cyan-400">Pureza</span>
+      </div>
+      <h4 class="font-serif text-lg text-[var(--color-text)] font-normal">Orquestador sin Herramientas</h4>
+      <p class="text-xs text-[var(--color-text-muted)] font-light leading-relaxed">
+        El orquestador no dispone de herramientas de ejecución de archivos ni bash. Su única responsabilidad es evaluar el estado y tomar decisiones de delegación.
+      </p>
+    </div>
+
+    <!-- P-11 -->
+    <div class="p-5 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-2">
+      <div class="flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>Principio P-11</span>
+        <span class="text-emerald-400">Proporcionalidad</span>
+      </div>
+      <h4 class="font-serif text-lg text-[var(--color-text)] font-normal">Descomposición Adaptativa</h4>
+      <p class="text-xs text-[var(--color-text-muted)] font-light leading-relaxed">
+        La sobrecarga de gestión debe ser proporcional al tamaño de la tarea. Tareas simples se resuelven en 1 turno; tareas complejas se dividen en unidades granulares.
+      </p>
+    </div>
+
+    <!-- P-19 -->
+    <div class="p-5 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] space-y-2">
+      <div class="flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+        <span>Principio P-19</span>
+        <span class="text-amber-400">Ciencia</span>
+      </div>
+      <h4 class="font-serif text-lg text-[var(--color-text)] font-normal">Evidencia frente a Intuición</h4>
+      <p class="text-xs text-[var(--color-text-muted)] font-light leading-relaxed">
+        Ningún cambio de diseño arquitectónico se acepta sin hipótesis formales, métricas cuantificables de consumo de tokens y pruebas empíricas reproducibles.
+      </p>
+    </div>
+  </div>
+
+  <!-- Read Full Spec CTA -->
+  <div class="pt-4 flex items-center justify-between text-xs font-mono text-[var(--color-text-muted)]">
+    <span>¿Quieres leer los 20 principios completos y los 10 ADRs?</span>
+    <a
+      href="https://github.com/EzequielMenor/AIES/blob/main/01-Concept/Principles.md"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="text-[var(--color-text)] hover:underline underline-offset-4 decoration-[var(--color-border-hover)] inline-flex items-center gap-1 font-medium"
+    >
+      <span>Leer Especificación en GitHub</span>
+      <span>&nearr;</span>
+    </a>
+  </div>
+</section>

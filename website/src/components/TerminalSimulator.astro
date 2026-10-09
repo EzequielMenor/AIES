@@ -1,0 +1,70 @@
+---
+// TerminalSimulator.astro — Clean, minimal terminal component
+---
+
+<div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl overflow-hidden text-xs font-mono">
+  <!-- Minimalist Terminal Header -->
+  <div class="px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <div class="w-3 h-3 rounded-full bg-[var(--color-border)]"></div>
+      <div class="w-3 h-3 rounded-full bg-[var(--color-border)]"></div>
+      <div class="w-3 h-3 rounded-full bg-[var(--color-border)]"></div>
+      <span class="ml-2 text-xs text-[var(--color-text-muted)] font-medium">aies "añadir timeout exponencial a cliente http"</span>
+    </div>
+
+    <div class="flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
+      <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+      <span>Sesión limpia</span>
+    </div>
+  </div>
+
+  <!-- Terminal Body Content -->
+  <div class="p-6 space-y-4 bg-[var(--color-surface)] leading-relaxed text-[var(--color-text)]">
+    <!-- Turn 1 -->
+    <div class="space-y-1">
+      <div class="flex items-center gap-2 text-[var(--color-text)]">
+        <span class="text-[var(--color-accent)] font-semibold">❯ Turno 1 [Orquestador]</span>
+        <span class="text-[var(--color-text-muted)]">&rarr; Delega a</span>
+        <span class="bg-[var(--color-surface-2)] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text)] font-semibold">explorer</span>
+      </div>
+      <p class="text-[11px] text-[var(--color-text-muted)] pl-4 border-l border-[var(--color-border)]">
+        Lee <code class="text-[var(--color-text)]">src/http/client.ts</code>. Resume la estructura en 1.8k tokens. Subagente destruido.
+      </p>
+    </div>
+
+    <!-- Turn 2 -->
+    <div class="space-y-1">
+      <div class="flex items-center gap-2 text-[var(--color-text)]">
+        <span class="text-[var(--color-accent)] font-semibold">❯ Turno 2 [Orquestador]</span>
+        <span class="text-[var(--color-text-muted)]">&rarr; Delega a</span>
+        <span class="bg-[var(--color-surface-2)] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text)] font-semibold">implementer</span>
+      </div>
+      <p class="text-[11px] text-[var(--color-text-muted)] pl-4 border-l border-[var(--color-border)]">
+        Aplica parche atómico en <code class="text-[var(--color-text)]">src/http/client.ts</code> (+14 / -2 líneas). Subagente destruido.
+      </p>
+    </div>
+
+    <!-- Turn 3 -->
+    <div class="space-y-1">
+      <div class="flex items-center gap-2 text-[var(--color-text)]">
+        <span class="text-[var(--color-accent)] font-semibold">❯ Turno 3 [Orquestador]</span>
+        <span class="text-[var(--color-text-muted)]">&rarr; Delega a</span>
+        <span class="bg-[var(--color-surface-2)] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text)] font-semibold">verifier</span>
+      </div>
+      <div class="pl-4 border-l border-[var(--color-border)] space-y-0.5 text-[11px]">
+        <p class="text-[var(--color-text-muted)]">Ejecuta: <code class="text-[var(--color-text)]">pnpm test tests/http-client.test.ts</code></p>
+        <p class="text-emerald-400 font-semibold flex items-center gap-1.5 pt-0.5">
+          <span>[PASS]</span> 4 tests superados &bull; Tarea validada
+        </p>
+      </div>
+    </div>
+
+    <!-- Terminal Footer Summary -->
+    <div class="pt-4 border-t border-[var(--color-border)] flex items-center justify-between text-[11px] text-[var(--color-text-muted)]">
+      <span>Consumo total: <strong class="text-[var(--color-text)]">14.2k tokens</strong> <span class="text-emerald-400">(-88% vs chat monolítico)</span></span>
+      <span class="text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+        Completado
+      </span>
+    </div>
+  </div>
+</div>
