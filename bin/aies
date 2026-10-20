@@ -111,10 +111,36 @@ unset PI_CODING_AGENT_SESSION_DIR
 # project's .mcp.json. AIES declares exactly one MCP server, in its own profile.
 export PI_MCP_CONFIG_MODE=exclusive
 
+# Read-only diagnostics for --aies-info. The project root is the git toplevel of the
+# directory aies was launched from (none outside a repository). The tracker is the
+# `tracker` key of aies.json: absent means linear, the code default (D33, D40).
+tracker_of_profile() {
+  if ! command -v node >/dev/null 2>&1; then
+    printf 'unknown'
+    return 0
+  fi
+  node -e '
+    const fs = require("node:fs");
+    let value = "linear";
+    try {
+      const config = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const tracker = config && typeof config === "object" ? config.tracker : undefined;
+      if (typeof tracker === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(tracker)) value = tracker;
+      else if (tracker !== undefined && tracker !== null) value = "invalid";
+    } catch (error) {
+      if (error.code !== "ENOENT") value = "invalid";
+    }
+    process.stdout.write(value);
+  ' "$AIES_AGENT_DIR/aies.json"
+}
+
 if [ "$print_info" -eq 1 ]; then
   printf 'AIES_REPO=%s\n' "$AIES_REPO"
   printf 'AIES_HOME=%s\n' "$AIES_HOME"
   printf 'PI_CODING_AGENT_DIR=%s\n' "$AIES_AGENT_DIR"
+  project_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  printf 'AIES_PROJECT_ROOT=%s\n' "${project_root:-none}"
+  printf 'tracker=%s\n' "$(tracker_of_profile)"
   printf 'pi_bin=%s\n' "$(command -v pi)"
   printf 'pi_version=%s\n' "$(pi --version)"
   exit 0

@@ -33,6 +33,7 @@ import { holdBypassReason, isDirectLinearCompletion, planeWriteBypassReason } fr
 import { trackerLabelForServer } from "./linear/labels.ts";
 import { selectTracker } from "./linear/tracker.ts";
 import { checkTicketRepo, repoGuardBlockReason } from "./repo-guard.ts";
+import { describeWorkspaceNotice } from "./workspace-notice.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
 import type { TicketOperationResult, TicketSnapshot } from "./linear/types.ts";
@@ -440,6 +441,14 @@ export default function aiesAgents(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (event, ctx) => {
+    // D40: one line about the tracker and the repository binding. Headless sessions stay
+    // silent, and a failure here never blocks startup.
+    if (event.reason === "startup" && ctx.hasUI) {
+      try {
+        const notice = describeWorkspaceNotice(typeof ctx.cwd === "string" ? ctx.cwd : process.cwd());
+        ctx.ui.notify(notice.message, notice.level);
+      } catch {}
+    }
     if (event.reason === "new") {
       resetSessionState();
     } else if (event.reason === "resume" || event.reason === "reload") {

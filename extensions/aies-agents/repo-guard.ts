@@ -44,7 +44,7 @@ function safeRealpath(path: string): string | undefined {
 }
 
 /** `git rev-parse --show-toplevel` without a shell, realpaths when it can. */
-function gitToplevel(cwd: string): string | undefined {
+export function gitToplevel(cwd: string): string | undefined {
   try {
     const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
       cwd,
@@ -134,7 +134,7 @@ export function readRepoGuardConfig(env?: NodeJS.ProcessEnv): RepoGuardConfig {
  * Case-insensitive on macOS, where the filesystem is case-insensitive and git
  * paths differ in case between processes.
  */
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
   return process.platform === "darwin" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
