@@ -1224,6 +1224,733 @@ is what this replaces, was unrecoverable from inside the session.
 
 ---
 
+## D33 - Progressive migration from Linear to Plane: one active tracker per profile, explicit selection, no dual writes
+
+**Decision.** Plane Cloud (workspace `ezequieldev`; projects `AIES`, `COREOS`
+and `EZEQU` "Agent Workbench") replaces Linear as the ticket tracker. The
+migration is incremental. Linear stays as a temporary compatibility path and as
+the default tracker during the transition. Two trackers are not kept as
+permanent managers, and bidirectional sync and dual writes are prohibited.
+
+1. The tracker is an explicit `tracker` key (`linear` | `plane`, default
+   `linear`) in `$PI_CODING_AGENT_DIR/aies.json`. A profile has exactly one
+   active tracker.
+2. The ticket snapshot records the tracker it came from. A tracker change while
+   a ticket is active fails closed.
+3. The tracker is never inferred from an identifier. Plane identifiers
+   (`AIES-38`) have the same format as Linear identifiers (`EZE-496`).
+4. Plane is reached through its official hosted MCP server. OAuth at
+   `https://mcp.plane.so/http/mcp` is the interactive path. Headless sessions
+   use the personal access token endpoint `https://mcp.plane.so/http/api-key/mcp`
+   with `Authorization: Bearer` and the header `x-workspace-slug: ezequieldev`.
+5. The token reaches the adapter only through `bearerTokenEnv` with the variable
+   name `PLANE_API_KEY`. AIES never reads, stores, logs or exposes its value to
+   the model, and it is not written to the repository or to any log.
+   `docs.plane.com` documents a different product and is not the reference for
+   this integration.
+6. The existing architecture is reused: the Parent is the only owner of the
+   tracker, children have no MCP and no extensions, transport is mediated by the
+   Parent (`remote_required`, D17), and the Done Gate, the EZE-503 hold, the
+   repo-guard and the 2,500-character compact contract stay (D14 principles,
+   D17 principles, D22 fail-closed, D30, D32).
+7. For Plane, the human ticket identity is `PROJECT-N`, built from
+   `project.identifier` and `sequence_id`. Project and work item UUIDs are
+   internal fields needed for writes and are never an identity (amends D22).
+8. For Plane, while any hold exists, every `workitem update` that carries
+   `state` is blocked. `state` is a UUID on writes, so it cannot be matched by
+   name (amends D32).
+9. The repo-guard compares the ticket's `project.name` and `project.identifier`
+   with the `repos` table (amends D30).
+
+**Verified shape.** Checked by reading only; nothing was written to Plane.
+`workitem retrieve_by_identifier` with `expand=state,project` returns `id`,
+`sequence_id`, `project{id,identifier,name}` and `state{id,name,group}`. On
+writes, `state` is a UUID: `workitem update` takes `project_id`, `workitem_id`
+and `state`. State groups are `backlog`, `unstarted`, `started`, `completed` and
+`cancelled`. Comments use `workitem_comment create` with `comment_html`.
+
+**Why.** Two trackers kept as permanent managers would give the workflow two
+authorities and two places where ticket state can diverge. Migrating
+incrementally keeps the working Linear path valid while Plane is built and
+validated. Identifiers do not say which tracker they belong to, so the tracker
+must be declared explicitly. Failing closed on a tracker change protects a
+snapshot from being completed in the wrong system.
+
+**Phases.** Each phase is a separate work unit. Phase 2 is the first.
+
+- Phase 2: refactor `TrackerTransport` with no behaviour change (Linear exactly
+  as today).
+- Phase 3: `PlaneTransport`, an offline fake, and a `plane` server in the
+  profile.
+- Phase 4: the EZE-503 hold, repo-guard, autonomy, UI and skill made
+  tracker-aware.
+- Phase 5: end-to-end validation against real Plane in an isolated profile
+  (`AIES_HOME=/tmp/...`). Initial tests do not touch real Plane tickets.
+- Phase 6: retirement of Linear, only after Plane is fully validated. Its
+  acceptance criteria will be set after Phase 5.
+
+**Consequence.** Linear keeps working unchanged through Phase 2, and during the
+transition it remains the default tracker. Initial Plane tests run against the
+fake and against an isolated profile, never against real tickets.
+
+**Open.**
+- The acceptance criteria for Phase 6 are not defined yet.
+- How workflow steps map to Plane states is not decided here. The state groups
+  above are the only fixed vocabulary.
+- How an active ticket is carried across a tracker change is not defined. The
+  current rule only says that the change fails closed.
+
+**Status.** Accepted. Implementation proceeds by phases, starting with Phase 2.
+
+---
+
+## D34 - Engram integration: the existing store, a profile-owned stdio server for the Parent, and per-project memory
+
+**Decision.**
+1. Engram already runs on this machine: `/opt/homebrew/bin/engram` (v3.4.0),
+   with data in `~/.engram/engram.db` (SQLite, WAL) and an `.instance-id`. AIES
+   does not create another instance and does not define `ENGRAM_DATA_DIR`.
+2. Under `PI_MCP_CONFIG_MODE=exclusive` (D17 item 3), AIES does not inherit
+   Pi's ambient MCP configuration. The integration is therefore a stdio MCP
+   server owned by the profile (option A, approved): `command: engram`,
+   `args: [mcp, --tools=agent, ...]` and `lifecycle: lazy`, declared in
+   `profile/mcp-adapter.json` and in the `mcp.json` template. Each session runs
+   one process over the same store.
+3. Only the Parent (orchestrator) accesses Engram. Children keep no MCP and no
+   extensions (D17 item 9), so there is a single write authority.
+4. The project is fixed per process with `--project NAME` or `ENGRAM_PROJECT`,
+   and calls must OMIT `project`. An explicit project that Engram does not know
+   fails with `unknown_project`. `mem_search` returns at most 20 results.
+   `mem_current_project` reports the resolved project.
+5. Memory has two separate scopes:
+   - (a) AIES's own memories (harness decisions, dogfooding, conventions,
+     lessons about AIES itself) live in the Engram project `aies`.
+   - (b) Memories of projects developed through AIES each live in their own
+     Engram project, derived from the repository with the same identity rule as
+     D30: the normalised name of the git toplevel.
+6. The scopes do not mix by default. Searches and context are bounded to the
+   active project. `all_projects` or any cross-project search runs only on an
+   explicit user request. AIES knowledge is not injected into project memories,
+   and project knowledge is not injected into AIES, unless the user asks.
+7. Memory is recovery context, never authority. The ticket lives in the tracker
+   (D33), the code in Git, and the decisions in `docs/DECISIONS.md`. Each entry
+   carries provenance (repo, ticket, role) and its scope, and is deduplicated by
+   a stable `topic_key`.
+8. No memory artifacts are written into product repositories. No secrets or
+   tokens are stored in memories, and memories are never exposed to children.
+
+**Evidence.** A concurrency spike ran with isolated data; the real database was
+left untouched. Four `engram mcp` processes, each doing 25 simultaneous
+`mem_save` calls against the same SQLite store, completed 100/100 without
+errors.
+
+**Rejected alternatives.** Loading `gentle-engram` into the profile was rejected:
+it adds a package and can start another `serve`. rmcp-mux was rejected: it adds
+moving parts with no demonstrated need.
+
+**Why.** A second Engram instance would split the same user's memory across two
+stores. Exclusive MCP configuration hides the ambient Engram setup from AIES, so
+the profile has to declare its own server. Parent-only access keeps one write
+authority and keeps memory out of child contexts, in line with D17 item 9.
+
+**Consequence.** The integration is designed here but not implemented. Nothing
+in the profile changes until the open point below is resolved. Any option that
+writes into a product repository must also satisfy item 8.
+
+**Open (to be validated in implementation).** The exact mechanism that binds the
+Engram project to the active repository, when the adapter launches the server
+with static configuration, is not decided. The candidates are cwd
+auto-detection, `--project` or `ENGRAM_PROJECT`, and a per-repo
+`.engram/config.json`. A spike resolves it before implementation.
+
+**Status.** Accepted, pending implementation.
+
+---
+
+## D35 - Subagent reliability: sequential delegation, bounded children, sandbox-gated Verify
+
+**Decision.** Refines D12 (sandbox) and D19/D31 (Verify and stale runtime). Does
+not change D32.
+
+1. Sequential delegation. `aies_delegate` declares `executionMode: "sequential"`.
+   Pi runs sibling tool calls in parallel by default (`docs/extensions.md` in
+   Pi), and the delegations share mutable state. The verification registry is
+   read before the `await` and written after it without versioning, so updates
+   can be lost. The routing resets its counters when the first child finishes.
+   The SandboxManager is global per role and cwd, so a Verify could run under a
+   Worker's policy. This last point is deduced by reading the code, not
+   reproduced.
+2. Bounded children. Child sessions (`executeChildSession`, `session.ts`) are
+   cancelled when the parent's signal aborts, by calling the public
+   `AgentSession.abort()` API. That call is deliberately not awaited, so a hung
+   child cannot block the parent. Children have a total timeout and a turn
+   limit: each `turn_start` event counts, N turns are allowed and the N+1th
+   aborts. Precedence: `AIES_CHILD_TIMEOUT_MS` / `AIES_CHILD_MAX_TURNS` >
+   `agents.<role>.timeoutMs` / `maxTurns` in `aies.json` > defaults. Invalid
+   values are ignored. Defaults are 100 minutes (the longest observed in
+   dogfooding was a Verify of about 33 minutes; 3 x 33, rounded) and 100 turns
+   (dogfooding does not record turns per child, so this is a generous ceiling
+   and NOT calibrated). Failures reach the parent as a structured failed handoff
+   with the cause (`cancelled` | `timeout` | `max_turns`): `failed` for Explore
+   and Worker, `session_failure` for Verify. The listener, the timer and the
+   subscription are always removed, and `dispose()` always runs. All three roles
+   pass their `role`.
+3. Verify requires the OS sandbox. Before creating the Verify child,
+   `aies_delegate` checks that the sandbox is active (`isSandboxSupported`, with
+   the `isSandboxActive` seam for tests). If it is not, it returns BLOCKED for
+   infrastructure (`verify_sandbox_unavailable`) without creating a session or
+   calling the model. It does not consume a verification attempt and does not
+   mark the revision as verified. Worker does not change: it keeps degrading
+   with a warning (D12). The per-command defence in `executeSandboxedCommand` is
+   kept.
+4. Recovery from a sandbox BLOCKED. `VerificationState` records the cause
+   (`blockedCause: 'sandbox_unavailable'`) through `applySandboxBlock`, which
+   also clears `verifiedRevision`. The guard
+   `verification_blocked_conditions_unchanged` lets a new request through only
+   when the cause is `sandbox_unavailable` and the sandbox is active again. Any
+   other BLOCKED (a child verdict, or a state with no cause) keeps the rule of
+   unchanged conditions. Invariants:
+   - Recovering the right to retry NEVER reactivates a previous PASS. Validity
+     depends only on `status === 'pass' && verifiedRevision === revision`, and
+     the release does not write state.
+   - The Done Gate (D14/D32) does not change. It still requires a new, valid
+     Verify PASS.
+   - The release does not consume attempts. The new Verify spends its own.
+   - `VerificationState` is not serialized (on resume it restarts), so there is
+     no migration.
+
+**Rejected alternatives.** A custom lock or queue for delegation, because one
+declarative Pi line solves the problem without new code. For item 4:
+automatically restoring the previous PASS, and deriving the cause from the
+message text.
+
+**Why.** Parallel sibling delegations corrupt shared verification state, and a
+hung child can block the parent indefinitely. A Verify without an OS sandbox
+would run the verifier without the isolation that D12 requires. Recording the
+cause lets only the infrastructure failure be retried, without weakening the
+rule that a verdict stays bound to its revision.
+
+**Consequence.** Known limits, open and not resolved here:
+- A cancelled Worker can leave partial edits behind with a handoff that declares
+  `changes: []`. The parent must check `git status`.
+- The timeout and turn defaults must be calibrated with real data.
+- `permissions.sandbox` in `profile/aies.json` is not read by any code. The only
+  real switch is `AIES_SANDBOX`. This is a pending decision.
+- On hosts without sandbox support, tests that run verify with a fake child
+  through real detection would return BLOCKED. They need `isSandboxActive`
+  injected.
+- The cause messages for the limits are in English.
+- A BLOCKED emitted by the Verify child itself, over a revision with a previous
+  PASS, overwrites the state. No path reactivates it.
+
+**Tests.** `tests/delegate-execution-mode.test.mjs`,
+`tests/child-session-limits.test.mjs`, `tests/verify-sandbox-gate.test.mjs`,
+`tests/verify-sandbox-recovery.test.mjs` and
+`tests/verification-blocked-cause.test.mjs`.
+
+**Status.** Accepted; implemented.
+
+---
+
+## D36 - Plane migration phase 4: tracker-neutral surfaces, Plane write guard, incremental MCP seed
+
+**Decision.** Phase 4 of D33, implemented. Five parts, all verified by tests.
+
+1. Plane repo-guard (amends D30). A Plane ticket is compared by
+   `project.identifier` and by `project.name`. The `repos` table in `aies.json`
+   (explicit project-to-repo mappings) accepts as key either the name or the
+   identifier, both normalised with the same function as D30 item 2, and it takes
+   priority over the name match. A ticket with no project is `unknown` and never
+   blocks. `AIES_ALLOW_REPO_MISMATCH` is kept. The Linear block reason does not
+   change byte for byte.
+2. Tracker-neutral surfaces, only when the active tracker is `plane`. Linear
+   output stays byte for byte the same. Labels come from the tracker descriptor:
+   remote directives, manager messages, tool and command descriptions, and the UI
+   (summary line, the `Sincronizar <tracker>` label, the DONE card and notices).
+   Autonomy stop codes are the generic `tracker_conflict` and `tracker_sync_failed`
+   for Plane; Linear keeps emitting `linear_conflict` and `linear_sync_failed`.
+   The skill `skills/linear-ticket` becomes `skills/ticket-workflow` with the same
+   rules (one active ticket, exact load, transitions, Done Gate, compact feedback).
+   `aies_ticket`, `/aies-ticket` and `/aies-run` do not change. Two texts still say
+   "Linear" on purpose: `AIES_CONTINUATION_PROMPT` (`autonomy/policy.ts`) and the
+   description of the `remote` parameter of `aies_ticket`.
+3. Plane write guard (amends D33 item 8 and D32). Correction: D33 item 8 assumed
+   that a `workitem update` directive carrying `state` is only emitted after the
+   Done Gate passes. That is inaccurate: `start` also emits a `workitem update`
+   with the "In Progress" state. The rule in force does not depend on the profile's
+   tracker. Each call is read once by one resolver, and that single reading feeds
+   both the directive guard and the hold, so the two cannot disagree about which
+   Plane tool a call reaches. The resolver follows pi-mcp-adapter 3.2.0 with the
+   default tool prefix `server` (an assumption, see the residual risks):
+   - The `mcp` proxy with `server` `plane` is Plane. The `mcp` proxy with no
+     `server` is read as Plane when its tool name points at Plane: `plane_<tool>`,
+     `mcp__plane_<tool>`, or the original name of a Plane tool (`workitem`, `state`,
+     `intake` and the others on the analysed list). Tool names are compared without
+     case, with spaces, hyphens and dots read as `_`, and an `mcp_` prefix is
+     ignored. The action is trimmed and lowercased. Arguments may be an object or a
+     JSON string.
+   - An explicit `server` other than `plane` is never read as Plane, with one
+     exception: `action: install` is blocked with any server (see the gateway
+     bullet below).
+   - The direct tools `plane_<tool>` and `mcp__plane_<tool>` follow the same rules.
+     The namespace proxy `mcp__plane`, called with `{tool, args}`, applies them to
+     its `tool` field; a call with no `tool` is blocked.
+   - `workitem update` with `state` (or `status`, at any nesting level) is allowed
+     only if it matches exactly the pending `aies_ticket` remote directive (server,
+     tool, action, `project_id`, `workitem_id`, `state`, with no extra keys) AND
+     the pending action is `start`, or it is `complete` with the Done Gate
+     re-evaluated at call time. A `complete` directive can remain pending after the
+     gate passed and the Parent edits code afterwards, hence the re-evaluation.
+   - With an EZE-503 hold, it is always blocked (D32), whatever the directive.
+   - Any other case is blocked, with or without a hold.
+   - The `state` actions `create`, `update` and `delete`, and the `intake` actions
+     `update` and `delete`, are always blocked. Changing the group of a state to
+     `completed` would complete every ticket in that state at once, and intake
+     decisions accept, reject or duplicate work. The block message points to the
+     Plane UI.
+   - Fail closed: any unknown action of `workitem`, `state` or `intake`, unreadable
+     arguments, JSON arguments with repeated keys after decoding escapes, and Plane
+     tools not on the list are blocked.
+   - Gateway modes that run no tool pass with `server` `plane` or with no `server`:
+     the discovery parameters `search`, `describe`, `instructions`, `connect`,
+     `list` and `status` (when the call has no `tool`; a `tool` wins, as in the
+     adapter), and the actions `ui-messages`, `auth-start` and `auth-complete`. This
+     keeps discovery and OAuth working. The action `install` is blocked with any
+     server (`plane`, no server, or another server such as an alias `plane2`),
+     because it rewrites an MCP server definition and AIES has no use for it in its
+     flow. An unknown action is blocked too. This is stricter than the adapter, which
+     ignores an unknown action, and the adapter would otherwise register and persist
+     the server in the profile config.
+   - `mcp` with no `server` and a tool name that cannot be attributed to any known
+     server is blocked (fail closed). The known names are the Plane tools, anything
+     with the `linear_` prefix, and the four Linear workflow tools `get_issue`,
+     `save_issue`, `list_issue_statuses` and `save_comment`. Consequence: an unlisted
+     Linear tool without the `linear_` prefix, or a custom server's tool, called with
+     no `server` no longer passes. A call with an explicit `server` is unchanged. The
+     recommendation is that the Parent always passes `server`. This is a behaviour
+     change against Linear in that edge case. It is accepted and open to review: the
+     list of known Linear tools can be widened.
+   - `mcpScript` is blocked as a whole, whatever the tracker, including when no
+     tracker is selected, because a script could chain calls past the guard.
+     `scriptMode` is `false` in the default profile, and no existing test requires
+     `mcpScript` to be allowed.
+   - Always allowed, without state restriction: reads, `workitem_comment`,
+     `workitem update` without `state`, `manage_assignee` and `manage_label`, and
+     the tools that do not change a ticket's state (cycle, module, release,
+     initiative, milestone, workitem_property, workitem_relation, workitem_type,
+     template, project, label, member, page).
+   - Linear's guard does not change: it applies only under a hold (D32).
+4. Incremental, safe MCP seed (amends D17 item 2, for the seed only).
+   `scripts/seed-profile-config.mjs` adds to an existing profile the template
+   servers it lacks (`linear` and `plane`) and changes nothing else.
+   - It never overwrites an existing entry, even when that entry differs from the
+     template. It reports the conflict by server name and by the names of the keys
+     that differ, never their values. The report is informational, exits 0, and
+     repeats on every start while the difference persists.
+   - It keeps custom servers, credentials and settings, and it adds no settings
+     keys.
+   - Before any write that changes content, and before writing, it makes
+     `<file>.bak-YYYYMMDDTHHMMSS` (suffix `-2`, `-3` if that exists). The copy is
+     exclusive, never overwrites, and keeps the original permissions.
+   - Writes are atomic: a temporary file in the same directory, the original
+     permissions, then rename. Symlinks are followed, a UTF-8 BOM is tolerated on
+     read, and indentation and key order are kept.
+   - Idempotent: a second run changes nothing and creates no backup.
+   - Empty configuration, invalid JSON, a root that is not an object,
+     `mcpServers` that is null, an array or a string, or a read-only file: the seed
+     exits 1 without modifying anything and without quoting the parser text.
+     `bootstrap-profile.sh` still continues with the existing profile (D17).
+   - The legacy migration (`mcp.json` to `mcp-adapter.json`) keeps its earlier
+     semantics. With no destination, the template wins on matching keys. With a
+     destination, template-only keys are merged into the existing entry, which an
+     existing test pins. It now also backs up `mcp.json` before deleting it.
+5. Tracker kept on refresh. A refresh of a Plane ticket keeps its tracker. Before
+   this, the tracker was lost, and the next operation would have produced
+   `tracker_mismatch`.
+
+**Why.** Phase 4 makes the workflow surfaces tracker-aware without touching the
+Linear path, and it closes the gap that D33 item 8 left open: a `start` directive
+also writes state, so a hold-only guard would have been wrong in both directions.
+The seed must not silently overwrite a profile the user has edited, and a
+migration that deletes a file must leave a way back.
+
+**Rejected alternatives.** Guarding only by hold (D33 item 8 as written) was
+rejected because it left a path that changes state without the Done Gate. Blocking
+only by state name was rejected because the Plane state is a UUID on writes.
+
+**Consequence.** Linear behaves as before, with one edge case: a call with no
+`server` to an unlisted Linear tool (no `linear_` prefix) or to a custom server is
+now refused (part 3). Plane tickets get tracker-specific
+labels, stop codes and repo matching, and the write guard blocks the state
+transitions that could close a ticket outside the Done Gate. Open, not resolved
+here:
+
+- Residual write risks. `workitem create` (even with `state`), `archive` and
+  `delete` are allowed. `create` does not touch the active ticket. `archive` and
+  `delete` are irreversible, and they have not been verified against the Plane
+  API.
+- The Parent's bash can call the Plane API directly if a token is in the
+  environment and the hook does not see it. This is the same as with Linear. Open
+  decision: a bash policy, or not exposing `PLANE_API_KEY` to the Parent.
+- The `remote` fallback of `aies_ticket` accepts Parent replies without checking
+  that the write happened. It does not skip the Done Gate, which is re-evaluated.
+  This is pre-existing with Linear.
+- A call that differs from the directive only in case is allowed, and it is not
+  captured automatically.
+- The direct tools are named `plane_<tool>` (the guard also reads
+  `mcp__plane_<tool>`). They follow the same rules, but the profile does not enable
+  `directTools`. The default tool prefix `server` that the resolver assumes is not
+  verified. With `toolPrefix` `none`, a direct Plane tool that is not on the
+  analysed list would not be recognised; the listed ones still would.
+- A Plane endpoint declared in the profile under another server name escapes the
+  guard, because the guard classifies by server name. This can happen through a
+  manual edit of the profile by the user, or through a seed conflict that is
+  reported and not overwritten (part 4).
+- The MCP-UI apps of the adapter can call tools through their bridge, outside the
+  `tool_call` hook. This route is started by the user. It is not tested.
+- An `action` that is empty or null is blocked, although the adapter would ignore
+  it. A Plane read tool that is not on the analysed list is also blocked. Both are
+  known over-blocking, accepted as fail closed.
+- A template server the user removes on purpose returns on the next start. There
+  is no marker and no exclusion list.
+- Backups accumulate, with no pruning.
+- `bin/aies` discards the bootstrap stdout, so the "added" notices never reach the
+  user. Backups, conflicts and rejections go to stderr and are not discarded.
+- A JSON file with comments or trailing commas is rejected.
+
+**Tests.** `tests/plane-write-guard.test.mjs`,
+`tests/plane-write-names.test.mjs`, `tests/plane-write-hook.test.mjs`,
+`tests/plane-repo-guard.test.mjs`, `tests/plane-tracker-texts.test.mjs` and
+`tests/seed-mcp-merge.test.mjs`.
+
+**Status.** Accepted; implemented (phase 4 of D33). Phase 5 (end-to-end
+validation against real Plane in an isolated profile) pending.
+
+---
+
+## D37 - Plane hardening before real writes: closed write list, endpoint identity by definition, read-back confirmation, persistent MCP exclusions, PAT isolation
+
+**Decision.** Hardening of the Plane integration before any real write. Items 1
+and 4 amend D36; items 5 amends D33; item 6 states the D17 supersession.
+
+1. **Closed write list (amends D36 item 3).** The Plane guard is deny-by-default
+   over the whole Plane server. D36's permissive table, and its residual risk that
+   `workitem create`, `archive` and `delete` are allowed, are superseded. Only
+   these calls pass:
+   - Reads, in any Plane tool and under any name form: `list`, `list_archived`,
+     `list_workitems`, `list_projects`, `list_options`, `list_definitions`,
+     `list_workspace`, `list_project`, `retrieve`, `retrieve_by_identifier`,
+     `retrieve_option`, `search`, `count`, `get_changelog`, `get_features`,
+     `get_value`, `worklog_summary`, and the reference tool `get_pql_reference`.
+   - `workitem` `update` carrying `state`, matched EXACTLY against the pending
+     `aies_ticket` remote directive, and only for `start`, or for `complete` with
+     the Done Gate re-evaluated at call time. With a hold (D32) it is always
+     blocked.
+   - `workitem_comment` `create`.
+
+   Everything else is blocked, with a message that points to the Plane UI:
+   `workitem` `update` without `state`; `workitem` `create`, `delete`, `archive`,
+   `manage_assignee` and `manage_label`; `state` `create`, `update` and `delete`;
+   `workitem_comment` `update` and `delete`; every write of `intake`, `project`,
+   `cycle`, `module`, `release`, `milestone`, `initiative`, `template`,
+   `workitem_relation`, `workitem_property` and `workitem_type`, including
+   `resolve`, which looks a type up and creates it if missing; tools that were not
+   inspected action by action (read-only); unknown actions and unknown tools;
+   `mcp` with no attributable server; `install` with any server; and `mcpScript`.
+
+2. **Endpoint identity by definition, with inverted attribution (closes the D36 risk
+   "endpoint declared under another name").** The configuration the guard reads is
+   the one the adapter reads. In `exclusive` mode, pi-mcp-adapter 3.2.0 reads only
+   `$PI_CODING_AGENT_DIR/mcp-adapter.json`, or the path given with `--mcp-config`,
+   and does NOT read `mcp.json`. The guard also reads `mcp.json` as a conservative
+   superset: this can over-block, never under-block. A server is Plane when its
+   definition points at Plane: a `url` with host `plane.so`, `*.plane.so`,
+   `plane.com` or `*.plane.com`; any `url` that mentions `plane`; or a `command`,
+   `args` or `bearerTokenEnv` that mentions `plane`. A server named `linear` whose
+   definition points at Plane is Plane. Prefixed names `<alias>_<tool>` and aliases
+   follow the same rules.
+
+   Attribution follows one order, and the first rule that applies decides the name:
+   1. A declared Plane server: the namespace proxy `mcp__<ns>`, or a direct tool
+      `<prefix>_<tool>`.
+   2. Positively Linear, never Plane: `mcp__linear`, `linear`, the four workflow
+      tools in bare form (`get_issue`, `save_issue`, `list_issue_statuses`,
+      `save_comment`), and `linear_<one of those four>`. Any other `linear_*` name is
+      read by the Plane rules.
+   3. Pi and AIES: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `tgrep`
+      and `aies_*`. No Plane rules apply.
+   4. Any declared server, Plane or not, by equality or by prefix: the Plane rules.
+   5. A bare Plane tool name: the Plane rules.
+   6. Any other name in MCP form (`mcp…`): the Plane rules, never "no server".
+   7. Under fail closed, any other name that is not Pi or AIES is blocked.
+
+   The `mcp` proxy with an explicit `server` is attributed by that `server` field: a
+   declared server whose definition is Plane follows the Plane rules, and a declared
+   non-Plane server does not. A name that no rule attributes is read as Plane, so a
+   mistake in reading a name can only over-block, never let a Plane call through.
+
+   Fail closed, when the configuration is unreadable, invalid, ambiguous, uses
+   `imports`, `claudePlugins`, `agentPluginPaths`, or a mode other than `exclusive`,
+   and also when any of these holds: a Plane alias whose name does not start with
+   `[A-Za-z0-9]`, starts with `_mcpns_`, is `mcp`, or starts with `mcp-` or `mcp_`,
+   or lies outside `[A-Za-z0-9_-]` or is longer than 59 characters; `directTools`
+   set to anything other than `false` on a Plane server or in the settings; a
+   non-empty `MCP_DIRECT_TOOLS` in the environment; or a `toolPrefix` other than
+   `server`, globally or per server. Under fail closed, every server except `linear`,
+   and every unrecognised MCP tool, is Plane.
+
+   The reading is cached by file stamp (size, mtime and ctime). Only the profile
+   files and `--mcp-config` are parsed; packages and plugins are not parsed, and
+   fail closed. Accepted over-blocking, deliberate: a `url` containing `plane`
+   anywhere (for example `planetscale`) counts as Plane; a JSON file with comments
+   counts as unreadable; `disabled` does not exempt a server; non-Plane declared
+   servers have their writes in Plane-shaped form blocked; and, under fail closed,
+   tools from other extensions are blocked.
+
+3. **Read-back confirmation (Plane only).** A state write (`start` or `complete`)
+   is not confirmed by its own answer. It is confirmed only by a later
+   `retrieve_by_identifier` with `expand=state,project` whose `state.id` equals the
+   written state and whose identifier is the requested one. The read-back is a
+   normal remote directive with the same arguments as the earlier read. It is
+   distinguished only by a stage in the internal capture key (`#confirm-state`),
+   with no invalid argument. If it does not match, fails or returns unusable data,
+   the error is typed (`remote_conflict`, `not_found` or `invalid_remote_payload`)
+   through `PlaneWriteUnconfirmedError`: the local state does not advance, the
+   ticket stays open and no completion comment is emitted. The `TrackerTransport`
+   signatures do not change. Linear is identical.
+
+4. **Persistent MCP server exclusions (amends D36 item 4; closes its open risk "a
+   removed server comes back").** The key `mcpExcluded` in
+   `$PI_CODING_AGENT_DIR/aies.json` is an array of exact, case-sensitive server
+   names. The seed never adds an excluded server: for a new profile, an existing
+   one, a v2 profile and the legacy migration alike. It does not remove or modify a
+   server that is already present, and it does not create or edit `aies.json`. It
+   reports the excluded name on stderr. It stays incremental, idempotent, with
+   backup and atomic writes. Fail safe: an unreadable `aies.json`, or an
+   `mcpExcluded` that is not an array of strings, makes the seed leave every MCP
+   entry alone (no backup), exit with code 1, and the bootstrap continue with the
+   existing profile; packages are still reconciled. Example:
+   `{"tracker": "plane", "mcpExcluded": ["linear"]}`. Order for the user: add the
+   name to the list BEFORE removing the server from the profile, or the seed adds
+   it back on the next start. While a server is excluded and absent, one line is
+   printed on every start, on purpose. An excluded server that ALREADY appears in
+   the user's legacy `mcp.json` is not discarded: the migration keeps it exactly as
+   the user wrote it in `mcp-adapter.json`. The excluded template entry is neither
+   mixed in nor added from the template, and it is not reported as excluded,
+   because the server already exists. This is consistent with "does not remove or
+   modify what is already present".
+
+5. **PAT isolation (amends D33 items 4-5 on when the PAT path is activated).**
+   `PLANE_API_KEY` and any PAT credential are NOT activated yet. The phase 5
+   validation uses OAuth. PAT credentials must not be exposed to the Parent's Bash
+   environment: a token in the environment lets a process call the Plane API
+   directly, outside any guard. Headless PAT integration will be resolved later
+   through a credential mechanism isolated from the Parent. Until then the profile
+   declares no PAT endpoint, no headers and no `bearerTokenEnv`.
+
+6. **Linear compatibility and D17 (acceptance of D36).** The behaviour changes
+   documented in D36 are accepted: an `mcp` call with no attributable server is
+   blocked, `mcpScript` is blocked, and `install` is blocked with any server.
+   Unrecognised tools stay blocked. The legitimate Linear flows keep working: the
+   four tools `get_issue`, `save_issue`, `list_issue_statuses` and `save_comment`,
+   and any call with an explicit server. D17 item 1 ("exactly one MCP server,
+   `linear`") is superseded: the profile declares `linear` and `plane`. That has
+   been true since D33 and D36; it is stated here.
+
+7. **Phase 5 preparation (facts read, no writes).** The Plane project Agent
+   Workbench (`EZEQU`) has no work items. Its states are Backlog (`backlog`), Todo
+   (`unstarted`), In Progress (`started`), Done (`completed`), Cancelled
+   (`cancelled`), Review (`started`) and Blocked (`started`). Three states share
+   the `started` group, so the target of `start` must be resolved by its name
+   (`In Progress`), not by group alone. This is to be checked in validation. The
+   end-to-end validation uses OAuth (`/mcp-auth plane` in an interactive session
+   with an isolated `AIES_HOME`) and a dedicated test ticket, identified and
+   authorised by the user before any real write.
+
+**Why.**
+- The closed list follows from what the automated flow needs: read, move the state
+  through a directive, and comment. Every other mutation can bypass the Done Gate
+  or the hold: changing the group of a state, creating a ticket directly in Done,
+  archiving or deleting the active ticket, or changing a project's workflows. The
+  permissive table of D36 let those through.
+- Classifying by name left a Plane endpoint declared under another name outside
+  the guard. A server's definition is what says what it reaches.
+- A write's own answer is not evidence of the state the remote now holds. Only a
+  read after the write can show it.
+- A server the user removed from the profile came back on every start, because the
+  seed had no record of the removal.
+- A token in the environment is usable by any process, including the Parent's
+  Bash, which sits outside the guard.
+
+**Rejected alternatives.**
+- A deny list of dangerous writes (the D36 table): replaced by deny-by-default
+  over the whole Plane server.
+- Classifying servers by name alone: replaced by classification by definition.
+- Accepting the write's own answer as confirmation: replaced by the read-back.
+- Activating the PAT path now, with `PLANE_API_KEY` in the environment: rejected
+  by item 5.
+
+**Consequence.** Creating, archiving, deleting, assigning and labelling Plane
+tickets is done from the Plane UI until an approved intake feature exists (on the
+roadmap). This over-blocking is accepted. Open, not resolved here:
+- The read-back costs one extra read per `start` and one per `complete`.
+- A retry after a completion that was not confirmed, whose write did arrive,
+  yields `remote_conflict` ("already completed externally") and needs a decision
+  from the user.
+- The `remote` fallback of `aies_ticket` lets the Parent supply answers. The
+  read-back does not prevent that. This is a documented limitation.
+- The Parent's Bash can still reach the Plane API if a token is in its
+  environment. Item 5 keeps the PAT out for now. A credential mechanism isolated
+  from the Parent is future work.
+- The `start` target name (`In Progress` among three `started` states) is to be
+  confirmed in the phase 5 validation.
+- Name forms. Four rounds of independent verification found name forms that a
+  rebuild of the adapter's names did not cover: aliases containing `.`, spaces, a
+  leading `_` or `-`, or more than 59 characters; the prefixes `mcp-` and `mcp_`;
+  `toolPrefix` other than `server`; and `directTools`. The order and the fail-closed
+  cases in item 2 cover them. A name that no rule attributes is read as Plane, so the
+  accepted cost is over-blocking.
+- Known over-blocking. A declared non-Plane server (for example `context7`) whose
+  namespace or direct tools carry no `action` field is blocked, even when the tool
+  is read-only.
+- Hidden alias. A hidden alias named exactly `linear_<workflow tool>` (one of the
+  four workflow tools) passes as Linear under fail closed. This is the only positive
+  exception kept, so that Linear is not blocked.
+- Direct Linear tools. Direct `linear_*` tools outside the four workflow tools are
+  read by the Plane rules. This affects only Linear with `directTools`.
+- Built-in tool list. The Pi built-in tools that rule 3 treats as safe are
+  `PI_AND_AIES_TOOLS` in `extensions/aies-agents/linear/pending-action.ts`: `read`,
+  `bash`, `edit`, `write`, `grep`, `find`, `ls` and `tgrep`, plus every `aies_*`
+  tool. As D21 records, `extensions/aies-runtime/quiet-tools.ts` overrides six of the
+  Pi built-ins. This list must be kept up to date when Pi adds built-in tools. A new
+  built-in missing from it is not in the safe set: it is blocked under fail closed
+  (rule 7), and it is not read as Plane otherwise.
+- Not detected by definition: a self-hosted Plane on a domain that does not
+  contain `plane`, and an opaque wrapper that hides the endpoint (for example a
+  script that conceals it).
+- Runtime registration. Servers registered at runtime by other extensions are not
+  seen. Worker and Verify children use `noExtensions` and have no `mcp`.
+- Configuration directory. The adapter derives the configuration directory from
+  `<NAME>_CODING_AGENT_DIR`, according to `PI_PACKAGE_DIR` and `piConfig.name`. The
+  guard reads only `PI_CODING_AGENT_DIR`. The agent cannot exploit this; it depends
+  on the launcher fixing `exclusive` mode.
+- Test coverage. There is no end-to-end test through the real hook with a genuine
+  Verify PASS. The real PASS is covered at manager level only.
+
+**Tests.** `tests/plane-closed-list.test.mjs`,
+`tests/plane-endpoint-aliases.test.mjs`, `tests/plane-confirmation.test.mjs`, and
+the extensions of `tests/seed-mcp-merge.test.mjs`.
+
+**Status.** accepted; implemented (phase 5, real end-to-end validation, pending).
+
+---
+
+## D38 - Closed trusted MCP profile: the guard decides whether the profile is known, not which name is Plane
+
+**Context.** D36 and D37 made the Plane write guard recognise Plane by reconstructing
+how `pi-mcp-adapter` 3.2.0 deforms server and tool names (namespaces, prefixes, hashing
+above 59 characters, `_mcpns_` encoding, `toolPrefix`) and by reading aliases from server
+definitions. Five independent verifications each found one more form, and a generative
+test was only as faithful as the replica it checked against. That design could not
+guarantee, by construction, that no Plane write evaded the guard.
+
+**Decision (supersedes the attribution parts of D36 item 2 and D37 "endpoint identity
+by definition"; the closed list, exact directive, Done Gate, hold and read-back
+confirmation of D36/D37 are unchanged).**
+
+1. The guard asks whether the MCP profile is trusted, not which name is Plane.
+   `extensions/aies-agents/mcp/trust.ts` judges the profile. It is trusted only when
+   `PI_MCP_CONFIG_MODE=exclusive`, `MCP_DIRECT_TOOLS` is empty, the file the adapter
+   reads (`$PI_CODING_AGENT_DIR/mcp-adapter.json`, or `--mcp-config`) and the legacy
+   `mcp.json` parse, they use no `imports`, plugins, direct tools, or `toolPrefix` other
+   than `server` (the adapter's own default, which leaves names unchanged), and
+   every declared server is in the repo template `profile/mcp-adapter.json` by exact
+   name with the template `url` and `auth` (a subset is valid, so `mcpExcluded` works;
+   `disabled`, `lifecycle` and `directTools: false` are tolerated, any other key is not).
+2. Trusted: attribution is exact string equality on the declared servers (the `server`
+   field of the `mcp` proxy, the namespace tool `mcp__plane`). No canonicalisation,
+   prefix, suffix, hash or alias logic exists. A `server` that is not declared (for
+   example `Plane`) is refused.
+3. Not trusted (unknown, corrupt, modified, or unreadable): default-deny of every tool
+   call whose name is not exactly a Pi base tool or an AIES-registered tool
+   (`NON_MCP_TOOL_NAMES`). There is no positive exception for Linear: Linear is blocked
+   too until the profile is repaired. The message says how.
+4. Session snapshot: trust is decided when the extension loads and the raw text of the
+   profile files is kept. A call is trusted only if the profile was trusted at load and
+   is byte-identical now, so editing the profile can only lower trust, never raise it
+   (the adapter does not hot-reload; a hostile profile that is "fixed" mid-session stays
+   untrusted).
+5. No path guard on the profile files. A first version refused the Parent's `edit` and
+   `write` on them; the independent verification showed it was bypassable (`@` prefix,
+   `file://`, case-insensitive paths, because it did not resolve paths like Pi), and the
+   user chose to remove that layer instead of adding path normalisers. Limitation: the
+   Parent's `edit`, `write` and `bash` can change `$AIES_HOME/agent/mcp-adapter.json`,
+   `mcp.json`, `aies.json` or `settings.json`. This cannot unlock MCP in the running
+   session (point 4) and any untrusted result is fail-closed on the next start. The Worker
+   is confined to its workspace (its sandbox writes only to workspace and tmp).
+6. Listed tool form. The adapter lists Plane's tools as `plane_<tool>` and resolves that
+   name inside the server it is given, so its own search output steers the model to it.
+   With `server` exactly `plane` or with no server (the model often omits it), the exact
+   form `plane_<tool>` for a known Plane tool is read as `<tool>` and gets the same
+   closed-list rules; any other prefixed name (unknown tool, doubled prefix) stays unknown
+   and refused. Only Plane lists a `plane_` name on a trusted profile, so a server-less
+   name cannot reach Linear. Found in the phase 5 real
+   run (`plane_project` blocked on a trusted profile).
+7. Extending the trusted set is one change: add the server to `profile/mcp-adapter.json`
+   (Engram joins that way when D34 is implemented, after Plane is validated). Custom
+   servers are not usable until then; that limitation was accepted by the user.
+
+**Removed.** `linear/plane-endpoints.ts`, `linear/adapter-names.ts`, the name
+reconstruction in `linear/pending-action.ts` (892 to 674 lines; with `trust.ts`, a net
+reduction of 175 lines), and the generative, name-forms and endpoint-alias tests.
+
+**Residual risks.** Edit/Write (and bash) of the Parent on the profile files are not
+blocked (point 5). Trust is checked from the repo template; whoever edits the repo
+changes the approved set. The snapshot is taken per extension load, so a `/reload` of the
+extension without the adapter reloading would re-take it (not closed). An endpoint reachable only through a
+server that is in the template is, by definition, the approved one. The trust section of
+`--aies-info`/the MCP diagnostic was not added.
+
+**Tests.** `tests/mcp-trust.test.mjs`, `tests/plane-attribution.test.mjs` and the
+adjusted `plane-*` tests.
+
+**Status.** accepted; implemented.
+
+---
+
+## D39 - Plane phase 5, first real run: project reads work through OAuth and the trusted profile
+
+**Context.** D33 phase 5 is the real validation against Plane Cloud, using an isolated
+profile (`AIES_HOME=~/.local/share/aies-phase5`), OAuth only (`/mcp-auth plane`), no PAT,
+and no write to Plane.
+
+**Validated (observed).** Through AIES, on a profile judged trusted by D38, with the
+adapter authenticated by OAuth: `plane_project` with `action: "list"` returned the three
+projects of the workspace (AIES, CoreOS, Agent Workbench `EZEQU`), none archived. The read
+went through the `tool_call` guard as a read. Plane's 30 tools were listed by the adapter.
+
+**Not validated yet.** Reading a work item by `PROJECT-N` identifier, reading the states of
+`EZEQU` and resolving `start` by the name "In Progress", any state change, any comment, and
+the end-to-end `aies_ticket` cycle (start, comment, complete with the Done Gate). No write to
+Plane has been made and no ticket has been created or modified.
+
+**Findings of the run (both fixed or documented, neither relaxed the trust predicate).**
+1. The adapter's `/mcp` panel writes `directTools` into `mcp-adapter.json` when its
+   settings are saved (`config.ts`, `writeDirectToolsConfig`). One save put
+   `"directTools": true` on `plane`, which D38 judges untrusted, so the session failed
+   closed and blocked every MCP tool, as designed. The seed does not repair it (it never
+   changes a server that exists). For the isolated test profile the file was restored from
+   the template, with a backup, and locked with the immutable flag. Limitation: saving the
+   `/mcp` panel makes the profile untrusted until it is restored. Whether to document it or
+   change the policy is open and was not decided here.
+2. The adapter lists Plane's tools as `plane_<tool>` and the model calls them that way,
+   with or without `server`. The first guard knew only the bare names and refused a read.
+   D38 point 6 now reads the exact form `plane_<tool>` as `<tool>`.
+
+**Status.** accepted; project reads validated, everything else in phase 5 pending.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)
