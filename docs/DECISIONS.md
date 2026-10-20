@@ -1951,6 +1951,54 @@ Plane has been made and no ticket has been created or modified.
 
 ---
 
+## D40 - Plane selected per profile, explicit repository binding, and no more aies-phase5 profile
+
+**Context.** The tracker is chosen by the `tracker` key of the profile (D33), and the
+repository <-> project binding is the `repos` table of the same file (D30). No command
+wrote either. Binding a repository meant editing JSON by hand, and a session started in an
+unbound repository gave no sign of it until a ticket was blocked. The `aies-phase5`
+profile (D39) existed only to hold `tracker: "plane"` for the Plane runs.
+
+**Decision.**
+1. Plane is selected per profile, with `tracker: "plane"` in `aies.json`. The code default
+   stays `linear`: an absent key, or a legacy snapshot, still reads as Linear. No
+   identifier, ticket or environment variable selects the tracker.
+2. The binding is explicit and stored only in the profile. `scripts/bind-project.mjs`
+   (`npm run bind`) writes the `repos` table. It requires a repository inside a git work
+   tree and stores the realpath of its toplevel. It requires an identifier of letters,
+   digits and underscores, stored in uppercase. It refuses a path already bound to another
+   project, or a project already bound to another path, unless `--force` is given. Nothing
+   is inferred from directory names; the name fallback of D30 applies only to unbound
+   repositories.
+3. `--tracker plane` sets the key only when it is absent or already `plane`. Switching
+   from an explicit `linear` needs `--force`.
+4. Every write is atomic (temp file and rename, file mode kept) and preceded by a
+   timestamped backup, `aies.json.bak-<timestamp>`, in the profile. Keys other than `repos`
+   and `tracker` are preserved as they are.
+5. The script resolves the profile as `bin/aies` does, and refuses a profile that does not
+   exist yet: the user runs `aies` once first. It reads only `aies.json`. It never reads
+   `auth.json` or any MCP file, and it never copies credentials.
+6. At startup, with a UI, the session shows one line: the tracker in use, and whether its
+   repository is bound. An unbound repository gets a warning with the exact command to bind
+   it. A directory outside git gets a warning that ticket work needs a git repository. The
+   notice never blocks startup. `aies --aies-info` adds `AIES_PROJECT_ROOT` and `tracker`.
+7. The `aies-phase5` profile is no longer needed once the canonical profile
+   (`~/.local/share/aies`) has `tracker: "plane"` and Plane's OAuth is done interactively
+   in it. Credentials are never copied between profiles: the login is repeated in the
+   canonical profile, and the phase-5 profile can then be deleted.
+
+**Rejected alternatives.**
+- Inferring the binding from directory names: a name can match more than one repository,
+  which is the ambiguity D30 already has to guard against.
+- A `/aies-bind` command inside the session: it would give the agent a write path into the
+  profile. A script run by the user keeps the write explicit and out of the agent's reach.
+
+**Status.** accepted; implemented with tests (`scripts/bind-project.mjs`, the startup
+notice, the `--aies-info` lines). Not yet exercised against Plane Cloud from the canonical
+profile; that run belongs to phase 5 (D39) and is still pending.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

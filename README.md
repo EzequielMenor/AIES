@@ -115,6 +115,40 @@ Only these arguments are interpreted by AIES:
 | `--aies-info` | print the resolved profile paths and exit |
 | `--aies-*` | reserved for AIES; unknown ones exit with code 2 |
 
+## Daily use
+
+Run `aies` from inside the git repository you are working on. The tracker comes
+from the profile: `tracker` in `aies.json`, Linear when the key is absent. Plane is
+selected with `tracker: "plane"` (D40). At startup, with a UI, AIES shows one line:
+the tracker in use, and whether this repository is bound to a project.
+
+A repository is bound explicitly, and the binding lives only in the profile:
+
+```bash
+npm run bind -- --list                       # tracker and bound repositories (paths only)
+npm run bind -- AIES . --tracker plane       # bind this repo to Plane project AIES, select Plane
+npm run bind -- AIES /path/to/repo           # or name the repository explicitly
+npm run bind -- --unbind AIES                # remove a binding
+aies --aies-info                             # AIES_PROJECT_ROOT (git toplevel or none) and tracker
+```
+
+Rules of `scripts/bind-project.mjs`:
+
+- The project identifier is letters, digits and underscores; it is stored in uppercase.
+- The repository must be inside a git work tree; its toplevel is stored.
+- A repository already bound to another project, or a project already bound to another
+  repository, is refused. `--force` replaces the old binding.
+- `--tracker plane` sets the key only when the profile has no tracker or already uses
+  Plane. Switching from an explicit `linear` needs `--force`.
+- Every write first copies `aies.json` to `aies.json.bak-<timestamp>` in the profile.
+- The profile must exist: run `aies` once before binding. Add `--aies-home <dir>` for
+  another profile.
+
+Unbound repositories still work: the guard compares the ticket's project name with the
+repository name (D30). When the names differ, the guard blocks the ticket's mutating
+actions until the repository is bound explicitly. A directory outside git starts with a
+warning that ticket work needs a git repository.
+
 ## Linear over MCP
 
 AIES has no Linear client of its own. Linear is reached through the official Linear
@@ -227,6 +261,7 @@ What the generator encodes, and what it cannot know:
 |---|---|
 | `bin/aies` | the launcher: resolves the profile, bootstraps it, execs `pi` |
 | `scripts/bootstrap-profile.sh` | idempotent profile setup (symlinks, settings seed) |
+| `scripts/bind-project.mjs` | explicit repository <-> tracker project binding in the profile (`npm run bind`) |
 | `profile/settings.json` | seed for the profile's `settings.json`, copied once |
 | `profile/aies.json` | seed configuration for AIES agents, copied once |
 | `agents/explore.md` | role prompt for the isolated explore child agent |
