@@ -255,18 +255,33 @@ function parseJsonPayload(text: string): unknown {
 }
 
 /**
+ * The JSON payload carried by the text parts of an `mcp` result. A payload split
+ * across parts is read joined. Plane's server also sends the same payload a second
+ * time as a `structuredContent: …` part, so the join is not JSON; then the first
+ * part that is a complete JSON payload on its own is the answer. A truncated or
+ * non-JSON first part still yields nothing, so the caller refuses it as before.
+ */
+function parseTextParts(parts: unknown): unknown {
+  const joined = asTextParts(parts);
+  if (joined === undefined) return undefined;
+  const whole = parseJsonPayload(joined);
+  if (whole !== undefined || !Array.isArray(parts) || parts.length < 2) return whole;
+  return parseJsonPayload((parts[0] as { text: string }).text);
+}
+
+/**
  * Reduce whatever the Parent hands back from the `mcp` proxy tool to the payload
  * the Linear tool actually returned: a JSON text part, a structured result, or the
  * value itself.
  */
 export function unwrapMcpAnswer(value: unknown): unknown {
   if (typeof value === "string") return parseJsonPayload(value) ?? value;
-  if (Array.isArray(value)) return parseJsonPayload(asTextParts(value) ?? "") ?? value;
+  if (Array.isArray(value)) return parseTextParts(value) ?? value;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     const text = asTextParts(record.content);
     if (text !== undefined) {
-      const parsed = parseJsonPayload(text);
+      const parsed = parseTextParts(record.content);
       return parsed !== undefined ? parsed : text;
     }
     if (record.structuredContent !== undefined) return record.structuredContent;

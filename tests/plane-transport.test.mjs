@@ -280,3 +280,49 @@ describe("D33 phase 3: manager wiring", () => {
     assert.equal(manager.toSnapshot().tracker, "plane");
   });
 });
+
+describe("Phase 5: the `mcp` result shape the hosted Plane server really returns", () => {
+  // Observed against real Plane: the work item as one JSON text part, then the same
+  // payload again as a second text part, `structuredContent:` followed by `{ result: … }`.
+  const realContent = (item) => [
+    { type: "text", text: JSON.stringify(item) },
+    { type: "text", text: `structuredContent:\n${JSON.stringify({ result: item }, null, 2)}` },
+  ];
+
+  it("loads a ticket from the two-part result (JSON part, then structuredContent part)", async () => {
+    const manager = new TicketManager({ getVerification: () => createVerificationState(), selectTracker: PLANE_SELECTION });
+    await manager.loadTicket("AIES-38");
+    const loaded = await manager.captureRemote(
+      { server: "plane", tool: "workitem", args: planeRetrieveArgs("AIES-38") },
+      realContent(planeWorkItem()),
+    );
+    assert.equal(loaded.ok, true);
+    assert.equal(loaded.ticket.identifier, "AIES-38");
+    assert.equal(loaded.ticket.tracker, "plane");
+  });
+
+  it("still refuses a two-part result whose first part is not a complete payload", async () => {
+    const truncated = JSON.stringify(planeWorkItem()).slice(0, 40);
+    const manager = new TicketManager({ getVerification: () => createVerificationState(), selectTracker: PLANE_SELECTION });
+    await manager.loadTicket("AIES-38");
+    const refused = await manager.captureRemote(
+      { server: "plane", tool: "workitem", args: planeRetrieveArgs("AIES-38") },
+      [
+        { type: "text", text: truncated },
+        { type: "text", text: `structuredContent:\n${JSON.stringify({ result: planeWorkItem() })}` },
+      ],
+    );
+    assert.equal(refused.ok, false);
+  });
+
+  it("still refuses a two-part result whose payload has no identity", async () => {
+    const { sequence_id: _omitted, ...incomplete } = planeWorkItem();
+    const manager = new TicketManager({ getVerification: () => createVerificationState(), selectTracker: PLANE_SELECTION });
+    await manager.loadTicket("AIES-38");
+    const refused = await manager.captureRemote(
+      { server: "plane", tool: "workitem", args: planeRetrieveArgs("AIES-38") },
+      realContent(incomplete),
+    );
+    assert.equal(refused.ok, false);
+  });
+});
