@@ -49,6 +49,100 @@ export interface ChildSessionOptions {
   observatory?: AgentObservatory;
   /** The record id returned by `observatory.begin`, when observation is active. */
   agentId?: string;
+  /**
+   * The role whose `agents.<role>` limits in aies.json apply. Without it only the
+   * environment and the defaults apply.
+   */
+  role?: AgentRole;
+  /** Explicit limits. They override the environment, aies.json and the defaults. */
+  limits?: Partial<ChildLimits>;
+  /** Test seam: builds the child session instead of Pi's `createAgentSession`. */
+  sessionFactory?: (options: any) => Promise<{ session: any }>;
+}
+
+/** Why a child run was stopped before it completed on its own. */
+export type ChildStopReason = "cancelled" | "timeout" | "max_turns";
+
+/**
+ * Raised when the parent's signal, the total timeout or the turn limit stops a
+ * child run. Runners turn it into a failed handoff; it is never a verdict.
+ */
+export class ChildSessionStoppedError extends Error {
+  readonly reason: ChildStopReason;
+
+  constructor(reason: ChildStopReason, message: string) {
+    super(message);
+    this.name = "ChildSessionStoppedError";
+    this.reason = reason;
+  }
+}
+
+/** The budget of one child run. */
+export interface ChildLimits {
+  /** Total wall-clock budget for the run, in milliseconds. */
+  timeoutMs: number;
+  /** Maximum number of turns (LLM round trips) the child may start. */
+  maxTurns: number;
+}
+
+/**
+ * Total wall-clock budget per child run: 100 minutes. Calibrated from dogfooding:
+ * the longest recorded child run was about 33 minutes (Verify, EZE-488), and 3x
+ * that is 99 minutes. Explore and Worker durations were never recorded on their
+ * own, so this value applies to them too. A calibrar.
+ */
+export const DEFAULT_CHILD_TIMEOUT_MS = 100 * 60 * 1000;
+
+/**
+ * Turn limit per child run. Dogfooding never recorded turn or tool-call counts, so
+ * there is no measured basis; 100 is a generous ceiling. A calibrar.
+ */
+export const DEFAULT_CHILD_MAX_TURNS = 100;
+
+/** A positive safe integer from a number or a numeric string; anything else is `undefined`. */
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+  if (typeof value === "string" && /^\d+$/u.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the budget of one child run. Order: environment (`AIES_CHILD_TIMEOUT_MS`,
+ * `AIES_CHILD_MAX_TURNS`), then `$AIES_AGENT_DIR/aies.json` (`agents.<role>.timeoutMs`,
+ * `agents.<role>.maxTurns`), then the defaults. Invalid values fall through to the
+ * next layer.
+ */
+export function resolveChildLimits(
+  role: AgentRole | undefined,
+  agentDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ChildLimits {
+  let config: { timeoutMs?: unknown; maxTurns?: unknown } = {};
+  const configPath = join(agentDir, "aies.json");
+  if (role && existsSync(configPath)) {
+    try {
+      const content = JSON.parse(readFileSync(configPath, "utf8"));
+      config = content?.agents?.[role] ?? {};
+    } catch {
+      config = {};
+    }
+  }
+
+  return {
+    timeoutMs:
+      parsePositiveInteger(env.AIES_CHILD_TIMEOUT_MS) ??
+      parsePositiveInteger(config.timeoutMs) ??
+      DEFAULT_CHILD_TIMEOUT_MS,
+    maxTurns:
+      parsePositiveInteger(env.AIES_CHILD_MAX_TURNS) ??
+      parsePositiveInteger(config.maxTurns) ??
+      DEFAULT_CHILD_MAX_TURNS,
+  };
 }
 
 /** The event fields the observatory reads; every other field is ignored. */
@@ -265,7 +359,83 @@ export async function createChildModelRuntime(
 }
 
 /**
+ * Run one prompt under the parent's signal, the total timeout and the turn limit.
+ *
+ * The first stop wins: it rejects the run at once and asks the child to abort. It
+ * does not wait for the abort to settle, because Pi's `abort()` waits for an idle
+ * agent that a hung child never reaches. Listeners, the timer and the event
+ * subscription are always retired.
+ */
+async function promptWithLimits(
+  session: any,
+  promptText: string,
+  controls: { signal?: AbortSignal; limits: ChildLimits },
+): Promise<void> {
+  const { signal, limits } = controls;
+  if (signal?.aborted) {
+    throw new ChildSessionStoppedError("cancelled", "Child agent cancelled by the user before starting");
+  }
+
+  let stopped: ChildSessionStoppedError | undefined;
+  let rejectStop: (error: ChildSessionStoppedError) => void = () => {};
+  const stopSignal = new Promise<never>((_resolve, reject) => {
+    rejectStop = reject;
+  });
+  // The stop may win the race while the prompt is still pending; never leave it unhandled.
+  stopSignal.catch(() => {});
+
+  const stop = (reason: ChildStopReason, message: string): void => {
+    if (stopped) return;
+    stopped = new ChildSessionStoppedError(reason, message);
+    rejectStop(stopped);
+    try {
+      Promise.resolve(session.abort()).catch(() => {});
+    } catch {
+      // A session that cannot abort still loses the race above.
+    }
+  };
+
+  const onAbort = (): void => {
+    stop("cancelled", "Child agent cancelled by the user before completing");
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  const timer = setTimeout(() => {
+    stop("timeout", `Child agent timed out after ${limits.timeoutMs} ms (total timeout)`);
+  }, limits.timeoutMs);
+
+  let turns = 0;
+  let unsubscribe: (() => void) | undefined;
+  try {
+    unsubscribe = session.subscribe((event: { type?: unknown }) => {
+      if (event?.type !== "turn_start") return;
+      turns += 1;
+      if (turns > limits.maxTurns) {
+        stop("max_turns", `Child agent exceeded the turn limit of ${limits.maxTurns} turns`);
+      }
+    });
+
+    const running = Promise.resolve(session.prompt(promptText));
+    running.catch(() => {});
+    await Promise.race([running, stopSignal]);
+    if (stopped) throw stopped;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    try {
+      unsubscribe?.();
+    } catch {
+      // Unsubscribe errors must not mask execution results
+    }
+  }
+}
+
+/**
  * Execute an isolated child AgentSession turn and return the assistant's final text.
+ *
+ * A run stopped by the parent's signal, the total timeout or the turn limit throws
+ * `ChildSessionStoppedError` (with `reason`) after the child has been aborted. The
+ * session is always disposed.
  */
 export async function executeChildSession(options: ChildSessionOptions): Promise<string> {
   const {
@@ -283,7 +453,15 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
     sessionManager: customSessionManager,
     observatory,
     agentId,
+    role,
+    sessionFactory,
   } = options;
+
+  const configured = resolveChildLimits(role, agentDir);
+  const limits: ChildLimits = {
+    timeoutMs: options.limits?.timeoutMs ?? configured.timeoutMs,
+    maxTurns: options.limits?.maxTurns ?? configured.maxTurns,
+  };
 
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -306,7 +484,8 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
     ? modelRuntime
     : await createChildModelRuntime(agentDir, model, modelRuntime);
 
-  const { session } = await createAgentSession({
+  const createSession: (options: any) => Promise<{ session: any }> = sessionFactory ?? createAgentSession;
+  const { session } = await createSession({
     cwd,
     agentDir,
     model,
@@ -327,11 +506,7 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
   }
 
   try {
-    if (signal?.aborted) {
-      throw new Error("Child agent operation was aborted before starting");
-    }
-
-    await session.prompt(promptText);
+    await promptWithLimits(session, promptText, { signal, limits });
     return session.getLastAssistantText() ?? "";
   } finally {
     try {

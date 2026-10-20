@@ -27,6 +27,13 @@ import {
 
 export type VerificationStatus = "none" | "running" | "pass" | "fail" | "blocked" | "protocol_error";
 
+/**
+ * Why the parent recorded a BLOCKED verdict, when it knows. `sandbox_unavailable` is
+ * the only recoverable cause: Verify was refused before it ran, so the same request
+ * may run again once the sandbox is active.
+ */
+export type VerificationBlockedCause = "sandbox_unavailable";
+
 /** What the parent should do next, according to the policy. */
 export type VerificationAction = "verify" | "repair" | "done" | "stop" | "wait" | "none";
 
@@ -62,6 +69,11 @@ export interface VerificationState {
   blockedRevision?: number;
   /** The external/infrastructure reason for the BLOCKED verdict. */
   blockedReason?: string;
+  /**
+   * The cause of the BLOCKED verdict, when the parent recorded one. Absent for a Verify
+   * verdict and for records written before this field existed.
+   */
+  blockedCause?: VerificationBlockedCause;
 }
 
 export interface VerificationDecision {
@@ -105,6 +117,7 @@ export function createVerificationState(): VerificationState {
     lastChange: undefined,
     blockedRevision: undefined,
     blockedReason: undefined,
+    blockedCause: undefined,
   };
 }
 
@@ -136,6 +149,7 @@ export function applyWorkUnitChange(
     verifiedRevision: invalidates && state.status === "pass" ? undefined : state.verifiedRevision,
     blockedRevision: invalidates && state.status === "blocked" ? undefined : state.blockedRevision,
     blockedReason: invalidates && state.status === "blocked" ? undefined : state.blockedReason,
+    blockedCause: invalidates && state.status === "blocked" ? undefined : state.blockedCause,
   };
 }
 
@@ -160,6 +174,7 @@ export function applyWorkerResult(
     verifiedRevision: undefined,
     blockedRevision: undefined,
     blockedReason: undefined,
+    blockedCause: undefined,
     awaitingVerification: true,
     lastChange: requirement.reason,
   };
@@ -200,10 +215,12 @@ export function applyVerifyResult(
       lastDurationMs: duration,
       startedAt: undefined,
       awaitingVerification: true,
+      blockedCause: undefined,
     };
   }
 
   const handoff = result;
+  // A verdict replaces any earlier block cause; only a sandbox block sets one again.
   const next: VerificationState = {
     ...state,
     status: handoff.status,
@@ -211,6 +228,7 @@ export function applyVerifyResult(
     lastProtocolError: undefined,
     lastDurationMs: duration,
     startedAt: undefined,
+    blockedCause: undefined,
   };
 
   if (handoff.status === "pass") {
@@ -239,6 +257,25 @@ export function applyVerifyResult(
     awaitingVerification: true,
     blockedRevision: state.revision,
     blockedReason,
+  };
+}
+
+/**
+ * Record the BLOCKED verdict of a Verify request refused because the OS sandbox is
+ * not active. Verify never ran, so this is an infrastructure block, not a verdict on
+ * the work unit, and it spends no attempt. The verified revision is dropped too: a
+ * PASS is valid only while it is the verdict on record, so clearing the block later
+ * can never make an earlier PASS of this revision valid again.
+ */
+export function applySandboxBlock(
+  state: VerificationState,
+  handoff: VerifyHandoff,
+  now: number,
+): VerificationState {
+  return {
+    ...applyVerifyResult(state, handoff, now),
+    verifiedRevision: undefined,
+    blockedCause: "sandbox_unavailable",
   };
 }
 

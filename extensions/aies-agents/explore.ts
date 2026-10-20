@@ -116,6 +116,7 @@ export async function runExploreAgent(options: RunExploreOptions): Promise<Explo
       sessionManager: options.sessionManager,
       observatory,
       agentId,
+      role: "explore",
     });
 
     handoff = parseExploreHandoff(rawOutput);

@@ -366,6 +366,7 @@ export async function runVerifyAgent(options: RunVerifyOptions): Promise<VerifyR
       sessionManager: options.sessionManager,
       observatory,
       agentId,
+      role: "verify",
     });
 
     result = resolveVerifyResult(collector);

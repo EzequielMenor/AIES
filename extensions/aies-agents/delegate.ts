@@ -28,7 +28,9 @@ import {
 import { observatory } from "./observatory.ts";
 import type { DelegationRole } from "./routing.ts";
 import { checkRuntimeFreshness, formatStaleRuntimeMessage } from "./runtime-freshness.ts";
+import { getSandboxStatus, isSandboxSupported } from "./sandbox.ts";
 import {
+  applySandboxBlock,
   applyVerifyResult,
   applyVerifyStart,
   applyWorkerRepairStart,
@@ -99,6 +101,12 @@ export interface VerificationStore {
 
 export interface CreateDelegateToolOptions {
   verification?: VerificationStore;
+  /**
+   * Whether the OS sandbox that Verify requires is enforcing. Defaults to the real
+   * detection (`isSandboxSupported`); tests inject a stub so they stay independent of
+   * the host sandbox.
+   */
+  isSandboxActive?: () => boolean;
 }
 
 /** The delegated role, defaulting to 'explore' for an unrecognised input. */
@@ -247,6 +255,7 @@ export function createDelegateTool(
   options?: CreateDelegateToolOptions,
 ): ToolDefinition<typeof DelegateParamsSchema, DelegateHandoff> {
   const store = options?.verification;
+  const isSandboxActive = options?.isSandboxActive ?? isSandboxSupported;
 
   return {
     name: "aies_delegate",
@@ -267,6 +276,9 @@ export function createDelegateTool(
       "Do NOT mark a work unit verified yourself: only a valid 'verify' PASS supports that claim.",
     ],
     parameters: DelegateParamsSchema,
+    // Delegations share mutable state (verification registry, routing counters,
+    // global sandbox manager), so they must not run concurrently with each other.
+    executionMode: "sequential",
     renderShell: "self",
     renderCall(args, theme, context) {
       // The activity card owns the surface from the moment execution starts, so the
@@ -373,7 +385,11 @@ export function createDelegateTool(
           };
         }
 
-        if (current.status === "blocked") {
+        // A BLOCKED caused by the missing sandbox is not "conditions unchanged" once the
+        // sandbox is active again: the refused request may run now. Any other BLOCKED
+        // keeps the rule until the work unit changes.
+        const sandboxRecovered = current.blockedCause === "sandbox_unavailable" && isSandboxActive();
+        if (current.status === "blocked" && !sandboxRecovered) {
           const reason = current.blockedReason ?? current.lastChange ?? "reproducible infrastructure block";
           return {
             content: [
@@ -392,6 +408,51 @@ export function createDelegateTool(
         }
 
         const criteria = normalizeCriteriaList(params.criteria);
+
+        // Sandbox gate (AIES-006): Verify's bash runs only inside the OS sandbox. Without
+        // it the child would still inspect with read/grep/find/ls, so refuse before any
+        // child session, observation or model call exists. This is an infrastructure
+        // BLOCKED, not a verification attempt: it spends no attempt budget and never
+        // marks the revision verified. Its cause is recorded, so a later request runs
+        // once the sandbox is active again.
+        if (!isSandboxActive()) {
+          const cause =
+            getSandboxStatus() === "disabled"
+              ? "AIES_SANDBOX=0 lo desactiva"
+              : "la plataforma no lo soporta o SandboxManager no está disponible";
+          const handoff: VerifyHandoff = {
+            status: "blocked",
+            summary: `Verify exige sandbox del SO y no está activo (${cause}).`,
+            criteria: criteria.map((criterion, position) => ({
+              index: position + 1,
+              criterion,
+              status: "blocked" as const,
+              evidence: "no evaluado: el sandbox del SO no está activo",
+            })),
+            checks: [],
+            defects: [],
+            next: [
+              "Activa el sandbox del SO (quita AIES_SANDBOX=0 y usa una plataforma soportada) y vuelve a delegar la verificación.",
+            ],
+          };
+          const next = applySandboxBlock(current, handoff, Date.now());
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Verificación bloqueada por infraestructura: Verify exige sandbox del SO y no está activo (${cause}). No se ha lanzado ningún agente Verify; no cuenta como intento y la revisión no queda verificada.\n\n${formatVerifyHandoff(handoff)}\n\n${commit(next)}`,
+              },
+            ],
+            details: {
+              ...handoff,
+              error: "verify_sandbox_unavailable",
+              verification: toVerificationReport(next),
+            },
+            isError: true,
+          };
+        }
+
         const changedPaths = stringList(params.changedPaths);
         const startedAt = Date.now();
 

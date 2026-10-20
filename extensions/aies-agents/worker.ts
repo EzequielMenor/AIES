@@ -142,6 +142,7 @@ export async function runWorkerAgent(options: RunWorkerOptions): Promise<WorkerH
       sessionManager: options.sessionManager,
       observatory,
       agentId,
+      role: "worker",
     });
 
     handoff = parseWorkerHandoff(rawOutput);
