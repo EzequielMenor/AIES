@@ -42,17 +42,27 @@ const PENDING_ACTION_LABEL: Record<PendingActionKind, string> = {
 const MAX_QUOTE_CHARS = 88;
 
 /**
+ * Wording that postpones a step ("todavía", "until", "for now"). A negated commit or
+ * push holds only when one of these stands in its clause: a bare prohibition such as
+ * "no hagas commits ni pushes" is a standing rule, not a request to keep a step for later.
+ */
+const DEFERRAL_MARKER =
+  /\b(?:todav[íi]a|a[uú]n|por\s+ahora|de\s+momento|por\s+el\s+momento|mientras\s+tanto|hasta|antes\s+de|sin\s+(?:mi|que)|until|before|yet|not\s+now|for\s+now|for\s+the\s+time\s+being|without\s+my|lo\s+dejamos|queda\s+pendiente|lo\s+dejo)\b/iu;
+
+/**
  * Explicit holds on finalization. Each rule needs the held step AND a hold
  * marker inside one clause, so an ordinary mention of "commit" or "review" never
  * blocks a completion. Spanish and English are covered because the user speaks
  * Spanish and the tickets are written in English.
  */
-const HOLD_RULES: ReadonlyArray<{ kind: PendingActionKind; pattern: RegExp }> = [
-  // "no commit todavía", "no hagas commit", "sin commitear", "don't commit yet".
+const HOLD_RULES: ReadonlyArray<{ kind: PendingActionKind; pattern: RegExp; needsDeferral?: boolean }> = [
+  // "no commit todavía", "no hagas commit hasta que revise", "don't commit yet". A negated
+  // commit or push without a deferral marker ("no hagas commits ni pushes") is a prohibition.
   {
     kind: "commit",
     pattern:
       /\b(?:no|don'?t|do\s+not|cannot|can'?t|won'?t|never|sin|not)\b[^?]{0,28}\b(?:commit\w*|commite\w*|comite\w*|pushear\w*|push\w*|merge\w*)\b/iu,
+    needsDeferral: true,
   },
   // The same hold with the verb first: "commit todavía no", "el commit lo dejamos".
   {
@@ -160,12 +170,18 @@ export function readFinalActionDirective(text: string): FinalActionDirective | n
 
   let decided: FinalActionDirective | null = null;
   for (const clause of instructionClauses(text)) {
-    const held = HOLD_RULES.find((rule) => rule.pattern.test(clause));
+    const held = HOLD_RULES.find(
+      (rule) => rule.pattern.test(clause) && (!rule.needsDeferral || DEFERRAL_MARKER.test(clause)),
+    );
     // A hold outranks a release in the same clause: it is the safer reading.
     if (held) {
       decided = { kind: "hold", pending: { kind: held.kind, quote: clipQuote(clause) } };
       continue;
     }
+    // A negated commit or push with no deferral marker is a standing prohibition. It is not a
+    // release either, even when it reads like one ("no hagas commit y push"): a negation never
+    // authorises a step, and it leaves any existing hold exactly as it was.
+    if (HOLD_RULES.some((rule) => rule.needsDeferral && rule.pattern.test(clause))) continue;
     if (RELEASE_RULES.some((pattern) => pattern.test(clause))) decided = { kind: "release" };
   }
   return decided;

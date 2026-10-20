@@ -16,8 +16,10 @@
  * PASS at the Done Gate.
  */
 
+import { basename, isAbsolute, relative, sep } from "node:path";
+
 import type { McpDiagnostic } from "../mcp/integration.ts";
-import type { VerificationState } from "../verification.ts";
+import { isVerificationValid, requiresVerification, type VerificationState } from "../verification.ts";
 import {
   describeRemoteDirective,
   formatCompactContract,
@@ -26,11 +28,13 @@ import {
   readIssueIdentity,
   readIssueState,
 } from "./contract.ts";
+import { captureBaseline, collectChanges, type ChangeSet } from "./change-evidence.ts";
 import {
   canSwitchTicket,
   checkDoneGate,
   detectRemoteConflict,
   resolveTargetStatus,
+  type DoneGateResult,
 } from "./policy.ts";
 import { trackerLabel, trackerLabelForServer } from "./labels.ts";
 import { readFinalActionDirective, type PendingFinalAction } from "./pending-action.ts";
@@ -77,6 +81,71 @@ export interface TicketManagerOptions {
    * on every operation, so a changed profile takes effect without a restart.
    */
   selectTracker?: () => TrackerSelection;
+  /**
+   * EZE-496: where Git is read for change evidence. Absent, the Done Gate judges the
+   * recorded paths alone, as before. Present, the gate also sees what Git shows since
+   * the ticket was loaded, and it refuses what it cannot describe.
+   */
+  changeProbe?: { cwd: () => string };
+}
+
+/** How many paths a diagnosis lists before it reports the rest as a count (EZE-496). */
+const DIAGNOSIS_PATH_LIMIT = 20;
+/** Longest reason a diagnosis shows (Git error text is otherwise unbounded), and the shown length of a sha. */
+const DIAGNOSIS_REASON_CHARS = 1200;
+const DIAGNOSIS_SHA_CHARS = 12;
+
+/** A capped list of display paths: the first ones, and how many more were left out. */
+export interface DoneGatePathList {
+  items: string[];
+  more: number;
+}
+
+/**
+ * Read-only diagnosis of the Done Gate (EZE-496), built from the same computation as
+ * `evaluateDoneGate`. Fingerprints and the baseline are shortened; no file content,
+ * diff or absolute path is included.
+ */
+export interface DoneGateDiagnosis {
+  decision: "ALLOW" | "DENY";
+  code?: DoneGateResultCode;
+  reason: string;
+  /** Whether a change probe is wired; without one the gate judges the recorded paths alone. */
+  probe: boolean;
+  /** Baseline commit, shortened; "none" without a probe, "unknown" when it was not recorded. */
+  baseline: string;
+  evidence: "known" | "unknown" | "not configured";
+  unknownReason?: string;
+  recordedPaths: DoneGatePathList;
+  detectedPaths: DoneGatePathList;
+  effectivePaths: DoneGatePathList;
+  verificationRequired: { required: boolean; reason: string };
+  verification: {
+    status: VerificationState["status"];
+    revision: number;
+    verifiedRevision: number | null;
+    valid: boolean;
+  };
+  fingerprint: {
+    /** Shortened change fingerprint; "unknown" when Git could not describe the changes. */
+    current: string;
+    /** Shortened fingerprint the last PASS covered; "none" when no PASS is bound. */
+    verified: string;
+    /** Whether the PASS covers the current changes; null when they cannot be compared. */
+    matches: boolean | null;
+  };
+  pendingFinalAction: { kind: string; quote: string } | null;
+}
+
+type DoneGateResultCode = NonNullable<DoneGateResult["code"]>;
+
+/** The Spanish refusal for a direct Linear Done the Done Gate does not allow (EZE-496). */
+export function linearDoneGateBypassReason(ticket: { identifier: string }, gateReason: string): string {
+  return [
+    `Bloqueado: no se cierra ${ticket.identifier} en Linear; el Done Gate no lo permite (${gateReason}).`,
+    "No se envió ningún cambio de estado y el ticket sigue abierto; la evidencia de Verify queda intacta.",
+    'Verificá los cambios con aies_delegate (role "verify") y, con un PASS sobre el estado actual, cerrá con aies_ticket action "complete".',
+  ].join("\n");
 }
 
 /** Build a clear `invalid_remote_payload` refusal for a captured/handed answer. */
@@ -91,6 +160,57 @@ function invalidRemotePayload(
   };
 }
 
+/** What the Done Gate read to reach its verdict (EZE-496). */
+interface DoneGateEvidence {
+  baselineRev: string | undefined;
+  /** What Git shows since the baseline; null when no change probe is wired. */
+  changes: ChangeSet | null;
+  recordedPaths: string[];
+  effectivePaths: string[];
+  verificationRequired: { required: boolean; reason: string };
+  verification: VerificationState;
+  verifiedFingerprint: string | undefined;
+}
+
+/**
+ * The Git-aware refinement of a verdict (EZE-496): an unknown change state is refused,
+ * and a completion that needs Verify needs a PASS bound to the current fingerprint.
+ */
+function judgeDoneGate(gate: DoneGateResult, evidence: DoneGateEvidence): DoneGateResult {
+  const { changes } = evidence;
+  if (!changes || !gate.allowed) return gate;
+
+  if (!changes.known) {
+    return {
+      allowed: false,
+      code: "verify_gate_denied",
+      reason: `change state unknown: ${changes.reason}. The changes cannot be checked against the Verify PASS, so completion is refused.`,
+    };
+  }
+  if (evidence.verificationRequired.required) {
+    if (evidence.verifiedFingerprint === undefined) {
+      return {
+        allowed: false,
+        code: "verify_gate_denied",
+        reason: "Verification is not bound to the current changes: no PASS was recorded for this working tree. Run Verify again.",
+      };
+    }
+    if (evidence.verifiedFingerprint !== changes.fingerprint) {
+      return {
+        allowed: false,
+        code: "verify_gate_denied",
+        reason: "the changes changed after the Verify PASS (a file was edited or changed outside AIES). Run Verify again.",
+      };
+    }
+  }
+  return gate;
+}
+
+/** Shortened hash or sha for display: enough to compare, never the full value. */
+function shortHash(value: string): string {
+  return value.slice(0, 12);
+}
+
 export class TicketManager {
   private activeTicket: ActiveTicket | null = null;
   private workState: TicketWorkState = "loaded";
@@ -99,6 +219,11 @@ export class TicketManager {
   private getVerification: () => VerificationState;
   private mcpProbe?: () => McpDiagnostic;
   private trackerSelector: () => TrackerSelection;
+  private changeProbe?: { cwd: () => string };
+  /** EZE-496: the commit the ticket's changes are measured from; undefined when it could not be recorded. */
+  private baselineRev?: string;
+  /** EZE-496: the change fingerprint the last Verify PASS covered; undefined when none is bound. */
+  private verifiedFingerprint?: string;
 
   /** The call the Parent still owes, if any. */
   private pendingRemote: PendingRemote | null = null;
@@ -113,6 +238,7 @@ export class TicketManager {
     this.getVerification = options.getVerification;
     this.mcpProbe = options.getMcpDiagnostic;
     this.trackerSelector = options.selectTracker ?? (() => selectTracker());
+    this.changeProbe = options.changeProbe;
   }
 
   setTransport(transport: TrackerTransport): void {
@@ -145,6 +271,150 @@ export class TicketManager {
   }
 
   /**
+   * Bind the Verify PASS that was just recorded to the changes as they are now (EZE-496).
+   * An unknown state leaves no binding, so the gate refuses rather than trusts the PASS.
+   */
+  recordVerifiedState(): void {
+    if (!this.changeProbe) return;
+    const current = this.observeChanges();
+    this.verifiedFingerprint = current.known ? current.fingerprint : undefined;
+  }
+
+  /**
+   * The Done Gate verdict for completing the active ticket now. `aies_ticket complete`,
+   * the Plane write guard and the direct Linear guard all decide through this method.
+   *
+   * Without a probe it is `checkDoneGate` over the recorded paths. With a probe the
+   * recorded paths are joined with what Git shows since the ticket was loaded, and:
+   *  - a change that cannot be described (no baseline, Git failure) is refused, unless
+   *    the gate already refuses for another reason;
+   *  - a completion that needs Verify needs a PASS bound to the changes as they are
+   *    now, so any edit or change made after the PASS asks for a new Verify.
+   */
+  evaluateDoneGate(): DoneGateResult {
+    return this.computeDoneGate().result;
+  }
+
+  /**
+   * Read-only diagnosis of the Done Gate for `aies_ticket show` (EZE-496). It is built from
+   * the same computation as `evaluateDoneGate`, so the two cannot disagree. It changes no
+   * state (no baseline capture, no PASS binding, no hold cleared) and makes no tracker call;
+   * the only Git reads are the ones `observeChanges` already makes.
+   */
+  describeDoneGate(): DoneGateDiagnosis {
+    const { result, evidence } = this.computeDoneGate();
+    const { changes, verifiedFingerprint, verification } = evidence;
+    const currentFingerprint = changes?.known ? changes.fingerprint : undefined;
+    const pending = this.pendingFinalAction;
+
+    let baseline = "none";
+    if (changes) baseline = evidence.baselineRev === undefined ? "unknown" : shortHash(evidence.baselineRev);
+
+    let matches: boolean | null = null;
+    if (currentFingerprint !== undefined && verifiedFingerprint !== undefined) {
+      matches = currentFingerprint === verifiedFingerprint;
+    }
+
+    return {
+      decision: result.allowed ? "ALLOW" : "DENY",
+      ...(result.code ? { code: result.code } : {}),
+      reason: this.scrubText(result.reason, evidence.effectivePaths),
+      probe: changes !== null,
+      baseline,
+      evidence: !changes ? "not configured" : changes.known ? "known" : "unknown",
+      ...(changes && !changes.known ? { unknownReason: this.scrubText(changes.reason, evidence.effectivePaths) } : {}),
+      recordedPaths: this.displayPathList(evidence.recordedPaths),
+      detectedPaths: this.displayPathList(changes?.known ? changes.paths : []),
+      effectivePaths: this.displayPathList(evidence.effectivePaths),
+      verificationRequired: {
+        required: evidence.verificationRequired.required,
+        reason: this.scrubText(evidence.verificationRequired.reason, evidence.effectivePaths),
+      },
+      verification: {
+        status: verification.status,
+        revision: verification.revision,
+        verifiedRevision: verification.verifiedRevision ?? null,
+        valid: isVerificationValid(verification),
+      },
+      fingerprint: {
+        current: currentFingerprint !== undefined ? shortHash(currentFingerprint) : "unknown",
+        verified: verifiedFingerprint !== undefined ? shortHash(verifiedFingerprint) : "none",
+        matches,
+      },
+      pendingFinalAction: pending ? { kind: pending.kind, quote: pending.quote } : null,
+    };
+  }
+
+  /**
+   * The Done Gate verdict together with the evidence it was reached from. Both
+   * `evaluateDoneGate` and `describeDoneGate` read this one computation.
+   */
+  private computeDoneGate(): { result: DoneGateResult; evidence: DoneGateEvidence } {
+    const verification = this.getVerification();
+    const recorded = Array.from(this.changedPaths);
+    const changes = this.changeProbe ? this.observeChanges() : null;
+    const effective = changes?.known ? [...new Set([...recorded, ...changes.paths])] : recorded;
+    const gate = checkDoneGate(verification, effective, this.pendingFinalAction);
+    const evidence: DoneGateEvidence = {
+      baselineRev: this.baselineRev,
+      changes,
+      recordedPaths: recorded,
+      effectivePaths: effective,
+      verificationRequired: requiresVerification(effective),
+      verification,
+      verifiedFingerprint: this.verifiedFingerprint,
+    };
+    return { result: judgeDoneGate(gate, evidence), evidence };
+  }
+
+  /**
+   * A path as a diagnosis may show it. Recorded paths can be absolute (they come from the
+   * path an edit named), so an absolute path under the probe's directory is shown relative
+   * to it, and any other absolute path is shown as its file name only.
+   */
+  private displayPath(path: string): string {
+    if (!isAbsolute(path)) return path;
+    const base = this.changeProbe?.cwd();
+    if (base) {
+      const rel = relative(base, path);
+      if (rel && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) return rel;
+    }
+    return `.../${basename(path)}`;
+  }
+
+  /**
+   * A reason as a diagnosis may show it. The gate's own wording names the raw paths, and an
+   * absolute one must not reach the screen, so each is replaced by its display form, and the
+   * probe's directory (which Git errors can name) by a placeholder. The gate's reason itself is
+   * unchanged, so `complete` keeps saying exactly what it said before.
+   */
+  private scrubText(text: string, paths: string[]): string {
+    let scrubbed = text;
+    const absolute = [...new Set(paths.filter((path) => isAbsolute(path)))].sort((a, b) => b.length - a.length);
+    for (const path of absolute) scrubbed = scrubbed.split(path).join(this.displayPath(path));
+    const base = this.changeProbe?.cwd();
+    if (base) scrubbed = scrubbed.split(base).join("<repo>");
+    // Git errors can name the baseline: a full object name is shown by its first 12 characters.
+    scrubbed = scrubbed.replace(/\b[0-9a-f]{40}(?:[0-9a-f]{24})?\b/giu, (sha) => sha.slice(0, DIAGNOSIS_SHA_CHARS));
+    // The documentation-only reason lists every path; keep the same cap as the structured lists.
+    scrubbed = scrubbed.replace(/(documentation-only change \()([^)]*)(\))/u, (_match, open: string, list: string, close: string) => {
+      const names = list.split(", ");
+      if (names.length <= DIAGNOSIS_PATH_LIMIT) return `${open}${list}${close}`;
+      return `${open}${names.slice(0, DIAGNOSIS_PATH_LIMIT).join(", ")}, +${names.length - DIAGNOSIS_PATH_LIMIT} more${close}`;
+    });
+    return scrubbed.length > DIAGNOSIS_REASON_CHARS ? `${scrubbed.slice(0, DIAGNOSIS_REASON_CHARS - 1)}…` : scrubbed;
+  }
+
+  /** Display paths, de-duplicated, capped at the diagnosis limit with the number left out. */
+  private displayPathList(paths: string[]): DoneGatePathList {
+    const unique = [...new Set(paths.map((path) => this.displayPath(path)))];
+    return {
+      items: unique.slice(0, DIAGNOSIS_PATH_LIMIT),
+      more: Math.max(0, unique.length - DIAGNOSIS_PATH_LIMIT),
+    };
+  }
+
+  /**
    * Read one submitted user input (EZE-503). Only explicit wording changes the
    * hold: an input that says nothing about finalization leaves it in place, so a
    * Verify PASS, a continuation turn or a plain "seguí" can never quietly re-open
@@ -160,6 +430,17 @@ export class TicketManager {
   /** The held final step, or null when the user never asked to keep one. */
   getPendingFinalAction(): PendingFinalAction | null {
     return this.pendingFinalAction ? { ...this.pendingFinalAction } : null;
+  }
+
+  /**
+   * Drop a hold the user never meant (`/aies-ticket cancel-pending`). Only the hold is
+   * cleared: verification, changed paths, baseline, work state and the ticket stay as
+   * they are, and nothing is sent to the tracker. Returns what was cleared, or null.
+   */
+  cancelPendingFinalAction(): PendingFinalAction | null {
+    const cleared = this.pendingFinalAction;
+    this.pendingFinalAction = null;
+    return cleared ? { ...cleared } : null;
   }
 
   /** The Linear call the Parent still has to perform, if any. */
@@ -407,6 +688,8 @@ export class TicketManager {
       changedPaths: Array.from(this.changedPaths),
       pendingFinalAction: this.pendingFinalAction ? { ...this.pendingFinalAction } : null,
       tracker: this.activeTicket.tracker ?? DEFAULT_TRACKER_ID,
+      ...(this.baselineRev !== undefined ? { baselineRev: this.baselineRev } : {}),
+      ...(this.verifiedFingerprint !== undefined ? { verifiedFingerprint: this.verifiedFingerprint } : {}),
       persistedAt: Date.now(),
     };
   }
@@ -437,6 +720,10 @@ export class TicketManager {
     this.workState = snapshot.workState ?? "loaded";
     this.changedPaths = new Set(snapshot.changedPaths ?? []);
     this.pendingFinalAction = snapshot.pendingFinalAction ?? null;
+    // EZE-496: a snapshot without a baseline (written before the change evidence existed) restores as
+    // unknown, so the gate refuses completion until the ticket is loaded again or Verify runs.
+    this.baselineRev = snapshot.baselineRev;
+    this.verifiedFingerprint = snapshot.verifiedFingerprint;
     return { ok: true };
   }
 
@@ -445,6 +732,8 @@ export class TicketManager {
     this.workState = "loaded";
     this.changedPaths.clear();
     this.pendingFinalAction = null;
+    this.baselineRev = undefined;
+    this.verifiedFingerprint = undefined;
     this.clearRemoteSession();
   }
 
@@ -476,6 +765,22 @@ export class TicketManager {
   private clearRemoteSession(): void {
     this.pendingRemote = null;
     this.remoteAnswers = {};
+  }
+
+  /** The commit to measure the ticket's changes from, or undefined when it cannot be recorded. */
+  private captureBaselineRev(): string | undefined {
+    if (!this.changeProbe) return undefined;
+    const baseline = captureBaseline(this.changeProbe.cwd());
+    return baseline.ok ? baseline.head : undefined;
+  }
+
+  /** What Git shows since the baseline. Unknown when there is no probe or no baseline. */
+  private observeChanges(): ChangeSet {
+    if (!this.changeProbe) return { known: false, reason: "no change probe is wired" };
+    if (this.baselineRev === undefined) {
+      return { known: false, reason: "the baseline commit was not recorded when the ticket was loaded" };
+    }
+    return collectChanges(this.changeProbe.cwd(), this.baselineRev);
   }
 
   private blockedByMcp(): TicketOperationResult | null {
@@ -559,6 +864,11 @@ export class TicketManager {
     this.activeTicket = { ...normalizeTicketContract(raw), tracker: this.activeTrackerId() };
     this.workState = "loaded";
     this.changedPaths.clear();
+    if (this.changeProbe) {
+      // EZE-496: the changes of this ticket are measured from here, and no earlier PASS covers them.
+      this.baselineRev = this.captureBaselineRev();
+      this.verifiedFingerprint = undefined;
+    }
     // The held step belonged to the previous work unit, not to this ticket.
     this.pendingFinalAction = null;
 
@@ -632,7 +942,7 @@ export class TicketManager {
     if (options?.force) this.pendingFinalAction = null;
 
     const verification = this.getVerification();
-    const gate = checkDoneGate(verification, Array.from(this.changedPaths), this.pendingFinalAction);
+    const gate = this.evaluateDoneGate();
     if (!gate.allowed) {
       if (gate.code === "pending_final_action") {
         return {
@@ -642,7 +952,8 @@ export class TicketManager {
             `Done Gate HELD: ${gate.reason} Nothing was sent to ${this.trackerName()} and the ticket stays open; ` +
             `the verification record is unchanged (status ${verification.status}, revision ${verification.revision}). ` +
             "Report the pending step to the user and wait: complete only after they confirm it, " +
-            "or repeat with force: true as their explicit confirmation.",
+            "or repeat with force: true as their explicit confirmation. " +
+            "If the user never asked to hold this step, tell them they can run /aies-ticket cancel-pending to drop the hold.",
         };
       }
       return { ok: false, error: "verify_gate_denied", message: `Done Gate DENIED: ${gate.reason}` };

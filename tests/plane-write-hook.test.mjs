@@ -10,7 +10,8 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +28,26 @@ const DONE = PLANE_STATES.find((state) => state.name === "Done").id;
 const BACKLOG = PLANE_STATES.find((state) => state.name === "Backlog").id;
 const TODO = PLANE_STATES.find((state) => state.name === "Todo").id;
 const OTHER_WORKITEM = "11111111-2222-4333-8444-555555555555";
+
+/**
+ * A committed, clean throwaway repository. The Done Gate reads the working tree of the
+ * session (EZE-496), so the hook runs in one that has no change of its own to report.
+ */
+function createCleanRepo(dir) {
+  const repoDir = join(dir, "repo");
+  mkdirSync(repoDir);
+  const git = (...args) =>
+    execFileSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${join(dir, "no-hooks")}`, ...args],
+      { cwd: repoDir, stdio: ["ignore", "pipe", "pipe"] },
+    );
+  git("init", "-q");
+  writeFileSync(join(repoDir, "README.md"), "# Throwaway\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "chore: seed");
+  return repoDir;
+}
 
 function hookContext() {
   return { cwd: REPO, mode: "print", hasUI: false, getContextUsage: () => undefined };
@@ -117,10 +138,15 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
   let agentDir;
   let simulator;
   let host;
+  let savedCwd;
+  let repoRoot;
 
   beforeEach(() => {
     savedAgentDir = process.env.PI_CODING_AGENT_DIR;
     savedMode = process.env.PI_MCP_CONFIG_MODE;
+    savedCwd = process.cwd();
+    repoRoot = mkdtempSync(join(tmpdir(), "aies-plane-hook-repo-"));
+    process.chdir(createCleanRepo(repoRoot));
     agentDir = mkdtempSync(join(tmpdir(), "aies-plane-hook-"));
     writeFileSync(join(agentDir, "aies.json"), JSON.stringify({ tracker: "plane" }));
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -134,11 +160,13 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
 
   afterEach(() => {
     getActiveTicketManager().reset();
+    process.chdir(savedCwd);
     if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
     if (savedMode === undefined) delete process.env.PI_MCP_CONFIG_MODE;
     else process.env.PI_MCP_CONFIG_MODE = savedMode;
     rmSync(agentDir, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
   });
 
   function stateOf() {

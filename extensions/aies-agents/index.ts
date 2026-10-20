@@ -21,15 +21,15 @@ import {
 import {
   applyWorkUnitChange,
   createVerificationState,
+  isVerificationValid,
   type VerificationState,
 } from "./verification.ts";
 import {
   getContextGovernor,
   type ContextGovernor,
 } from "./context-governor.ts";
-import { TicketManager } from "./linear/manager.ts";
-import { holdBypassReason, planeWriteBypassReason } from "./linear/pending-action.ts";
-import { checkDoneGate } from "./linear/policy.ts";
+import { TicketManager, linearDoneGateBypassReason } from "./linear/manager.ts";
+import { holdBypassReason, isDirectLinearCompletion, planeWriteBypassReason } from "./linear/pending-action.ts";
 import { trackerLabelForServer } from "./linear/labels.ts";
 import { selectTracker } from "./linear/tracker.ts";
 import { checkTicketRepo, repoGuardBlockReason } from "./repo-guard.ts";
@@ -183,6 +183,8 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     getVerification: () => verification,
     getMcpDiagnostic: () =>
       diagnoseMcpServer(mcpState, { server: activeTrackerServer(), adapterToolNames: sessionToolNames(pi) }),
+    // EZE-496: the Done Gate reads the working tree of the session, not only what this session reported.
+    changeProbe: { cwd: () => process.cwd() },
   });
   activeTicketManager = ticketManager;
 
@@ -205,6 +207,8 @@ export default function aiesAgents(pi: ExtensionAPI): void {
         get: () => verification,
         set: (next) => {
           verification = next;
+          // EZE-496: a PASS is bound to the changes it verified, so a later change needs a new one.
+          if (isVerificationValid(next)) ticketManager.recordVerifiedState();
         },
       },
     }),
@@ -264,10 +268,17 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     const planeWrite = planeWriteBypassReason(event.toolName, input, {
       pending: ticketManager.getPendingDirective(),
       pendingAction: ticketManager.getPendingRemoteAction(),
-      doneGate: () => checkDoneGate(verification, ticketManager.getChangedPaths(), ticketManager.getPendingFinalAction()),
+      doneGate: () => ticketManager.evaluateDoneGate(),
       trust: mcpTrust,
     });
     if (planeWrite) return { block: true, reason: planeWrite };
+
+    // EZE-496: a direct Linear Done (`save_issue` into a completed state) is refused unless the
+    // same Done Gate that `aies_ticket complete` uses allows it. Nothing is sent when it is refused.
+    if (activeTicket && isDirectLinearCompletion(event.toolName, input, activeTicket)) {
+      const gate = ticketManager.evaluateDoneGate();
+      if (!gate.allowed) return { block: true, reason: linearDoneGateBypassReason(activeTicket, gate.reason) };
+    }
 
     // Check hard guardrails before tool execution (routing limits + context governor ceiling)
     const guard = checkRoutingGuardrail(

@@ -15,6 +15,7 @@ import { describeMcpDiagnostic } from "../mcp/integration.ts";
 import { formatCompactContract } from "./contract.ts";
 import { configuredTrackerLabel } from "./tracker.ts";
 import type { TicketManager } from "./manager.ts";
+import { describePendingFinalAction } from "./pending-action.ts";
 import { ticketLoadPrompt, deliverAgentInstruction } from "./prompt.ts";
 
 /** A missing transport is an error; missing authentication is a warning. */
@@ -22,11 +23,39 @@ function diagnosticLevel(code: string): "warning" | "error" {
   return code === "needs_auth" ? "warning" : "error";
 }
 
+/**
+ * The user-only token that drops a held final step the user never asked for. It is a slash
+ * command, so the model cannot send it: it is not an `aies_ticket` action and does not
+ * change what `force` means.
+ */
+const CANCEL_PENDING_TOKEN = "cancel-pending";
+
 export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager): void {
   pi.registerCommand("aies-ticket", {
-    description: `Activate or show the active ${configuredTrackerLabel()} ticket for this session (/aies-ticket [ticketId])`,
+    description: `Activate or show the active ${configuredTrackerLabel()} ticket for this session (/aies-ticket [ticketId] | cancel-pending)`,
     handler: async (args, ctx) => {
       const ticketId = args?.trim();
+
+      if (ticketId === CANCEL_PENDING_TOKEN) {
+        const cancelled = manager.cancelPendingFinalAction();
+        if (!cancelled) {
+          ctx.ui.notify("No pending final action to cancel: nothing is held on the active ticket.", "info");
+          return;
+        }
+        // Persist the cleared hold now, the same way the session snapshot is written at turn end.
+        const snapshot = manager.toSnapshot();
+        if (snapshot) {
+          try {
+            pi.appendEntry("aies-ticket", snapshot);
+          } catch {}
+        }
+        ctx.ui.notify(
+          `Cancelled the hold: ${describePendingFinalAction(cancelled)}. ` +
+            "Verification, changed paths and the ticket are unchanged; the Done Gate still applies.",
+          "info",
+        );
+        return;
+      }
 
       if (!ticketId) {
         const active = manager.getActiveTicket();

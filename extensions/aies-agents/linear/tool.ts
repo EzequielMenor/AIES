@@ -16,7 +16,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { describeMcpDiagnostic, type McpDiagnostic } from "../mcp/integration.ts";
 import { formatCompactContract } from "./contract.ts";
 import { configuredTrackerLabel } from "./tracker.ts";
-import type { TicketManager } from "./manager.ts";
+import type { DoneGateDiagnosis, DoneGatePathList, TicketManager } from "./manager.ts";
 import { describePendingFinalAction } from "./pending-action.ts";
 import { readRemoteAnswer } from "./transport.ts";
 
@@ -242,6 +242,37 @@ function readMcpDiagnostic(details: unknown): McpDiagnostic | null {
     : null;
 }
 
+/** A capped path list as text: the shown paths, then the count left out. */
+function formatPathList(list: DoneGatePathList): string {
+  const shown = [...list.items, ...(list.more > 0 ? [`+${list.more} more`] : [])];
+  return shown.length > 0 ? shown.join(", ") : "none";
+}
+
+/**
+ * The Done Gate section of `show` (EZE-496): the verdict first, then the Git evidence and
+ * the Verify binding it was reached from. Rendered only from `describeDoneGate`.
+ */
+function renderDoneGate(diagnosis: DoneGateDiagnosis): string {
+  const { verification, fingerprint } = diagnosis;
+  const evidence =
+    diagnosis.evidence === "unknown"
+      ? `unknown — ${diagnosis.unknownReason ?? "Git could not describe the changes"}`
+      : diagnosis.evidence;
+  const comparison = fingerprint.matches === null ? "not comparable" : fingerprint.matches ? "match" : "differ";
+  const lines = [
+    `Done Gate: ${diagnosis.decision} — ${diagnosis.reason}`,
+    `Baseline: ${diagnosis.baseline}`,
+    `Git evidence: ${evidence}`,
+    `Changed paths: ${formatPathList(diagnosis.effectivePaths)}`,
+    `Detected by Git: ${formatPathList(diagnosis.detectedPaths)}`,
+    `Verification required: ${diagnosis.verificationRequired.required ? "yes" : "no"} (${diagnosis.verificationRequired.reason})`,
+    `Verification: ${verification.status}, revision ${verification.revision}, verified revision ${verification.verifiedRevision ?? "none"}, ${verification.valid ? "valid" : "not valid"}`,
+    `Fingerprint: current ${fingerprint.current}, verified ${fingerprint.verified} (${comparison})`,
+    `Pending hold: ${diagnosis.pendingFinalAction ? diagnosis.pendingFinalAction.kind : "none"}`,
+  ];
+  return lines.join("\n");
+}
+
 function readInstruction(details: unknown): string | null {
   if (!details || typeof details !== "object") return null;
   const instruction = (details as { instruction?: unknown }).instruction;
@@ -374,13 +405,17 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
             const state = manager.getWorkState();
             const pending = manager.getPendingFinalAction();
             const held = pending ? `\n\nPending final action: ${describePendingFinalAction(pending)}. Done stays held until the user confirms that step.` : "";
+            const doneGate = manager.describeDoneGate();
             return {
-              content: [{ type: "text" as const, text: `Active Ticket [workState: ${state}]:\n\n${contract}${held}` }],
+              content: [
+                { type: "text" as const, text: `Active Ticket [workState: ${state}]:\n\n${contract}${held}\n\n${renderDoneGate(doneGate)}` },
+              ],
               details: {
                 active: true,
                 ticket: active,
                 workState: state,
                 ...(pending ? { pendingFinalAction: pending } : {}),
+                doneGate,
               },
               isError: false,
             };

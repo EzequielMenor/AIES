@@ -62,7 +62,7 @@ const DOCS_PATHS = ["docs/DECISIONS.md"];
 const PENDING_REQUESTS = [
   "no commit todavía",
   "no hagas commit todavía",
-  "sin commitear",
+  "sin commitear todavía",
   "don't commit yet",
   "quiero revisarlo antes",
   "déjalo pendiente de review",
@@ -624,7 +624,11 @@ describe("EZE-503 pending final action", () => {
         tool: "save_issue",
         args: { id: "EZE-503", state: "Done" },
       });
-      assert.equal(released, null, "the user's confirmation opens the path again");
+      // EZE-496: lifting the hold no longer opens a direct Done by itself. The ticket has a
+      // behaviour-bearing change and no Verify PASS, so the Done Gate refuses it on its own terms.
+      assert.ok(released?.block, "the lifted hold does not open the path: the Done Gate still applies");
+      assert.doesNotMatch(released.reason, /no hagas commit todavía/u, "the hold itself is gone");
+      assert.match(released.reason, /Verification required/u);
       resetSessionState();
     });
 

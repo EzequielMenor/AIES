@@ -135,5 +135,9 @@ export interface TicketSnapshot {
   pendingFinalAction?: PendingFinalAction | null;
   /** D33: the tracker the snapshot came from. Absent in older snapshots, meaning `linear`. */
   tracker?: TrackerId;
+  /** EZE-496: the commit the ticket's changes are measured from. Absent when it was not recorded (fails closed). */
+  baselineRev?: string;
+  /** EZE-496: the change fingerprint the last Verify PASS covered. Absent when no PASS is bound. */
+  verifiedFingerprint?: string;
   persistedAt: number;
 }
