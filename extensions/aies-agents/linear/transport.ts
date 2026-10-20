@@ -2,8 +2,11 @@
  * AIES-008: Linear Transport Layer.
  *
  * Separates transport mechanics from workflow policy. Provides:
- * - `LinearTransport`: the policy-facing seam, kept fakeable for tests.
- * - `LinearTransportError`: typed failure classification.
+ * - `TrackerTransport`: the tracker-neutral seam the policy talks to (D33). Plane
+ *   will implement the same four methods in phase 3. `LinearTransport` is kept as
+ *   an alias of it.
+ * - `LinearTransportError`: typed failure classification (`TrackerTransportError`
+ *   is the same class under a neutral name).
  * - `FakeLinearTransport`: deterministic in-memory transport for the test suite.
  * - `HostMediatedLinearTransport`: the runtime transport.
  *
@@ -27,7 +30,11 @@ export type LinearErrorCode =
   | "permission_denied"
   | "network_failure"
   | "invalid_transition"
-  | "remote_conflict";
+  | "remote_conflict"
+  | "invalid_remote_payload";
+
+/** Tracker-neutral name of the transport error codes (D33). */
+export type TrackerErrorCode = LinearErrorCode;
 
 export class LinearTransportError extends Error {
   readonly code: LinearErrorCode;
@@ -46,6 +53,10 @@ export class LinearTransportError extends Error {
   }
 }
 
+/** Tracker-neutral name of the transport error class (same class, D33). */
+export const TrackerTransportError = LinearTransportError;
+export type TrackerTransportError = LinearTransportError;
+
 /** A missing remote value the Parent has to fetch through the MCP proxy tool. */
 export function isLinearRemoteRequired(
   error: unknown,
@@ -53,17 +64,25 @@ export function isLinearRemoteRequired(
   return error instanceof LinearTransportError && error.code === "remote_required" && error.directive !== undefined;
 }
 
-export interface LinearTransport {
+/**
+ * The seam between the ticket policy and one tracker backend (D33). Every backend
+ * implements these four calls with the same issue shape and the same error codes;
+ * `tests/helpers/tracker-transport-contract.mjs` is the executable form of that rule.
+ */
+export interface TrackerTransport {
   getIssue(id: string): Promise<LinearIssueRaw | null>;
   updateIssue(id: string, update: LinearIssueUpdate): Promise<LinearIssueRaw>;
   getStatuses(teamIdOrProjectId?: string): Promise<LinearStatus[]>;
   addComment(id: string, body: string): Promise<void>;
 }
 
+/** Compatibility alias: the Linear backend implements the generic transport. */
+export type LinearTransport = TrackerTransport;
+
 /**
  * Deterministic in-memory fake transport for tests and offline verification.
  */
-export class FakeLinearTransport implements LinearTransport {
+export class FakeLinearTransport implements TrackerTransport {
   private issues = new Map<string, LinearIssueRaw>();
   private statuses: LinearStatus[] = [
     { id: "status-backlog", name: "Backlog", type: "backlog" },
@@ -281,13 +300,43 @@ export function normalizeStatuses(value: unknown): LinearStatus[] {
 }
 
 /**
+ * The answer the Parent already captured for one MCP call, or the `remote_required`
+ * directive for it. Shared by every mediated transport (D33 phase 3): the key is
+ * `linearRemoteKey`, so a replay finds exactly the answer that was captured.
+ *
+ * A non-empty `stage` (D36 part 3) gives a second, identical call of the same
+ * operation its own key: the Parent sees a separate directive with the same MCP call,
+ * and the first answer can never stand in for it. The MCP call itself is unchanged.
+ */
+export function mediatedAnswer<T>(
+  answers: Readonly<Record<string, unknown>>,
+  server: string,
+  tool: string,
+  args: Record<string, unknown>,
+  purpose: string,
+  /** The tracker the call belongs to, named in the directive message (D33 phase 4). */
+  label: string = "Linear",
+  stage: string = "",
+): T {
+  const callKey = linearRemoteKey(server, tool, args);
+  const key = stage ? `${callKey}#${stage}` : callKey;
+  if (Object.prototype.hasOwnProperty.call(answers, key)) {
+    return answers[key] as T;
+  }
+  const directive: LinearRemoteDirective = { key, server, tool, args, purpose };
+  throw new LinearTransportError("remote_required", `${label} remote call required: ${tool} (${purpose})`, {
+    directive,
+  });
+}
+
+/**
  * Runtime Linear transport.
  *
  * Every call is answered from work the Parent already completed, or fails with a
  * `remote_required` directive for the first call that is still missing. It never
  * opens a connection, never holds a credential and never reads the environment.
  */
-export class HostMediatedLinearTransport implements LinearTransport {
+export class HostMediatedLinearTransport implements TrackerTransport {
   private readonly answers: Readonly<Record<string, unknown>>;
   private readonly server: string;
 
@@ -297,14 +346,7 @@ export class HostMediatedLinearTransport implements LinearTransport {
   }
 
   private answer<T>(tool: string, args: Record<string, unknown>, purpose: string): T {
-    const key = linearRemoteKey(this.server, tool, args);
-    if (Object.prototype.hasOwnProperty.call(this.answers, key)) {
-      return this.answers[key] as T;
-    }
-    const directive: LinearRemoteDirective = { key, server: this.server, tool, args, purpose };
-    throw new LinearTransportError("remote_required", `Linear remote call required: ${tool} (${purpose})`, {
-      directive,
-    });
+    return mediatedAnswer<T>(this.answers, this.server, tool, args, purpose);
   }
 
   async getIssue(id: string): Promise<LinearIssueRaw | null> {

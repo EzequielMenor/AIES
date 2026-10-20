@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
@@ -52,6 +52,7 @@ import {
   applyToolResult,
   createState,
 } from "../extensions/aies-runtime/state.ts";
+import { useTrustedProfileEnv } from "./helpers/mcp-profile.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
@@ -103,6 +104,13 @@ function verifyCompletionArgs(status, details) {
     next: [],
   };
 }
+
+// The real hook reads the MCP profile from the environment: a trusted one for the whole file (D38).
+let restoreProfileEnv;
+beforeEach(() => {
+  restoreProfileEnv = useTrustedProfileEnv();
+});
+afterEach(() => restoreProfileEnv());
 
 describe("AIES-008 Real Smoke: Linear Ticket Workflow End-to-End", () => {
   it("Scenario A: loads ticket -> start -> Explore -> Worker -> Verify PASS -> complete in Linear", async () => {

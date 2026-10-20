@@ -6,7 +6,8 @@
  * bloat while preserving exact goal, acceptance criteria, and constraints.
  */
 
-import type { ActiveTicket, LinearIssueRaw, LinearRemoteDirective } from "./types.ts";
+import { trackerLabelForServer } from "./labels.ts";
+import type { ActiveTicket, LinearIssueRaw, LinearRemoteDirective, LinearStatus } from "./types.ts";
 
 export interface CriteriaExtractionResult {
   criteria: string[];
@@ -192,6 +193,106 @@ export function hasUsableIssueIdentity(raw: unknown): boolean {
   return readIssueIdentity(raw) !== undefined;
 }
 
+/** Plane's human ticket key: an uppercase project key, a dash and a positive sequence number. */
+const PLANE_IDENTIFIER = /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
+const PLANE_PROJECT_KEY = /^[A-Z][A-Z0-9]*$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/** True for a Plane ticket key (`AIES-38`). Anything else, UUIDs included, is not an identity. */
+export function isPlaneIdentifier(value: unknown): value is string {
+  return typeof value === "string" && PLANE_IDENTIFIER.test(value);
+}
+
+/** True for a Plane project or work item UUID: an internal id, never a ticket identity. */
+export function isPlaneUuid(value: unknown): boolean {
+  return typeof value === "string" && UUID.test(value.trim());
+}
+
+/**
+ * The human identity of a Plane work item: `project.identifier` followed by the
+ * work item's `sequence_id` (D33 item 7). The work item UUID is never used here, so
+ * a payload without the project key and the sequence has no identity at all.
+ */
+export function readPlaneIdentifier(raw: unknown): string | undefined {
+  const record = asObject(raw);
+  const project = asObject(record?.project);
+  const key = asNonEmptyString(project?.identifier);
+  const sequence = record?.sequence_id;
+  const number =
+    typeof sequence === "number"
+      ? sequence
+      : typeof sequence === "string" && /^[0-9]+$/.test(sequence.trim())
+        ? Number(sequence)
+        : Number.NaN;
+  if (!key || !PLANE_PROJECT_KEY.test(key) || !Number.isSafeInteger(number) || number < 1) return undefined;
+  return `${key}-${number}`;
+}
+
+/** Plane's HTML description reduced to text, for the fallback when no stripped text is sent. */
+function stripPlaneHtml(html: string | undefined): string | undefined {
+  if (!html) return undefined;
+  const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return text || undefined;
+}
+
+/**
+ * Normalize a Plane work item (the `workitem retrieve_by_identifier` shape, with
+ * `expand=state,project`) into the issue shape the workflow reads. The `id` of the
+ * result is the human key or empty: the work item UUID is kept in `planeId` and the
+ * project UUID in `planeProjectId`/`teamId`, where only writes need them. A payload
+ * without a human key therefore fails the identity gate exactly as an identity-less
+ * Linear payload does (D22).
+ */
+export function normalizePlaneWorkItem(raw: unknown): LinearIssueRaw {
+  const record = asObject(raw) ?? {};
+  const project = asObject(record.project);
+  const state = asObject(record.state);
+  const identifier = readPlaneIdentifier(record) ?? "";
+  const projectId = asNonEmptyString(project?.id);
+  const projectName = asNonEmptyString(project?.name);
+  const projectKey = asNonEmptyString(project?.identifier);
+  const stateId = asNonEmptyString(state?.id);
+  const stateName = asNonEmptyString(state?.name);
+  const group = asNonEmptyString(state?.group);
+  const description = asNonEmptyString(record.description_stripped) ?? stripPlaneHtml(asNonEmptyString(record.description_html));
+
+  return {
+    id: identifier,
+    identifier,
+    title: asNonEmptyString(record.name) ?? "",
+    description: description ?? "",
+    state: stateId || stateName || group ? { id: stateId ?? "", name: stateName ?? "", type: group } : undefined,
+    project: project ? { id: projectId ?? "", name: projectName ?? "", identifier: projectKey } : undefined,
+    teamId: projectId,
+    planeId: asNonEmptyString(record.id),
+    planeProjectId: projectId,
+  };
+}
+
+/**
+ * Normalize a Plane `state list` answer (`{ results: [...] }` or a bare array) into
+ * the workflow status shape. `group` is kept as Plane spells it, so `cancelled`
+ * stays `cancelled` and `detectRemoteConflict` maps it to a cancellation.
+ */
+export function normalizePlaneStates(value: unknown): LinearStatus[] {
+  const record = asObject(value);
+  const list = Array.isArray(value) ? value : Array.isArray(record?.results) ? record.results : [];
+  const statuses: LinearStatus[] = [];
+  for (const entry of list) {
+    const state = asObject(entry);
+    const id = asNonEmptyString(state?.id);
+    const name = asNonEmptyString(state?.name);
+    const group = asNonEmptyString(state?.group);
+    if (!id || !name || !group) continue;
+    statuses.push({ id, name, type: group });
+  }
+  return statuses;
+}
+
 /**
  * Normalizes a raw Linear issue payload into a lean ActiveTicket representation.
  */
@@ -212,6 +313,11 @@ export function normalizeTicketContract(raw: LinearIssueRaw): ActiveTicket {
   } else if (raw.project && typeof raw.project === "object" && raw.project.name) {
     project = raw.project.name;
   }
+
+  const projectIdentifier =
+    raw.project && typeof raw.project === "object" && typeof raw.project.identifier === "string"
+      ? raw.project.identifier.trim()
+      : "";
 
   const labels: string[] = [];
   if (Array.isArray(raw.labels)) {
@@ -234,6 +340,8 @@ export function normalizeTicketContract(raw: LinearIssueRaw): ActiveTicket {
     statusId: state.id,
     statusType: state.type,
     project,
+    // D33 item 9: Plane's project identifier (`AIES` in `AIES-38`). Linear never sends it, so its tickets keep their shape.
+    ...(projectIdentifier ? { projectIdentifier } : {}),
     team: readIssueTeam(raw),
     labels: labels.length > 0 ? labels : undefined,
     url: raw.url,
@@ -294,10 +402,11 @@ export function formatCompactContract(ticket: ActiveTicket): string {
  * MCP itself, so this string is the whole transport contract between them.
  */
 export function describeRemoteDirective(directive: LinearRemoteDirective): string {
+  const label = trackerLabelForServer(directive.server);
   return [
-    "Linear remote call required.",
+    `${label} remote call required.`,
     "",
-    "AIES does not speak MCP itself: the Parent session performs every Linear read",
+    `AIES does not speak MCP itself: the Parent session performs every ${label} read`,
     "and write with the `mcp` proxy tool registered by pi-mcp-adapter.",
     "",
     "Run this call:",

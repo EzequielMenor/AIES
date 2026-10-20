@@ -24,6 +24,8 @@ export type AutonomyStopReason =
   | "context_failure"
   | "linear_conflict"
   | "linear_sync_failed"
+  | "tracker_conflict"
+  | "tracker_sync_failed"
   | "scope_change";
 
 export interface AutonomyState {

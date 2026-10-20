@@ -18,6 +18,8 @@ const BLOCKED_STOP_REASONS: ReadonlySet<string> = new Set([
   "blocked",
   "linear_conflict",
   "linear_sync_failed",
+  "tracker_conflict",
+  "tracker_sync_failed",
   "permission_denied",
   "sandbox_unavailable",
   "no_progress",

@@ -9,7 +9,7 @@
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import type { AgentsSnapshot } from "./agents.ts";
-import { clip, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { clip, formatCost, formatDuration, formatTokens, singleLine, trackerName } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { sectionHeading } from "./panel.ts";
 import { deriveStage, verificationStatusLabel } from "./vocabulary.ts";
@@ -39,6 +39,13 @@ const STOP_LABEL: Record<string, string> = {
   scope_change: "cambio de alcance",
 };
 
+/** The Spanish label of an autonomy stop. The generic tracker codes name the active tracker (D33 phase 4). */
+function stopReasonLabel(reason: string, tracker?: string): string | undefined {
+  if (reason === "tracker_conflict") return `conflicto en ${trackerName(tracker)}`;
+  if (reason === "tracker_sync_failed") return `${trackerName(tracker)} no sincronizó`;
+  return STOP_LABEL[reason];
+}
+
 export interface DoneSummaryAgent {
   role: string;
   glyph: string;
@@ -58,6 +65,8 @@ export interface DoneSummaryInput {
   changes?: string[];
   verification?: string;
   linear?: string;
+  /** The tracker label shown before the status; absent means Linear. */
+  tracker?: string;
   durationMs?: number;
   /** Legacy detail input kept in the durable entry; never drawn in the card. */
   commit?: string;
@@ -143,7 +152,8 @@ export function renderDoneSummary(
   }
 
   const linear = singleLine(input.linear ?? "");
-  if (linear) lines.push(`  Linear ✓ ${linear}`);
+  const trackerText = singleLine(input.tracker ?? "") || "Linear";
+  if (linear) lines.push(`  ${trackerText} ✓ ${linear}`);
 
   const warnings = (input.warnings ?? []).map((entry) => singleLine(String(entry))).filter(Boolean);
   if (warnings.length) {
@@ -256,7 +266,7 @@ export function renderAutonomyStatus(snapshot: AiesSnapshot, options: { paint?: 
   if (autonomy) {
     runRows.push(row("continuaciones", String(autonomy.continuationCount)));
     if (autonomy.lastStep) runRows.push(row("último paso", autonomy.lastStep));
-    const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
+    const stopped = autonomy.stopReason ? stopReasonLabel(autonomy.stopReason, ticket?.tracker) : undefined;
     if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
   sections.push([sectionHeading("Ejecución", paint, "muted"), ...runRows]);
@@ -298,7 +308,7 @@ export function renderStatusOverview(snapshot: AgentsSnapshot, now: number, opti
   const runRows = [row("etapa", autonomy?.enabled ? `${stage} · autonomía activa` : stage)];
   if (autonomy) {
     runRows.push(row("continuaciones", String(autonomy.continuationCount)));
-    const stopped = autonomy.stopReason ? STOP_LABEL[autonomy.stopReason] : undefined;
+    const stopped = autonomy.stopReason ? stopReasonLabel(autonomy.stopReason, ticket?.tracker) : undefined;
     if (!autonomy.enabled && stopped) runRows.push(row("parada", stopped));
   }
   const model = snapshot.model;

@@ -554,7 +554,7 @@ print("STDERR:" + p.stderr.decode())
       }
     });
 
-    it("preserves existing adapter config byte-for-byte when there is no legacy file", () => {
+    it("keeps custom adapter servers and adds the missing template servers when there is no legacy file", () => {
       const testAgentDir = mkdtempSync(join(tmpdir(), "aies-mcp-case-c-"));
       try {
         const adapterJson = join(testAgentDir, "mcp-adapter.json");
@@ -563,12 +563,14 @@ print("STDERR:" + p.stderr.decode())
 
         const first = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
         assert.equal(first.status, 0);
-        assert.equal(readFileSync(adapterJson, "utf8"), customAdapterContent);
+        const afterFirst = readFileSync(adapterJson, "utf8");
+        assert.deepEqual(Object.keys(JSON.parse(afterFirst).mcpServers), ["v3-custom", "linear", "plane"]);
+        assert.deepEqual(JSON.parse(afterFirst).mcpServers["v3-custom"], { command: "v3" });
 
         // Second run: 0 changes
         const second = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
         assert.equal(second.status, 0);
-        assert.equal(readFileSync(adapterJson, "utf8"), customAdapterContent);
+        assert.equal(readFileSync(adapterJson, "utf8"), afterFirst);
         assert.doesNotMatch(second.stdout, /reconciled at/);
       } finally {
         rmSync(testAgentDir, { recursive: true, force: true });
@@ -609,7 +611,7 @@ print("STDERR:" + p.stderr.decode())
         writeFileSync(adapterJson, "[]\n");
 
         const result = spawnSync("node", [seedScript, templateDir, testAgentDir], { encoding: "utf8" });
-        assert.equal(result.status, 0);
+        assert.equal(result.status, 1, "a refused profile file is an error for the seed, which bootstrap tolerates");
         assert.equal(readFileSync(mcpJson, "utf8"), legacy);
         assert.equal(readFileSync(adapterJson, "utf8"), "[]\n");
       } finally {
@@ -932,8 +934,8 @@ print("STDERR:" + p.stderr.decode())
     const leaked = skills.filter((command) => !command.sourceInfo?.path?.startsWith(REPO));
     assert.deepEqual(leaked, [], `global cross-harness skills leaked into the AIES profile: ${JSON.stringify(leaked)}`);
     assert.ok(
-      skills.some((command) => command.name === "skill:linear-ticket"),
-      "repository skill linear-ticket was not loaded via --skill",
+      skills.some((command) => command.name === "skill:ticket-workflow"),
+      "repository skill ticket-workflow was not loaded via --skill",
     );
   });
 
@@ -984,7 +986,7 @@ print("STDERR:" + p.stderr.decode())
     );
 
     const servers = JSON.parse(readFileSync(profileConfig, "utf8")).mcpServers ?? {};
-    assert.deepEqual(Object.keys(servers), ["linear"]);
+    assert.deepEqual(Object.keys(servers), ["linear", "plane"]);
     assert.equal(servers.linear.url, "https://mcp.linear.app/mcp");
     assert.equal(servers.linear.auth, "oauth");
 
@@ -1003,6 +1005,7 @@ print("STDERR:" + p.stderr.decode())
     // and the Linear server definition, auth and lazy lifecycle stay untouched.
     assert.deepEqual(repoConfig.mcpServers, {
       linear: { url: "https://mcp.linear.app/mcp", auth: "oauth", lifecycle: "lazy" },
+      plane: { url: "https://mcp.plane.so/http/mcp", auth: "oauth", lifecycle: "lazy" },
     });
     assert.equal(repoConfig.settings.scriptMode, false);
     assert.equal(repoConfig.settings.toolResultRendering, "compact");
@@ -1016,7 +1019,7 @@ print("STDERR:" + p.stderr.decode())
     assert.equal(seeded.settings.collapsedResultLines, 1);
     assert.equal(seeded.settings.notifyOnStartupConnect, false);
     assert.equal(seeded.settings.mcpFooterStatus, "off");
-    assert.deepEqual(Object.keys(seeded.mcpServers), ["linear"]);
+    assert.deepEqual(Object.keys(seeded.mcpServers), ["linear", "plane"]);
     assert.equal(seeded.mcpServers.linear.url, "https://mcp.linear.app/mcp");
     assert.equal(seeded.mcpServers.linear.lifecycle, "lazy");
   });

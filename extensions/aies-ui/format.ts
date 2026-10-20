@@ -101,6 +101,11 @@ export function singleLine(text: string): string {
 }
 
 /** Capitalize the first letter of a single-line value; empty stays empty. */
+/** The tracker name in the human view (D33 phase 4): Plane for `plane`, Linear otherwise. */
+export function trackerName(tracker?: string | null): string {
+  return tracker === "plane" ? "Plane" : "Linear";
+}
+
 export function capitalize(value: string): string {
   const trimmed = singleLine(value);
   return trimmed ? trimmed.charAt(0).toUpperCase() + trimmed.slice(1) : "";

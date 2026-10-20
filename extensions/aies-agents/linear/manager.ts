@@ -32,7 +32,9 @@ import {
   detectRemoteConflict,
   resolveTargetStatus,
 } from "./policy.ts";
+import { trackerLabel, trackerLabelForServer } from "./labels.ts";
 import { readFinalActionDirective, type PendingFinalAction } from "./pending-action.ts";
+import { HostMediatedPlaneTransport, PlaneWriteUnconfirmedError } from "./plane-transport.ts";
 import {
   HostMediatedLinearTransport,
   isLinearRemoteRequired,
@@ -40,14 +42,16 @@ import {
   LinearTransportError,
   normalizeStatuses,
   unwrapMcpAnswer,
-  type LinearTransport,
+  type TrackerTransport,
 } from "./transport.ts";
+import { DEFAULT_TRACKER_ID, selectTracker, type TrackerSelection } from "./tracker.ts";
 import type {
   ActiveTicket,
   LinearRemoteDirective,
   TicketOperationResult,
   TicketSnapshot,
   TicketWorkState,
+  TrackerId,
 } from "./types.ts";
 
 /** Operations that need a Linear round trip and can be resumed afterwards. */
@@ -60,7 +64,7 @@ interface PendingRemote {
 }
 
 export interface TicketManagerOptions {
-  transport?: LinearTransport;
+  transport?: TrackerTransport;
   getVerification: () => VerificationState;
   /**
    * MCP availability probe. Absent in tests. When it reports that the transport
@@ -68,6 +72,11 @@ export interface TicketManagerOptions {
    * Parent for a call that cannot succeed.
    */
   getMcpDiagnostic?: () => McpDiagnostic;
+  /**
+   * D33: the configured tracker. Absent, it is read from `$PI_CODING_AGENT_DIR/aies.json`
+   * on every operation, so a changed profile takes effect without a restart.
+   */
+  selectTracker?: () => TrackerSelection;
 }
 
 /** Build a clear `invalid_remote_payload` refusal for a captured/handed answer. */
@@ -78,7 +87,7 @@ function invalidRemotePayload(
   return {
     ok: false,
     error: "invalid_remote_payload",
-    message: `Linear ${directive.tool} returned an unusable answer: ${reason}. The operation was not completed and no partial ticket was activated.`,
+    message: `${trackerLabelForServer(directive.server)} ${directive.tool} returned an unusable answer: ${reason}. The operation was not completed and no partial ticket was activated.`,
   };
 }
 
@@ -86,9 +95,10 @@ export class TicketManager {
   private activeTicket: ActiveTicket | null = null;
   private workState: TicketWorkState = "loaded";
   private changedPaths: Set<string> = new Set();
-  private transportOverride?: LinearTransport;
+  private transportOverride?: TrackerTransport;
   private getVerification: () => VerificationState;
   private mcpProbe?: () => McpDiagnostic;
+  private trackerSelector: () => TrackerSelection;
 
   /** The call the Parent still owes, if any. */
   private pendingRemote: PendingRemote | null = null;
@@ -102,14 +112,15 @@ export class TicketManager {
     this.transportOverride = options.transport;
     this.getVerification = options.getVerification;
     this.mcpProbe = options.getMcpDiagnostic;
+    this.trackerSelector = options.selectTracker ?? (() => selectTracker());
   }
 
-  setTransport(transport: LinearTransport): void {
+  setTransport(transport: TrackerTransport): void {
     this.transportOverride = transport;
   }
 
   /** The transport in use: the injected one in tests, otherwise the mediated one. */
-  getTransport(): LinearTransport {
+  getTransport(): TrackerTransport {
     return this.transportOverride ?? this.createTransport();
   }
 
@@ -156,6 +167,11 @@ export class TicketManager {
     return this.pendingRemote ? { ...this.pendingRemote.directive } : null;
   }
 
+  /** The mediated action that emitted the pending call (D33 part C), or null when none is pending. */
+  getPendingRemoteAction(): MediatedAction | null {
+    return this.pendingRemote ? this.pendingRemote.action : null;
+  }
+
   /** Stable key of the pending call, used to match a captured `mcp` result. */
   getPendingRemoteKey(): string | null {
     return this.pendingRemote ? this.pendingRemote.directive.key : null;
@@ -186,7 +202,7 @@ export class TicketManager {
         ok: false,
         error: "no_pending_remote",
         message:
-          "No Linear remote call is pending. Repeat the action without `remote` to receive the directive for the call that is still needed.",
+          `No ${this.trackerName()} remote call is pending. Repeat the action without \`remote\` to receive the directive for the call that is still needed.`,
       };
     }
     if (key && key.trim()) {
@@ -195,7 +211,7 @@ export class TicketManager {
         return {
           ok: false,
           error: "remote_mismatch",
-          message: `The supplied remote answer is for a different Linear call and was refused; the pending operation was left intact. Pending call: ${pending.directive.key}`,
+          message: `The supplied remote answer is for a different ${this.trackerName()} call and was refused; the pending operation was left intact. Pending call: ${pending.directive.key}`,
         };
       }
     }
@@ -232,8 +248,11 @@ export class TicketManager {
       input.args && typeof input.args === "object" && !Array.isArray(input.args)
         ? (input.args as Record<string, unknown>)
         : {};
-    if (linearRemoteKey(server, tool, args) !== pending.directive.key) return null;
-    return this.submitRemote(value, pending.directive.key);
+    // The captured call must be the MCP call the directive names. A staged directive (D36 part 3)
+    // shares that call with an earlier one, so it is matched by the call and answered by its own key.
+    const wanted = pending.directive;
+    if (linearRemoteKey(server, tool, args) !== linearRemoteKey(wanted.server, wanted.tool, wanted.args)) return null;
+    return this.submitRemote(value, wanted.key);
   }
 
   /**
@@ -328,6 +347,27 @@ export class TicketManager {
   }
 
   async run(action: MediatedAction, input: Record<string, unknown>): Promise<TicketOperationResult> {
+    // D33: an unknown tracker refuses before any transport is chosen, so it can never
+    // send an MCP call or change a ticket.
+    const selection = this.trackerSelector();
+    if (!selection.ok) {
+      this.clearRemoteSession();
+      return { ok: false, error: selection.error, message: selection.message };
+    }
+
+    // D33 item 2: a ticket loaded from one tracker is never operated through another.
+    // A change while a ticket is active fails closed, with no remote call.
+    const active = this.activeTicket;
+    const activeTracker = active ? (active.tracker ?? DEFAULT_TRACKER_ID) : null;
+    if (active && activeTracker !== selection.tracker.id) {
+      this.clearRemoteSession();
+      return {
+        ok: false,
+        error: "tracker_mismatch",
+        message: `Ticket ${active.identifier} was loaded with tracker "${activeTracker}" but the configured tracker is "${selection.tracker.id}". No remote call was made and the current state is unchanged.`,
+      };
+    }
+
     const blocked = this.blockedByMcp();
     if (blocked) {
       this.clearRemoteSession();
@@ -345,7 +385,7 @@ export class TicketManager {
         return {
           ok: false,
           error: "remote_required",
-          message: `Linear remote call required: ${directive.tool}`,
+          message: `${trackerLabel(selection.tracker.id)} remote call required: ${directive.tool}`,
           directive,
           details: { directive, instruction: describeRemoteDirective(directive) },
         };
@@ -353,7 +393,7 @@ export class TicketManager {
       const code = error instanceof LinearTransportError ? error.code : "transport_error";
       const message = error instanceof Error ? error.message : String(error);
       this.clearRemoteSession();
-      return { ok: false, error: code, message: `Linear ${action} failed: ${message}` };
+      return { ok: false, error: code, message: `${trackerLabel(selection.tracker.id)} ${action} failed: ${message}` };
     }
   }
 
@@ -366,16 +406,38 @@ export class TicketManager {
       lastKnownLinearStatus: this.activeTicket.status,
       changedPaths: Array.from(this.changedPaths),
       pendingFinalAction: this.pendingFinalAction ? { ...this.pendingFinalAction } : null,
+      tracker: this.activeTicket.tracker ?? DEFAULT_TRACKER_ID,
       persistedAt: Date.now(),
     };
   }
 
-  restoreFromSnapshot(snapshot: TicketSnapshot): void {
-    if (!snapshot || !snapshot.activeTicket) return;
-    this.activeTicket = { ...snapshot.activeTicket };
+  /**
+   * Resume a stored ticket. A snapshot from another tracker, or a configured tracker
+   * that cannot be used, is refused (D33 item 2): nothing is activated, the current
+   * state is kept and no remote call is made. A snapshot without a tracker predates
+   * the field and is Linear.
+   */
+  restoreFromSnapshot(snapshot: TicketSnapshot): TicketOperationResult {
+    if (!snapshot || !snapshot.activeTicket) return { ok: true };
+
+    const selection = this.trackerSelector();
+    if (!selection.ok) {
+      return { ok: false, error: selection.error, message: `Ticket snapshot not restored: ${selection.message}` };
+    }
+    const origin: unknown = snapshot.tracker ?? DEFAULT_TRACKER_ID;
+    if (origin !== selection.tracker.id) {
+      return {
+        ok: false,
+        error: "tracker_mismatch",
+        message: `Ticket snapshot not restored: it was recorded with tracker "${String(origin)}" but the configured tracker is "${selection.tracker.id}". No remote call was made and the current state is unchanged.`,
+      };
+    }
+
+    this.activeTicket = { ...snapshot.activeTicket, tracker: selection.tracker.id };
     this.workState = snapshot.workState ?? "loaded";
     this.changedPaths = new Set(snapshot.changedPaths ?? []);
     this.pendingFinalAction = snapshot.pendingFinalAction ?? null;
+    return { ok: true };
   }
 
   reset(): void {
@@ -386,8 +448,29 @@ export class TicketManager {
     this.clearRemoteSession();
   }
 
-  private createTransport(): LinearTransport {
-    return this.transportOverride ?? new HostMediatedLinearTransport(this.remoteAnswers);
+  private createTransport(): TrackerTransport {
+    if (this.transportOverride) return this.transportOverride;
+    const selection = this.trackerSelector();
+    if (!selection.ok) throw new LinearTransportError("mcp_unavailable", selection.message);
+    if (selection.tracker.id === "plane") {
+      return new HostMediatedPlaneTransport(this.remoteAnswers, selection.tracker.mcpServer);
+    }
+    return new HostMediatedLinearTransport(this.remoteAnswers, selection.tracker.mcpServer);
+  }
+
+  /**
+   * The tracker a ticket is loaded from. `run` has already accepted the configured
+   * tracker before any load reaches this point, so the fallback is never taken.
+   */
+  private activeTrackerId(): TrackerId {
+    const selection = this.trackerSelector();
+    return selection.ok ? selection.tracker.id : DEFAULT_TRACKER_ID;
+  }
+
+  /** The name of the configured tracker, for the texts this manager shows. */
+  trackerName(): string {
+    const selection = this.trackerSelector();
+    return trackerLabel(selection.ok ? selection.tracker.id : undefined);
   }
 
   private clearRemoteSession(): void {
@@ -402,7 +485,7 @@ export class TicketManager {
     return {
       ok: false,
       error: diagnostic.code === "needs_auth" ? "auth_unavailable" : "mcp_unavailable",
-      message: `Linear is unavailable: ${diagnostic.code}`,
+      message: `${this.trackerName()} is unavailable: ${diagnostic.code}`,
       details: { mcp: diagnostic },
     };
   }
@@ -429,7 +512,7 @@ export class TicketManager {
       case "refresh":
         return this.performRefresh();
       default:
-        return { ok: false, error: "unsupported_action", message: `Unsupported Linear action: ${String(action)}` };
+        return { ok: false, error: "unsupported_action", message: `Unsupported ${this.trackerName()} action: ${String(action)}` };
     }
   }
 
@@ -462,18 +545,18 @@ export class TicketManager {
     }
 
     if (!raw) {
-      return { ok: false, error: "not_found", message: `Ticket "${trimmedId}" not found on Linear.` };
+      return { ok: false, error: "not_found", message: `Ticket "${trimmedId}" not found on ${this.trackerName()}.` };
     }
 
     if (!hasUsableIssueIdentity(raw)) {
       return {
         ok: false,
         error: "invalid_remote_payload",
-        message: `Linear returned an issue without usable identity (no identifier, id or uuid) for "${trimmedId}". The ticket was not activated.`,
+        message: `${this.trackerName()} returned an issue without usable identity (no identifier, id or uuid) for "${trimmedId}". The ticket was not activated.`,
       };
     }
 
-    this.activeTicket = normalizeTicketContract(raw);
+    this.activeTicket = { ...normalizeTicketContract(raw), tracker: this.activeTrackerId() };
     this.workState = "loaded";
     this.changedPaths.clear();
     // The held step belonged to the previous work unit, not to this ticket.
@@ -518,6 +601,10 @@ export class TicketManager {
         }
       } catch (err) {
         if (isLinearRemoteRequired(err)) throw err;
+        // D36 part 3: a Plane start the read-back did not confirm does not move the local ticket.
+        if (err instanceof PlaneWriteUnconfirmedError) {
+          return { ok: false, error: err.code, message: `Plane start failed: ${err.message}` };
+        }
         // A status transition failure must not abort local work.
       }
     }
@@ -552,7 +639,7 @@ export class TicketManager {
           ok: false,
           error: "pending_final_action",
           message:
-            `Done Gate HELD: ${gate.reason} Nothing was sent to Linear and the ticket stays open; ` +
+            `Done Gate HELD: ${gate.reason} Nothing was sent to ${this.trackerName()} and the ticket stays open; ` +
             `the verification record is unchanged (status ${verification.status}, revision ${verification.revision}). ` +
             "Report the pending step to the user and wait: complete only after they confirm it, " +
             "or repeat with force: true as their explicit confirmation.",
@@ -573,7 +660,7 @@ export class TicketManager {
       return {
         ok: false,
         error: code,
-        message: `Linear sync failed (${code}): ${message}. Local implementation remains verified PASS. Sync pending.`,
+        message: `${this.trackerName()} sync failed (${code}): ${message}. Local implementation remains verified PASS. Sync pending.`,
       };
     }
 
@@ -596,7 +683,7 @@ export class TicketManager {
     } catch (err) {
       if (isLinearRemoteRequired(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: "sync_error", message: `Linear status lookup failed: ${message}. Local code verified PASS.` };
+      return { ok: false, error: "sync_error", message: `${this.trackerName()} status lookup failed: ${message}. Local code verified PASS.` };
     }
 
     const completedStatus = resolveTargetStatus(statuses, "completed");
@@ -604,7 +691,7 @@ export class TicketManager {
       return {
         ok: false,
         error: "sync_error",
-        message: "Linear exposes no completed workflow state for this team, so the ticket was not updated.",
+        message: `${this.trackerName()} exposes no completed workflow state for this team, so the ticket was not updated.`,
       };
     }
 
@@ -619,7 +706,7 @@ export class TicketManager {
       if (isLinearRemoteRequired(err)) throw err;
       const code = err instanceof LinearTransportError ? err.code : "sync_error";
       const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: code, message: `Linear status update failed: ${message}. Local code verified PASS.` };
+      return { ok: false, error: code, message: `${this.trackerName()} status update failed: ${message}. Local code verified PASS.` };
     }
 
     const completionComment =
@@ -637,7 +724,7 @@ export class TicketManager {
       ok: true,
       ticket: this.getActiveTicket()!,
       workState: this.workState,
-      message: `Ticket ${moved.identifier} marked Done in Linear.`,
+      message: `Ticket ${moved.identifier} marked Done in ${this.trackerName()}.`,
     };
   }
 
@@ -700,10 +787,12 @@ export class TicketManager {
         return {
           ok: false,
           error: "invalid_remote_payload",
-          message: `Linear returned an issue without usable identity (no identifier, id or uuid) for "${active.identifier}". The active ticket was left unchanged.`,
+          message: `${this.trackerName()} returned an issue without usable identity (no identifier, id or uuid) for "${active.identifier}". The active ticket was left unchanged.`,
         };
       }
-      this.activeTicket = normalizeTicketContract(fresh);
+      // D33: a Plane ticket keeps its tracker across a refresh, or the next operation refuses it.
+      const refreshed = normalizeTicketContract(fresh);
+      this.activeTicket = active.tracker === "plane" ? { ...refreshed, tracker: "plane" } : refreshed;
       return {
         ok: true,
         ticket: this.getActiveTicket()!,

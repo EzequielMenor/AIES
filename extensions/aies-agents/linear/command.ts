@@ -13,6 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { describeMcpDiagnostic } from "../mcp/integration.ts";
 import { formatCompactContract } from "./contract.ts";
+import { configuredTrackerLabel } from "./tracker.ts";
 import type { TicketManager } from "./manager.ts";
 import { ticketLoadPrompt, deliverAgentInstruction } from "./prompt.ts";
 
@@ -23,7 +24,7 @@ function diagnosticLevel(code: string): "warning" | "error" {
 
 export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager): void {
   pi.registerCommand("aies-ticket", {
-    description: "Activate or show the active Linear ticket for this session (/aies-ticket [ticketId])",
+    description: `Activate or show the active ${configuredTrackerLabel()} ticket for this session (/aies-ticket [ticketId])`,
     handler: async (args, ctx) => {
       const ticketId = args?.trim();
 
@@ -31,7 +32,7 @@ export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager):
         const active = manager.getActiveTicket();
         if (!active) {
           ctx.ui.notify(
-            "No active Linear ticket in this session. Activate one with /aies-ticket <id> (e.g. /aies-ticket EZE-123).",
+            `No active ${configuredTrackerLabel()} ticket in this session. Activate one with /aies-ticket <id> (e.g. /aies-ticket EZE-123).`,
             "info",
           );
           return;
@@ -83,8 +84,8 @@ export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager):
         // AIES cannot fetch Linear on its own: the Parent does it with the `mcp`
         // proxy tool, following the directive the tool returns. The instruction is
         // internal plumbing, so it travels hidden and never renders as user input.
-        ctx.ui.notify(`Cargando ${ticketId} con el agente (llamada MCP de Linear)...`, "info");
-        deliverAgentInstruction(pi, ticketLoadPrompt(ticketId));
+        ctx.ui.notify(`Cargando ${ticketId} con el agente (llamada MCP de ${configuredTrackerLabel()})...`, "info");
+        deliverAgentInstruction(pi, ticketLoadPrompt(ticketId, configuredTrackerLabel()));
         return;
       }
 

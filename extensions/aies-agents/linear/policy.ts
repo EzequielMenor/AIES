@@ -201,7 +201,8 @@ export function detectRemoteConflict(
     };
   }
 
-  if (freshStatusType === "canceled") {
+  // Plane spells the group `cancelled`; Linear spells it `canceled`. Both are a cancellation.
+  if (freshStatusType === "canceled" || freshStatusType === "cancelled") {
     return {
       conflict: true,
       reason: `Remote ticket was canceled externally (${freshStatusName}).`,

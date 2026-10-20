@@ -4,6 +4,12 @@
 
 import type { PendingFinalAction } from "./pending-action.ts";
 
+/**
+ * D33: the ticket tracker a profile uses. Only `linear` is operable today;
+ * `plane` is declared so a snapshot can name it and fail closed.
+ */
+export type TrackerId = "linear" | "plane";
+
 export type TicketWorkState =
   | "loaded"
   | "working"
@@ -40,7 +46,8 @@ export interface LinearIssueRaw {
     startedAt?: string;
     endedAt?: string | null;
   }>;
-  project?: { id: string; name: string } | string;
+  /** Plane's project key (`AIES` in `AIES-38`) is `identifier`; Linear never sends it. */
+  project?: { id: string; name: string; identifier?: string } | string;
   labels?: Array<{ id: string; name: string } | string>;
   /** Owning team, as a name or an object. */
   team?: string | { id?: string; name?: string };
@@ -92,10 +99,14 @@ export interface ActiveTicket {
   statusId?: string;
   statusType?: string;
   project?: string;
+  /** D33 item 9: the Plane project identifier (`AIES`), absent for Linear tickets. */
+  projectIdentifier?: string;
   /** Owning team name or id, required to resolve the team's workflow states. */
   team?: string;
   labels?: string[];
   url?: string;
+  /** D33: the tracker the ticket was loaded from. Absent in older snapshots, meaning `linear`. */
+  tracker?: TrackerId;
   loadedAt: number;
 }
 
@@ -122,5 +133,7 @@ export interface TicketSnapshot {
    * resume so a session reload cannot quietly re-open the Done path the user paused.
    */
   pendingFinalAction?: PendingFinalAction | null;
+  /** D33: the tracker the snapshot came from. Absent in older snapshots, meaning `linear`. */
+  tracker?: TrackerId;
   persistedAt: number;
 }

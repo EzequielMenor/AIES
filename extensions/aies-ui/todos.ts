@@ -16,7 +16,7 @@
 
 import type { AgentsSnapshot } from "./agents.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
-import { singleLine } from "./format.ts";
+import { singleLine, trackerName } from "./format.ts";
 import { GLYPH } from "./vocabulary.ts";
 
 /** The four states a projected step can be in. */
@@ -148,7 +148,7 @@ export function deriveTodos(snapshot: AgentsSnapshot): TodoProjection {
   if (loaded) {
     items.push({
       key: "linear",
-      label: "Sincronizar Linear",
+      label: `Sincronizar ${trackerName(snapshot.ticket?.tracker)}`,
       state: complete ? "done" : verified ? "running" : "pending",
     });
   }

@@ -19,6 +19,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { basename, dirname, join, resolve } from "node:path";
 
 import { checkCommandPolicy, splitCommandSegments } from "./command-guard.ts";
+import type { TrackerId } from "./linear/types.ts";
 
 /** Lowercase, without spaces or separators: "Mi-Porfolio" -> "miporfolio". */
 export function normalizeRepoName(value: string): string {
@@ -88,8 +89,12 @@ export function resetRepoGuardCache(): void {
 export interface RepoBinding {
   /** Ticket identifier, carried through so the message can name the ticket. */
   identifier: string;
-  /** The Linear project name, when the contract has one. */
+  /** The Linear project name, or the Plane project name, when the contract has one. */
   project?: string | null;
+  /** D33 item 9: the Plane project identifier (`AIES`). Only Plane tickets carry it. */
+  projectIdentifier?: string | null;
+  /** D33: the tracker the ticket came from. Absent means Linear. */
+  tracker?: TrackerId;
 }
 
 export interface RepoGuardConfig {
@@ -249,7 +254,25 @@ export interface RepoGuardDecision {
   actualRoot: string;
   /** Basename of `actualRoot`. */
   actualRepo: string;
+  /** The tracker the ticket came from; the block message names it. Absent means Linear. */
+  tracker?: TrackerId;
   reason?: string;
+}
+
+/**
+ * The project names a ticket can be matched by. Linear has one, the project name. Plane
+ * has two, the project name and the project identifier (D33 item 9), and either one
+ * may match the repository or key an explicit `repos` binding. Order is preserved, so
+ * the name is tried first.
+ */
+function projectKeys(binding: RepoBinding): string[] {
+  const candidates = binding.tracker === "plane" ? [binding.project, binding.projectIdentifier] : [binding.project];
+  const keys: string[] = [];
+  for (const candidate of candidates) {
+    const key = typeof candidate === "string" ? candidate.trim() : "";
+    if (key && !keys.includes(key)) keys.push(key);
+  }
+  return keys;
 }
 
 /**
@@ -263,22 +286,27 @@ export function checkTicketRepo(
   options?: { config?: RepoGuardConfig; env?: NodeJS.ProcessEnv },
 ): RepoGuardDecision {
   const identity = resolveRepoIdentity(cwd);
-  const base = { identifier: binding.identifier, actualRoot: identity.root, actualRepo: identity.name };
+  const tracker: TrackerId = binding.tracker ?? "linear";
+  const base = { identifier: binding.identifier, actualRoot: identity.root, actualRepo: identity.name, tracker };
 
-  const project = typeof binding.project === "string" ? binding.project.trim() : "";
-  if (!project) {
-    return { status: "unknown", ...base, reason: "the ticket contract declares no Linear project" };
+  const keys = projectKeys(binding);
+  if (keys.length === 0) {
+    const label = tracker === "plane" ? "Plane" : "Linear";
+    return { status: "unknown", ...base, reason: `the ticket contract declares no ${label} project` };
   }
 
+  // An explicit binding names the repository, so it outranks every name match (D30 item 4,
+  // D33 item 9). A binding may be keyed by the project name or by its identifier.
   const config = options?.config ?? readRepoGuardConfig(options?.env);
-  const bound = findBinding(config.repos, project);
-  if (bound) {
+  for (const key of keys) {
+    const bound = findBinding(config.repos, key);
+    if (!bound) continue;
     const expectedRoot = safeRealpath(bound) ?? resolve(bound);
     const status: RepoGuardStatus = samePath(expectedRoot, identity.root) ? "ok" : "mismatch";
     return {
       status,
       ...base,
-      expectedRepo: project,
+      expectedRepo: key,
       expectedRoot,
       reason:
         status === "ok"
@@ -287,22 +315,24 @@ export function checkTicketRepo(
     };
   }
 
-  if (normalizeRepoName(project) === normalizeRepoName(identity.name)) {
+  const sameName = keys.find((key) => normalizeRepoName(key) === normalizeRepoName(identity.name));
+  if (sameName) {
     return {
       status: "ok",
       ...base,
-      expectedRepo: project,
+      expectedRepo: sameName,
       expectedRoot: identity.root,
-      reason: `the ticket project "${project}" matches this session repository`,
+      reason: `the ticket project "${sameName}" matches this session repository`,
     };
   }
 
+  const expectedRepo = keys[0];
   return {
     status: "mismatch",
     ...base,
-    expectedRepo: project,
-    expectedRoot: findExpectedRepoRoot(identity.root, project),
-    reason: `the ticket belongs to project "${project}", but this session runs in repository "${identity.name}"`,
+    expectedRepo,
+    expectedRoot: keys.map((key) => findExpectedRepoRoot(identity.root, key)).find((root) => root !== undefined),
+    reason: `the ticket belongs to project "${expectedRepo}", but this session runs in repository "${identity.name}"`,
   };
 }
 
@@ -355,7 +385,8 @@ function buildBlockReason(decision: RepoGuardDecision): string {
   const ticket = id ? `el ticket ${id}` : "el ticket activo";
   const loadHint = id ? `aies_ticket load ${id}` : "aies_ticket load <ID>";
 
-  const first = `Bloqueado: ${ticket} pertenece al repo «${expected}», pero esta sesión corre en «${decision.actualRepo}» (${decision.actualRoot}).`;
+  const owner = decision.tracker === "plane" ? `pertenece al proyecto de Plane «${expected}»` : `pertenece al repo «${expected}»`;
+  const first = `Bloqueado: ${ticket} ${owner}, pero esta sesión corre en «${decision.actualRepo}» (${decision.actualRoot}).`;
   const second = "No se delegó ningún Worker y no se modificó ningún archivo.";
   const third = decision.expectedRoot
     ? `Relanzá la sesión desde el workspace correcto: cd ${decision.expectedRoot} && aies   (luego: ${loadHint})`

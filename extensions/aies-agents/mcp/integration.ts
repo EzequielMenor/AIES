@@ -167,26 +167,40 @@ export function diagnoseMcpServer(state: McpIntegrationState, options: McpDiagno
  * interactive session are never recommended in a non-interactive one, and the
  * primary instruction for missing authentication is always OAuth.
  */
+/** Human label and endpoint of each tracker MCP server AIES can declare (D33). */
+const TRACKER_SERVER_TEXT: Readonly<Record<string, { label: string; endpoint: string }>> = {
+  linear: { label: "Linear", endpoint: "https://mcp.linear.app/mcp" },
+  plane: { label: "Plane", endpoint: "https://mcp.plane.so/http/mcp" },
+};
+
+/** The wording for a server. An unknown server keeps the Linear wording it always had. */
+function trackerServerText(server: string): { label: string; endpoint: string } {
+  return Object.prototype.hasOwnProperty.call(TRACKER_SERVER_TEXT, server)
+    ? TRACKER_SERVER_TEXT[server]
+    : TRACKER_SERVER_TEXT.linear;
+}
+
 export function describeMcpDiagnostic(diagnostic: McpDiagnostic, options: { mode?: string } = {}): string {
   const mode = options.mode ?? "unknown";
   const interactive = mode === "tui";
+  const { label, endpoint } = trackerServerText(diagnostic.server);
   switch (diagnostic.code) {
     case "adapter_missing":
       return [
-        "pi-mcp-adapter is not loaded in this AIES profile, so MCP servers such as Linear cannot be reached.",
+        `pi-mcp-adapter is not loaded in this AIES profile, so MCP servers such as ${label} cannot be reached.`,
         "The profile declares npm:pi-mcp-adapter. Run any aies command once with network access so Pi installs it, or run:",
         "  aies install npm:pi-mcp-adapter",
       ].join("\n");
     case "server_missing":
       return [
         `No "${diagnostic.server}" MCP server is configured in this AIES profile.`,
-        'Expected in $AIES_HOME/agent/mcp-adapter.json, pointing at https://mcp.linear.app/mcp with auth "oauth".',
+        `Expected in $AIES_HOME/agent/mcp-adapter.json, pointing at ${endpoint} with auth "oauth".`,
       ].join("\n");
     case "needs_auth":
       return interactive
-        ? `Linear needs authentication.\n\nRun:\n  /mcp-auth ${diagnostic.server}`
+        ? `${label} needs authentication.\n\nRun:\n  /mcp-auth ${diagnostic.server}`
         : [
-            `Linear needs authentication, and this session is not interactive (mode: ${mode}).`,
+            `${label} needs authentication, and this session is not interactive (mode: ${mode}).`,
             `Authenticate from an interactive AIES session with /mcp-auth ${diagnostic.server}, then retry.`,
           ].join("\n");
     case "disabled":

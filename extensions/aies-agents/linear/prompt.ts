@@ -15,9 +15,9 @@ const REMOTE_STEP =
   "If aies_ticket answers remote_required, run the exact mcp call it names; AIES captures the result automatically, so pass `remote` only as a fallback.";
 
 /** Load one ticket through the Parent, satisfying every remote directive. */
-export function ticketLoadPrompt(ticketId: string): string {
+export function ticketLoadPrompt(ticketId: string, label: string = "Linear"): string {
   return [
-    `Load Linear ticket ${ticketId}: call aies_ticket with { action: "load", ticketId: "${ticketId}" }.`,
+    `Load ${label} ticket ${ticketId}: call aies_ticket with { action: "load", ticketId: "${ticketId}" }.`,
     REMOTE_STEP,
     "Do not edit files or change ticket status.",
   ].join(" ");
@@ -77,12 +77,12 @@ export function deliverAgentInstruction(pi: InstructionDelivery | undefined, con
 }
 
 /** Load the ticket when needed, then start work, then let the workflow continue. */
-export function ticketRunPrompt(ticketId: string, options: { alreadyActive?: boolean } = {}): string {
+export function ticketRunPrompt(ticketId: string, options: { alreadyActive?: boolean; label?: string } = {}): string {
   const first = options.alreadyActive
     ? `call aies_ticket with { action: "start" }`
     : `call aies_ticket with { action: "load", ticketId: "${ticketId}" }, then with { action: "start" }`;
   return [
-    `Start bounded autonomy on Linear ticket ${ticketId}:`,
+    `Start bounded autonomy on ${options.label ?? "Linear"} ticket ${ticketId}:`,
     `${first}.`,
     REMOTE_STEP,
     "Then continue the AIES workflow for this ticket.",

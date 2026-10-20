@@ -179,6 +179,8 @@ export interface TicketObservationState {
   status?: string;
   workState?: "loaded" | "working" | "verification_required" | "verified" | "blocked" | "complete";
   validVerify?: boolean;
+  /** D33 phase 4: the tracker of the ticket. Absent means Linear. */
+  tracker?: "linear" | "plane";
 }
 
 /** Autonomy state tracked for observability (AIES-009). */
@@ -1152,6 +1154,7 @@ export function fromSnapshot(value: unknown, fallbackStartedAt: number): AiesSta
     status: text(rawTicket.status),
     workState: typeof rawTicket.workState === "string" ? (rawTicket.workState as any) : undefined,
     validVerify: rawTicket.validVerify === true,
+    ...(rawTicket.tracker === "plane" ? { tracker: "plane" as const } : {}),
   };
 
   const rawAutonomy = (source.autonomy && typeof source.autonomy === "object" && !Array.isArray(source.autonomy)

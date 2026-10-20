@@ -11,6 +11,11 @@
       "url": "https://mcp.linear.app/mcp",
       "auth": "oauth",
       "lifecycle": "lazy"
+    },
+    "plane": {
+      "url": "https://mcp.plane.so/http/mcp",
+      "auth": "oauth",
+      "lifecycle": "lazy"
     }
   }
 }

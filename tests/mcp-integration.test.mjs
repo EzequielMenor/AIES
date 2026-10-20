@@ -78,9 +78,9 @@ describe("AIES MCP integration", () => {
       assert.deepEqual(TEMPLATE_SETTINGS.packages, ["npm:pi-mcp-adapter"]);
     });
 
-    it("declares exactly one MCP server, on the official Streamable HTTP endpoint", () => {
+    it("declares exactly the Linear and Plane MCP servers, on the official Streamable HTTP endpoints", () => {
       const servers = Object.entries(TEMPLATE_MCP.mcpServers ?? {});
-      assert.equal(servers.length, 1, "the AIES profile declares exactly one MCP server");
+      assert.equal(servers.length, 2, "the AIES profile declares exactly Linear and Plane (D33 phase 3)");
       const [name, definition] = servers[0];
       assert.equal(name, "linear");
       assert.equal(definition.url, LINEAR_ENDPOINT);

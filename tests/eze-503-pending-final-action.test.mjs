@@ -51,6 +51,7 @@ import {
   isVerificationValid,
   toVerificationReport,
 } from "../extensions/aies-agents/verification.ts";
+import { useTrustedProfileEnv } from "./helpers/mcp-profile.mjs";
 
 const REPO = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 
@@ -249,6 +250,13 @@ function renderContext(args, overrides = {}) {
 }
 
 describe("EZE-503 pending final action", () => {
+  // The real hook reads the MCP profile from the environment: a trusted one for the whole file (D38).
+  let restoreProfileEnv;
+  beforeEach(() => {
+    restoreProfileEnv = useTrustedProfileEnv();
+  });
+  afterEach(() => restoreProfileEnv());
+
   describe("1. only explicit user wording holds the last step", () => {
     it("records the pending requests raised in the EZE-492/EZE-493 sessions", () => {
       for (const text of PENDING_REQUESTS) {

@@ -28,7 +28,10 @@ import {
   type ContextGovernor,
 } from "./context-governor.ts";
 import { TicketManager } from "./linear/manager.ts";
-import { linearCompletionBypassReason } from "./linear/pending-action.ts";
+import { holdBypassReason, planeWriteBypassReason } from "./linear/pending-action.ts";
+import { checkDoneGate } from "./linear/policy.ts";
+import { trackerLabelForServer } from "./linear/labels.ts";
+import { selectTracker } from "./linear/tracker.ts";
 import { checkTicketRepo, repoGuardBlockReason } from "./repo-guard.ts";
 import { createTicketTool } from "./linear/tool.ts";
 import { registerTicketCommand } from "./linear/command.ts";
@@ -41,6 +44,7 @@ import {
   MCP_STATUS_CHANNEL,
   type McpIntegrationState,
 } from "./mcp/integration.ts";
+import { currentMcpTrust, initMcpTrust } from "./mcp/trust.ts";
 import {
   ContinuationController,
   getActiveContinuationController,
@@ -58,8 +62,8 @@ const PARENT_MUTATION_TOOLS = ["edit", "write"];
  * the resumed Linear outcome (the loaded contract, the next `remote_required`
  * directive to run, or a clear failure) without a second `aies_ticket` call.
  */
-function describeCapturedOutcome(result: TicketOperationResult): string {
-  const parts = ["AIES captured this `mcp` result automatically and resumed the pending Linear operation."];
+function describeCapturedOutcome(result: TicketOperationResult, tracker: string): string {
+  const parts = [`AIES captured this \`mcp\` result automatically and resumed the pending ${tracker} operation.`];
   if (result.contract) parts.push(result.contract);
   if (result.message) parts.push(result.message);
   const instruction =
@@ -127,6 +131,16 @@ export { getActiveContinuationController };
  * "the MCP adapter is absent" from "the adapter has not reported a status snapshot
  * yet", because only the first one is a real failure.
  */
+/**
+ * The MCP server of the tracker this profile selects (D33). A refused selection
+ * yields no server, so the probe keeps its Linear default and the refusal is reported
+ * by the ticket operation itself.
+ */
+function activeTrackerServer(): string | undefined {
+  const selection = selectTracker();
+  return selection.ok ? selection.tracker.mcpServer : undefined;
+}
+
 function sessionToolNames(pi: ExtensionAPI): string[] | undefined {
   try {
     return pi.getAllTools().map((tool) => tool.name);
@@ -136,6 +150,10 @@ function sessionToolNames(pi: ExtensionAPI): string[] | undefined {
 }
 
 export default function aiesAgents(pi: ExtensionAPI): void {
+  // D38: the MCP profile is judged once, at startup, before any tool call. The adapter does not reload
+  // in place, so the verdict is the one the session can rely on (see `mcp/trust.ts`).
+  initMcpTrust(process.env, process.argv);
+
   let routingState: RoutingState = createRoutingState();
   let verification: VerificationState = createVerificationState();
   const governor: ContextGovernor = getContextGovernor();
@@ -163,7 +181,8 @@ export default function aiesAgents(pi: ExtensionAPI): void {
 
   const ticketManager = new TicketManager({
     getVerification: () => verification,
-    getMcpDiagnostic: () => diagnoseMcpServer(mcpState, { adapterToolNames: sessionToolNames(pi) }),
+    getMcpDiagnostic: () =>
+      diagnoseMcpServer(mcpState, { server: activeTrackerServer(), adapterToolNames: sessionToolNames(pi) }),
   });
   activeTicketManager = ticketManager;
 
@@ -210,7 +229,12 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     const activeTicket = ticketManager.getActiveTicket();
     if (activeTicket && process.env.AIES_ALLOW_REPO_MISMATCH !== "1") {
       const decision = checkTicketRepo(
-        { identifier: activeTicket.identifier, project: activeTicket.project },
+        {
+          identifier: activeTicket.identifier,
+          project: activeTicket.project,
+          projectIdentifier: activeTicket.projectIdentifier,
+          tracker: activeTicket.tracker,
+        },
         ctx.cwd,
       );
       if (decision.status === "mismatch") {
@@ -222,11 +246,28 @@ export default function aiesAgents(pi: ExtensionAPI): void {
     // EZE-503: a held final step also blocks the bypass used in the EZE-492
     // session, a direct `mcp save_issue` into a Done state. The verification record
     // and the open ticket are left exactly as they were.
+    // D33 item 8: the hold also covers Plane, whose state is a UUID, so every guarded
+    // tracker is checked; Linear is still matched against the active ticket only.
+    // D38: the trust in the MCP profile for this call. An untrusted profile refuses every tool that
+    // is not a Pi base tool or an AIES tool, so the checks below run only on a trusted profile.
+    const mcpTrust = currentMcpTrust(process.env, process.argv);
     const pendingFinalAction = ticketManager.getPendingFinalAction();
-    if (pendingFinalAction && activeTicket) {
-      const held = linearCompletionBypassReason(event.toolName, input, activeTicket, pendingFinalAction);
+    if (pendingFinalAction) {
+      const held = holdBypassReason(event.toolName, input, activeTicket, pendingFinalAction, mcpTrust);
       if (held) return { block: true, reason: held };
     }
+
+    // D33 phase 4, part C, reduced by D38: a Plane call must be on the closed list. A state
+    // moves only through the directive aies_ticket has pending (and, for completion, only
+    // while the Done Gate allows it). Every other Plane write, and every unknown action, is
+    // refused in every session.
+    const planeWrite = planeWriteBypassReason(event.toolName, input, {
+      pending: ticketManager.getPendingDirective(),
+      pendingAction: ticketManager.getPendingRemoteAction(),
+      doneGate: () => checkDoneGate(verification, ticketManager.getChangedPaths(), ticketManager.getPendingFinalAction()),
+      trust: mcpTrust,
+    });
+    if (planeWrite) return { block: true, reason: planeWrite };
 
     // Check hard guardrails before tool execution (routing limits + context governor ceiling)
     const guard = checkRoutingGuardrail(
@@ -308,7 +349,7 @@ export default function aiesAgents(pi: ExtensionAPI): void {
           event.content,
         );
         if (resumed) {
-          capturedContent = [...event.content, { type: "text", text: describeCapturedOutcome(resumed) }];
+          capturedContent = [...event.content, { type: "text", text: describeCapturedOutcome(resumed, trackerLabelForServer(input.server)) }];
         }
       }
     }
@@ -398,7 +439,9 @@ export default function aiesAgents(pi: ExtensionAPI): void {
         for (let i = entries.length - 1; i >= 0; i--) {
           const entry = entries[i];
           if (entry.type === "custom" && entry.customType === "aies-ticket" && entry.data) {
-            ticketManager.restoreFromSnapshot(entry.data as TicketSnapshot);
+            // D33: a snapshot from another tracker is refused, and the refusal is shown.
+            const restored = ticketManager.restoreFromSnapshot(entry.data as TicketSnapshot);
+            if (!restored.ok) ctx.ui.notify(restored.message ?? "Ticket snapshot not restored.", "error");
             break;
           }
         }

@@ -78,7 +78,7 @@ import {
   type DoneSummaryInput,
 } from "../aies-ui/summary.ts";
 import { deriveStage, statusGlyph } from "../aies-ui/vocabulary.ts";
-import { observableCost, roleLabel } from "../aies-ui/format.ts";
+import { observableCost, roleLabel, trackerName } from "../aies-ui/format.ts";
 import { themePaint } from "../aies-ui/paint.ts";
 import { registerQuietTools } from "./quiet-tools.ts";
 import { getSandboxStatus } from "../aies-agents/sandbox.ts";
@@ -123,6 +123,24 @@ const ROLE_DONE_LABEL: Record<string, string> = {
   worker: "implementación terminada",
   verify: "verificación terminada",
 };
+
+/**
+ * The Spanish sentences of one autonomy stop. The generic tracker codes name the active
+ * tracker, so a Plane run never speaks of Linear (D33 phase 4); Linear keeps its own codes.
+ */
+export function blockedSentence(
+  reason: string,
+  tracker: string | undefined,
+): { happened: string; needs?: string; pending?: string } | undefined {
+  const name = trackerName(tracker);
+  if (reason === "tracker_conflict") {
+    return { happened: `${name} cambió de estado por fuera de AIES.`, needs: `revisar el ticket en ${name} antes de continuar.` };
+  }
+  if (reason === "tracker_sync_failed") {
+    return { happened: `${name} no pudo sincronizarse.`, pending: "El código está verificado y no se volverá a ejecutar." };
+  }
+  return BLOCKED_SENTENCES[reason];
+}
 
 /** Spanish sentences for every autonomy stop reason that deserves a BLOCKED card. */
 const BLOCKED_SENTENCES: Record<string, { happened: string; needs?: string; pending?: string }> = {
@@ -775,7 +793,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
       return;
     }
 
-    const sentence = BLOCKED_SENTENCES[stopReason];
+    const sentence = blockedSentence(stopReason, state.ticket.tracker);
     if (sentence) {
       const { data, headline } = blockedSummary(sentence);
       publishSummary(ctx, data, headline);
@@ -883,6 +901,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     // `Linear ✓ Done` no Linear call ever confirmed.
     const linearStatus = typeof snapshot.ticket?.status === "string" ? snapshot.ticket.status.trim() : "";
     if (linearStatus) data.linear = linearStatus;
+    if (linearStatus && snapshot.ticket?.tracker === "plane") data.tracker = "Plane";
     // The run's own start, never the session's: a session that opened long before
     // the ticket would otherwise report a meaningless duration.
     const runStart = runStartedAt(snapshot);
@@ -923,6 +942,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     else if (notCompleted > 1) warnings.push(`${notCompleted} agentes no completaron`);
     if (snapshot.verification?.status === "protocol_error") warnings.push("la verificación terminó con un error de protocolo");
     if (state.autonomy?.stopReason === "linear_sync_failed") warnings.push("Linear no sincronizó");
+    else if (state.autonomy?.stopReason === "tracker_sync_failed") warnings.push(`${trackerName(state.ticket.tracker)} no sincronizó`);
     return warnings;
   }
 
@@ -1422,6 +1442,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
             status: typeof t.status === "string" ? t.status : undefined,
             workState: typeof data.workState === "string" ? (data.workState as any) : undefined,
             validVerify: data.workState === "complete",
+            ...(t.tracker === "plane" ? { tracker: "plane" as const } : {}),
           });
         }
         break;
@@ -1607,6 +1628,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
             status: typeof t.status === "string" ? t.status : undefined,
             workState: typeof details.workState === "string" ? (details.workState as any) : undefined,
             validVerify: details.workState === "complete",
+            ...(t.tracker === "plane" ? { tracker: "plane" as const } : {}),
           });
         }
       }

@@ -15,6 +15,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { describeMcpDiagnostic, type McpDiagnostic } from "../mcp/integration.ts";
 import { formatCompactContract } from "./contract.ts";
+import { configuredTrackerLabel } from "./tracker.ts";
 import type { TicketManager } from "./manager.ts";
 import { describePendingFinalAction } from "./pending-action.ts";
 import { readRemoteAnswer } from "./transport.ts";
@@ -130,7 +131,6 @@ const TICKET_ERROR_MESSAGE: Record<string, string> = {
   permission_denied: "sin permisos",
   // Ticket state
   not_found: "ticket no encontrado",
-  invalid_remote_payload: "respuesta inválida de Linear",
   invalid_transition: "transición inválida",
   remote_conflict: "conflicto remoto",
   no_pending_remote: "sin operación pendiente",
@@ -177,18 +177,18 @@ function ticketAction(args: Record<string, unknown>): string {
 }
 
 /** The pending line: one short row while the operation is in flight. */
-function ticketPendingRow(args: Record<string, unknown>, theme: RowTheme): string {
+function ticketPendingRow(args: Record<string, unknown>, theme: RowTheme, tracker: string): string {
   const id = ticketIdentifier(args, undefined);
   const verb = TICKET_ACTION_VERB[ticketAction(args)] ?? "consultando";
-  const label = id ? `${id} · ${verb}` : `Linear · ${verb}`;
+  const label = id ? `${id} · ${verb}` : `${tracker} · ${verb}`;
   return theme.fg("warning", `⟳ ${label}…`);
 }
 
 /** The Parent-mediated handoff: a compact Linear row, never an error dump. */
-function ticketHandoffRow(details: Record<string, unknown>, theme: RowTheme): string {
+function ticketHandoffRow(details: Record<string, unknown>, theme: RowTheme, tracker: string): string {
   const directive = asRecord(details.directive);
   const tool = directive ? nonEmptyString(directive.tool) : undefined;
-  return theme.fg("accent", tool ? `→ Linear · ${tool}` : "→ Linear");
+  return theme.fg("accent", tool ? `→ ${tracker} · ${tool}` : `→ ${tracker}`);
 }
 
 /**
@@ -196,16 +196,23 @@ function ticketHandoffRow(details: Record<string, unknown>, theme: RowTheme): st
  * expanded view. The row always speaks Spanish: known codes are mapped, any
  * other code degrades to a safe phrase instead of printing the raw identifier.
  */
-function ticketErrorRow(args: Record<string, unknown>, details: Record<string, unknown>, theme: RowTheme): string {
+function ticketErrorRow(
+  args: Record<string, unknown>,
+  details: Record<string, unknown>,
+  theme: RowTheme,
+  tracker: string,
+): string {
   const id = ticketIdentifier(args, details);
   const code = nonEmptyString(details.error);
-  const message = (code && TICKET_ERROR_MESSAGE[code]) || TICKET_ERROR_FALLBACK;
+  const message =
+    (code === "invalid_remote_payload" ? `respuesta inválida de ${tracker}` : code && TICKET_ERROR_MESSAGE[code]) ||
+    TICKET_ERROR_FALLBACK;
   return theme.fg("error", `✗ ${id ? `${id} · ` : ""}${message}`);
 }
 
 /** The normal collapsed flow: identity, action and outcome, never the contract. */
-function ticketDoneRow(args: Record<string, unknown>, details: Record<string, unknown>, theme: RowTheme): string {
-  if (details.active === false) return theme.fg("muted", "Linear · sin ticket activo");
+function ticketDoneRow(args: Record<string, unknown>, details: Record<string, unknown>, theme: RowTheme, tracker: string): string {
+  if (details.active === false) return theme.fg("muted", `${tracker} · sin ticket activo`);
   const id = ticketIdentifier(args, details);
   const done = TICKET_ACTION_DONE[ticketAction(args)] ?? "listo";
   return theme.fg("success", `✓ ${id ? `${id} · ` : ""}${done}`);
@@ -242,13 +249,15 @@ function readInstruction(details: unknown): string | null {
 }
 
 export function createTicketTool(manager: TicketManager): ToolDefinition {
+  // D33 phase 4: the tracker this profile operates is named in the descriptions and rows.
+  const tracker = configuredTrackerLabel();
   return {
     name: "aies_ticket",
     label: "AIES Ticket",
     description:
-      "Manage the active Linear work unit ticket for this session. The Parent session is the sole owner of Linear workflow. AIES does not speak MCP itself: you perform every Linear read and write with the `mcp` proxy tool. An action that needs the remote answers `remote_required` with the exact `mcp` call to run; run it and AIES captures the result automatically and resumes the action, so you do not have to copy the value back. Only if an action is not resumed on its own should you repeat it with `remote` set to the value `mcp` returned (fallback). Use 'load' to activate an exact ticket, 'start' when beginning implementation, 'complete' to mark Done (strictly enforces valid fresh Verify PASS for behavior changes, and never closes over an explicit pending action the user asked to keep), 'block' to record a blocker with evidence, and 'show' to inspect the active ticket contract.",
+      "Manage the active Linear work unit ticket for this session. The Parent session is the sole owner of Linear workflow. AIES does not speak MCP itself: you perform every Linear read and write with the `mcp` proxy tool. An action that needs the remote answers `remote_required` with the exact `mcp` call to run; run it and AIES captures the result automatically and resumes the action, so you do not have to copy the value back. Only if an action is not resumed on its own should you repeat it with `remote` set to the value `mcp` returned (fallback). Use 'load' to activate an exact ticket, 'start' when beginning implementation, 'complete' to mark Done (strictly enforces valid fresh Verify PASS for behavior changes, and never closes over an explicit pending action the user asked to keep), 'block' to record a blocker with evidence, and 'show' to inspect the active ticket contract.".replaceAll("Linear", tracker),
     promptGuidelines: [
-      "Linear is reached only through the `mcp` proxy tool: when `aies_ticket` answers `remote_required`, run exactly the `mcp` call it names; AIES captures that result automatically and resumes the pending action, so do not re-pass it. Only as a fallback, if the action is not resumed, repeat the same `aies_ticket` action with `remote` set to the value `mcp` returned. Never invent a value.",
+      "Linear is reached only through the `mcp` proxy tool: when `aies_ticket` answers `remote_required`, run exactly the `mcp` call it names; AIES captures that result automatically and resumes the pending action, so do not re-pass it. Only as a fallback, if the action is not resumed, repeat the same `aies_ticket` action with `remote` set to the value `mcp` returned. Never invent a value.".replaceAll("Linear", tracker),
       "A Verify PASS is never by itself permission to mark Done (EZE-503): when the user kept a final step (for example \"no commit todavía\", \"quiero revisarlo antes\", \"déjalo pendiente de review\"), leave the ticket open, report the pending step and stop. `complete` refuses with `pending_final_action` and so does a direct `mcp save_issue` into a Done state; use force: true on 'complete' only after the user confirmed that step.",
     ],
     renderShell: "self",
@@ -256,31 +265,31 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
       // While the operation is in flight, one short pending row. Once settled, the
       // result slot carries the whole flow so the call chrome disappears.
       if (context?.isPartial === false) return EMPTY_ROW;
-      return textRow(ticketPendingRow(args as Record<string, unknown>, theme as unknown as RowTheme));
+      return textRow(ticketPendingRow(args as Record<string, unknown>, theme as unknown as RowTheme, tracker));
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
       const args = (context?.args ?? {}) as Record<string, unknown>;
       const paint = theme as unknown as RowTheme;
-      if (isPartial) return textRow(ticketPendingRow(args, paint));
+      if (isPartial) return textRow(ticketPendingRow(args, paint, tracker));
       if (expanded) return textRow(resultText(result));
 
       const details = asRecord(result.details);
       const error = details ? nonEmptyString(details.error) : undefined;
       if (error) {
         return textRow(
-          error === "remote_required" ? ticketHandoffRow(details!, paint) : ticketErrorRow(args, details!, paint),
+          error === "remote_required" ? ticketHandoffRow(details!, paint, tracker) : ticketErrorRow(args, details!, paint, tracker),
         );
       }
       // A host-level thrown error arrives as `details: {}` with the render context
       // flag set. It must stay visible: only a proven non-error terminal result may
       // collapse, or an unexpected fault would disappear behind the runtime card.
-      if (context?.isError === true) return textRow(ticketErrorRow(args, details ?? {}, paint));
+      if (context?.isError === true) return textRow(ticketErrorRow(args, details ?? {}, paint, tracker));
       // A successful terminal action collapses to nothing: the runtime DONE/BLOCKED
       // summary card is the sole normal owner of that headline. Errors above and the
       // expanded raw output stay visible and unchanged.
       const action = ticketAction(args);
       if (action === "complete" || action === "block") return EMPTY_ROW;
-      return textRow(ticketDoneRow(args, details ?? {}, paint));
+      return textRow(ticketDoneRow(args, details ?? {}, paint, tracker));
     },
     parameters: TicketParamsSchema,
     async execute(_toolCallId, params: TicketParams, _signal, _onUpdate, ctx) {
@@ -356,7 +365,7 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
             const active = manager.getActiveTicket();
             if (!active) {
               return {
-                content: [{ type: "text" as const, text: "No Linear ticket currently active in this session. Use action 'load' with a ticketId to activate one." }],
+                content: [{ type: "text" as const, text: `No ${configuredTrackerLabel()} ticket currently active in this session. Use action 'load' with a ticketId to activate one.` }],
                 details: { active: false },
                 isError: false,
               };

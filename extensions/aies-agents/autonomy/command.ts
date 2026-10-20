@@ -13,6 +13,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { TicketManager } from "../linear/manager.ts";
 import { ticketRunPrompt, deliverAgentInstruction } from "../linear/prompt.ts";
 import { describeMcpDiagnostic } from "../mcp/integration.ts";
+import { configuredTrackerLabel } from "../linear/tracker.ts";
 import type { ContinuationController } from "./controller.ts";
 import { AIES_CONTINUATION_PROMPT } from "./policy.ts";
 import {
@@ -68,7 +69,7 @@ export function registerAutonomyCommand(
   ticketManager: TicketManager,
 ): void {
   pi.registerCommand("aies-run", {
-    description: "Run bounded autonomy workflow on active or specified Linear ticket (/aies-run [ticketId | stop | status])",
+    description: `Run bounded autonomy workflow on active or specified ${configuredTrackerLabel()} ticket (/aies-run [ticketId | stop | status])`,
     handler: async (args, ctx) => {
       const rawArg = args?.trim();
 
@@ -155,7 +156,7 @@ export function registerAutonomyCommand(
       // the autonomy workflow continue once the ticket is active. The instruction
       // travels hidden, so the transcript never shows internal plumbing as input.
       controller.enable(ticketId);
-      deliverAgentInstruction(pi, ticketRunPrompt(ticketId, { alreadyActive: loaded }));
+      deliverAgentInstruction(pi, ticketRunPrompt(ticketId, { alreadyActive: loaded, label: configuredTrackerLabel() }));
     },
   });
 }

@@ -7,6 +7,7 @@ import { isVerificationValid, planVerification } from "../verification.ts";
 import type { RoutingState } from "../routing.ts";
 import type { ContextGovernor } from "../context-governor.ts";
 import type { TicketManager } from "../linear/manager.ts";
+import { trackerLabel } from "../linear/labels.ts";
 import { describePendingFinalAction } from "../linear/pending-action.ts";
 import type {
   AutonomyState,
@@ -96,7 +97,7 @@ export function evaluateContinuation(options: EvaluateContinuationOptions): Cont
   // 4. Ticket already completed
   const workState = ticketManager.getWorkState();
   if (workState === "complete" || activeTicket.statusType === "completed") {
-    return { decision: "complete", reason: `Ticket ${activeTicket.identifier} is completed in Linear`, stopReason: "completed" };
+    return { decision: "complete", reason: `Ticket ${activeTicket.identifier} is completed in ${trackerLabel(activeTicket.tracker)}`, stopReason: "completed" };
   }
 
   // 5. Ticket explicitly blocked
@@ -126,12 +127,14 @@ export function evaluateContinuation(options: EvaluateContinuationOptions): Cont
 
   // 10. Linear remote conflict
   if (linearError === "remote_conflict") {
-    return { decision: "blocked", reason: "Remote conflict detected in Linear ticket; stopping to avoid overwrite", stopReason: "linear_conflict" };
+    const label = trackerLabel(activeTicket.tracker);
+    return { decision: "blocked", reason: `Remote conflict detected in ${label} ticket; stopping to avoid overwrite`, stopReason: activeTicket.tracker === "plane" ? "tracker_conflict" : "linear_conflict" };
   }
 
   // 11. Linear sync failed after valid PASS
   if (linearError === "network_failure" || linearError === "auth_unavailable" || linearError === "sync_error") {
-    return { decision: "blocked", reason: "Implementation verified PASS but Linear sync failed; stopping without re-running code", stopReason: "linear_sync_failed" };
+    const label = trackerLabel(activeTicket.tracker);
+    return { decision: "blocked", reason: `Implementation verified PASS but ${label} sync failed; stopping without re-running code`, stopReason: activeTicket.tracker === "plane" ? "tracker_sync_failed" : "linear_sync_failed" };
   }
 
   // 12. Context Governor ceiling and compaction failure
@@ -222,7 +225,7 @@ export function evaluateContinuation(options: EvaluateContinuationOptions): Cont
     }
     return {
       decision: "continue",
-      reason: "Artifact verified PASS; ready for Linear completion",
+      reason: `Artifact verified PASS; ready for ${trackerLabel(activeTicket.tracker)} completion`,
       followUpPrompt: AIES_CONTINUATION_PROMPT,
     };
   }

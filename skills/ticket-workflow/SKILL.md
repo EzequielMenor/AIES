@@ -1,17 +1,17 @@
 ---
-name: linear-ticket
-description: Procedural workflow for managing the active Linear ticket in an AIES Parent session.
+name: ticket-workflow
+description: Procedural workflow for managing the active ticket (Linear or Plane, whichever tracker the AIES profile uses) in an AIES Parent session.
 ---
 
-# Linear Ticket Workflow
+# Ticket Workflow
 
-Linear is the single source of truth for the active ticket, its status, acceptance criteria, and relevant project metadata.
-The Parent session is the sole owner of Linear operations. Isolated child agents (Explore, Worker, Verify) never access Linear directly.
+The active tracker (Linear or Plane) is the single source of truth for the active ticket, its status, acceptance criteria, and relevant project metadata.
+The Parent session is the sole owner of tracker operations. Isolated child agents (Explore, Worker, Verify) never access the tracker directly.
 
 ## Rules of Engagement
 
 1. **One Active Ticket**
-   - Each AIES session works on at most one active Linear ticket at a time.
+   - Each AIES session works on at most one active ticket at a time.
    - Do not switch tickets while current work is in progress unless completed or blocked.
 
 2. **Exact Ticket Loading**
@@ -36,6 +36,6 @@ The Parent session is the sole owner of Linear operations. Isolated child agents
    - Documentation-only or trivial changes that do not alter behavior may complete without a Verify child.
 
 6. **Compact Feedback & Zero Spam**
-   - Do not post intermediate progress comments to Linear (no "Reading files...", "Worker started...", etc.).
+   - Do not post intermediate progress comments to the tracker (no "Reading files...", "Worker started...", etc.).
    - On completion, add a single compact note detailing verified evidence and local commit reference if applicable.
    - On blocker, record a single compact note detailing the blocker cause and evidence.
