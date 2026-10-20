@@ -28,6 +28,7 @@
   },
   "scripts": {
     "bootstrap": "bash scripts/bootstrap-profile.sh",
+    "bind": "node scripts/bind-project.mjs",
     "check:isolation": "bash scripts/check-isolation.sh",
     "test": "bash scripts/test-harness.sh"
   },
