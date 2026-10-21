@@ -27,7 +27,7 @@ import {
 } from "./handoff.ts";
 import { observatory } from "./observatory.ts";
 import type { DelegationRole } from "./routing.ts";
-import { checkRuntimeFreshness, formatStaleRuntimeMessage } from "./runtime-freshness.ts";
+import { checkVerifyHarnessFreshness, formatStaleRuntimeMessage } from "./runtime-freshness.ts";
 import { getSandboxStatus, isSandboxSupported } from "./sandbox.ts";
 import {
   applySandboxBlock,
@@ -109,6 +109,8 @@ export interface CreateDelegateToolOptions {
   isSandboxActive?: () => boolean;
   /** Test seams: replace the child runners so a test can read exactly what a child would receive. */
   runners?: { explore?: typeof runExploreAgent; worker?: typeof runWorkerAgent; verify?: typeof runVerifyAgent };
+  /** Test seam: the stale-runtime check that guards Verify. Defaults to the real working tree. */
+  freshness?: typeof checkVerifyHarnessFreshness;
 }
 
 /** The delegated role, defaulting to 'explore' for an unrecognised input. */
@@ -261,6 +263,7 @@ export function createDelegateTool(
   const exploreRunner = options?.runners?.explore ?? runExploreAgent;
   const workerRunner = options?.runners?.worker ?? runWorkerAgent;
   const verifyRunner = options?.runners?.verify ?? runVerifyAgent;
+  const freshness = options?.freshness ?? checkVerifyHarnessFreshness;
 
   return {
     name: "aies_delegate",
@@ -369,11 +372,12 @@ export function createDelegateTool(
           };
         }
 
-        // Stale-runtime guard (EZE-492, D31): children run in-process and reuse
-        // the modules loaded at process start, so a Verify spawned after the
-        // Parent edited an extensions/*.ts file would prove the OLD code, not the
-        // working tree. Fail fast before launching the child.
-        const runtimeFreshness = checkRuntimeFreshness();
+        // Stale-runtime guard (EZE-492, D31, D44): children run in-process and reuse
+        // the modules loaded at process start, so a Verify spawned after the Parent
+        // edited a module the Verify child itself loads would run the OLD harness.
+        // Edits to modules the child never loads (UI, design, memory) do not count.
+        // Fail fast before launching the child.
+        const runtimeFreshness = freshness();
         if (!runtimeFreshness.fresh) {
           return {
             content: [{ type: "text", text: formatStaleRuntimeMessage(runtimeFreshness) }],

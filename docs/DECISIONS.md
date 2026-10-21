@@ -2183,6 +2183,59 @@ or explicitly declare this one a successor and archive the other.
 
 ---
 
+## D44 - The stale-runtime guard blocks only on modules the Verify child loads (refines D31)
+
+**Decision.**
+1. D31 stays: a stale module the Verify child executes blocks the delegation with
+   `stale_runtime` and a relaunch instruction. No override, no hot reload.
+2. What counts as stale is now scoped. `verifyHarnessModules()` computes the static
+   import closure (value imports, `export ... from`, side-effect and dynamic
+   `import("./x")`; `import type` is erased) of `verify.ts` and `session.ts` inside
+   `extensions/`: 13 modules today (verify, verify-guard, command-guard, sandbox, session,
+   handoff, model, tgrep, verification, permissions, aies-models/capabilities, aies-ui/
+   approval and format). `checkVerifyHarnessFreshness()` reports only those. If the closure
+   cannot be computed with confidence (unreadable file, unresolvable import) it falls back to
+   the whole `extensions/` tree, exactly D31.
+3. Why this is sound: a Verify child is created with `noExtensions` and customTools built
+   from that closure, so a module outside it (UI, design, memory, runtime) cannot change what
+   the child runs; its verdict comes from `read`/`bash` checks on the working tree, which run
+   in fresh subprocesses. An in-process Verify therefore stays valid, runs the code the
+   Parent already trusts, and uses the Parent's own provider and model (any provider,
+   including extension-registered and subscription ones) without moving credentials.
+
+4. Also watched, because they do run in the child: `aies-provider-*` extensions (the model
+   transport is copied into the child runtime by `createChildModelRuntime`) and the commandcode
+   `models.json` catalog. A loading form the scan cannot follow (`require(`, `createRequire`,
+   `import.meta.resolve`, `import(<non-literal>)`) makes the closure unknown and falls back to
+   the whole tree.
+
+**Why.** The self-hosting loop (AIES-21) blocked every Verify after a Worker repaired UI or
+design code the child never loads, and relaunching only helped until the next repair.
+
+**Rejected.** Running Verify in a fresh child process (first D44 draft, removed): it executes
+Worker-edited code outside the OS sandbox, which covers only Verify's bash and cannot be nested
+on macOS, with the user's environment and `auth.json` within reach; reducing the credential
+exposure does not remove the risk. Hot reload and auto-restart: see D31.
+
+**Consequence.** Edits to the Verify harness itself (the 13 modules) still require a relaunch
+before verifying, which is intended: that code is what judges the work. Everything else
+verifies without relaunch. The closure is derived from the code, not listed by hand, so it
+follows future imports.
+
+**Validation.** Unit and integration tests with a simulated model, plus one real run with
+`openai-codex/gpt-6-luna` in a disposable profile and repo: Verify FAIL on a seeded defect,
+Worker repairs `aies-design`, Verify PASS in the same process (the D31 whole-tree guard would
+have blocked here), Done Gate allowed; touching `verify.ts` blocks with `stale_runtime` and no
+model call. The AIES-21 Verify PASS (8/8) was obtained the same way.
+
+**Known issue, not a decision.** The profile's configured Verify model
+(`openai-codex/gpt-6.1-sol`, high effort) failed twice on the AIES-21 verification: first a
+`protocol_error`, then a 15-minute child timeout without output; the sandbox commands answered
+in under 0.5 s, so the stall is model-side. The PASS used `gpt-6-luna` through a temporary
+`AIES_VERIFY_MODEL` override for that run only; the profile configuration was not changed.
+
+---
+
 ## D45 - `/aies-design` lifecycle: guidance, not gates; no residual turn; the model closes it (AIES-21)
 
 **Decision.**

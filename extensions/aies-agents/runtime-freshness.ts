@@ -12,16 +12,17 @@
  * The root cause of EZE-488 was precisely this: a Verify child produced a PASS
  * that proved the old code, not the working tree, because the modules changed on
  * disk after the process started. This module detects that situation and lets
- * the Verify delegation fail fast with relaunch guidance. It deliberately does
- * NOT hot-reload, auto-restart, or invalidate any module cache; detection plus a
- * clear, honest block is the whole design (D31).
+ * the Verify delegation fail fast with relaunch guidance, but only when the
+ * changed module is one the Verify child actually loads (D44). It deliberately
+ * does NOT hot-reload, auto-restart, or invalidate any module cache; detection
+ * plus a clear, honest block is the whole design (D31).
  *
  * The module is pure and dependency-light on purpose: `node:fs`, `node:path`,
  * `node:url` only. It never throws: an unreadable directory or file is skipped.
  */
 
 import { dirname, join, relative, resolve } from "node:path";
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /** Runtime-loaded module extensions we care about (TypeScript/JavaScript family). */
@@ -207,4 +208,76 @@ export function formatStaleRuntimeMessage(report: RuntimeFreshnessReport): strin
     "Reinicio para verificar: salí de AIES y relanzalo (`aies`); después, en el proceso nuevo, volvé a delegar la verificación para que cargue los módulos actualizados.",
     "Los checks que corren en subprocesos nuevos (p. ej. `npm test`) NO están afectados y siguen siendo válidos.",
   ].join("\n\n");
+}
+
+/**
+ * Entry points of the Verify child: `verify.ts` builds the child and `session.ts`
+ * runs it. Everything the child executes (tools, guards, sandbox, handoff
+ * validation, model resolution) is reachable from them through static imports.
+ */
+const VERIFY_ENTRY_POINTS = ["aies-agents/verify.ts", "aies-agents/session.ts"];
+
+/** Loading forms the static scan cannot follow: seeing one makes the closure unknown. */
+const UNSCANNABLE_LOADING = /\brequire\s*\(|\bcreateRequire\b|import\.meta\.resolve|\bimport\(\s*(?!["'])/;
+
+/** `import`/`export ... from "./x"` and `import("./x")`; `import type` is erased and never loaded. */
+const RELATIVE_IMPORT =
+  /^\s*(?:import|export)\s+(type\s+)?[^;]*?from\s+["'](\.[^"']+)["']|^\s*import\s+["'](\.[^"']+)["']|import\(\s*["'](\.[^"']+)["']\s*\)/gms;
+
+/**
+ * The AIES modules the Verify child can execute: the static import closure of its
+ * entry points inside `extensions/`. A Verify child is created with
+ * `noExtensions`, so a module outside this set is never used by it, in-process or
+ * not. Returns `undefined` when the closure cannot be computed with confidence
+ * (an unreadable file or an unresolvable import), so callers fall back to the
+ * conservative whole-tree check rather than trusting a partial answer.
+ */
+export function verifyHarnessModules(extensionsRoot?: string): string[] | undefined {
+  const root = extensionsRoot ?? join(repoRoot(), "extensions");
+  const seen = new Set<string>();
+  const pending = VERIFY_ENTRY_POINTS.map((entry) => join(root, entry));
+  try {
+    while (pending.length) {
+      const file = pending.pop() as string;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const source = readFileSync(file, "utf8");
+      if (UNSCANNABLE_LOADING.test(source)) return undefined;
+      for (const match of source.matchAll(RELATIVE_IMPORT)) {
+        if (match[1]) continue;
+        const target = resolve(dirname(file), match[2] ?? match[3] ?? match[4]);
+        if (!MODULE_FILE.test(target)) return undefined;
+        pending.push(target);
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return [...seen].sort();
+}
+
+/**
+ * Freshness of what the Verify child actually runs. A module edited after the
+ * process started only matters here when it belongs to `verifyHarnessModules`;
+ * anything else (UI, design, memory, runtime extensions) cannot change what a
+ * Verify child executes, so it must not block a verification. If the closure is
+ * unknown the whole `extensions/` tree is checked, exactly as before.
+ */
+export function checkVerifyHarnessFreshness(options?: {
+  startedAt?: number;
+  roots?: string[];
+}): RuntimeFreshnessReport {
+  const report = checkRuntimeFreshness(options);
+  if (report.fresh) return report;
+
+  const closure = options?.roots ? verifyHarnessModules(options.roots[0]) : verifyHarnessModules();
+  if (!closure) return report;
+
+  // Provider extensions are not imported by the child, but the transport of the
+  // model it uses is their code, copied into the child runtime (session.ts), and
+  // their catalogs are read once at startup: they stay watched.
+  const harness = new Set(closure);
+  const providerRoot = join(options?.roots?.[0] ?? join(repoRoot(), "extensions"), "aies-provider-");
+  const stalePaths = report.stalePaths.filter((path) => harness.has(path) || path.startsWith(providerRoot));
+  return { ...report, fresh: stalePaths.length === 0, stalePaths, scannedFiles: closure.length };
 }
