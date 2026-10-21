@@ -53,6 +53,21 @@ export class PlaneWriteUnconfirmedError extends LinearTransportError {
   }
 }
 
+/**
+ * The work items `confirmState` returned. Membership proves that this transport ran the read-back check
+ * over the answer it was given and that the state matched; a payload cannot add itself to the set, and a
+ * transport that never reads back (the offline fake) never does. It does NOT prove the answer came from
+ * Plane: the answers are whatever the Parent supplied. The manager therefore also requires that every
+ * answer of the operation was captured from the real `mcp` result (`captureRemote`), never handed over by
+ * the model through `remote`, before a completion may feed project memory.
+ */
+const READ_BACK_CONFIRMED = new WeakSet<object>();
+
+/** True when `item` is the read-back that confirmed a Plane state write (D36 part 3). */
+export function isReadBackConfirmed(item: unknown): boolean {
+  return typeof item === "object" && item !== null && READ_BACK_CONFIRMED.has(item);
+}
+
 /** Plane MCP tool names, as the adapter's proxy addresses them. */
 const PLANE_TOOLS = {
   workItem: "workitem",
@@ -210,6 +225,7 @@ export class HostMediatedPlaneTransport implements TrackerTransport {
         `Plane reports state ${actual} for ${identifier} after the write, not the state AIES wrote (${stateId}).`,
       );
     }
+    READ_BACK_CONFIRMED.add(item);
     return item;
   }
 

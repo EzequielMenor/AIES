@@ -57,6 +57,26 @@ export const TicketParamsSchema = Type.Object({
         "Force ticket switch even if another ticket is currently in progress. On 'complete' it also lifts a pending final action the user asked for: set it only when the user explicitly confirmed that held step, never to get rid of the refusal.",
     }),
   ),
+  learnings: Type.Optional(
+    Type.Array(
+      Type.Object({
+        kind: Type.Union(
+          [Type.Literal("decision"), Type.Literal("fix"), Type.Literal("failed_attempt"), Type.Literal("note")],
+          {
+            description:
+              "decision: a confirmed technical decision, written as '<topic>: <decision and reason>'. fix: a solution that was verified. failed_attempt: an approach that failed and why. note: a relevant lasting constraint.",
+          },
+        ),
+        summary: Type.String({
+          description: "One line. Put keywords and relative paths in it: retrieval is lexical.",
+        }),
+      }),
+      {
+        description:
+          "Only for 'complete'. Up to 3 durable lessons from this ticket for the project memory: confirmed technical decisions, verified solutions, relevant constraints, and errors or lessons that avoid future problems. One line each; no secrets, logs, long code, conversations or unverified conclusions; never a Verify verdict or 'Verify PASS'. The runtime alone decides whether and where they are stored (usually nowhere unless the user enabled it) and only after Done is confirmed; completing never depends on them. Omit it when there is nothing durable to keep.",
+      },
+    ),
+  ),
   remote: Type.Optional(
     Type.Any({
       description:
@@ -279,6 +299,25 @@ function readInstruction(details: unknown): string | null {
   return typeof instruction === "string" && instruction.trim() ? instruction : null;
 }
 
+/**
+ * Show the user the notice a completion follow-up produced (D42 phase 3: what project memory did with the
+ * proposed learnings). The notice rides in `details.followUp` of the result, so the direct tool call and the
+ * captured `mcp` resume both reach it. A missing or broken UI never breaks a completion.
+ */
+export function notifyFollowUp(
+  result: { details?: Record<string, unknown> },
+  ctx: { hasUI?: boolean; ui?: { notify?: (message: string, level?: "info" | "warning" | "error") => void } } | undefined,
+): void {
+  const notice = asRecord(result.details?.followUp);
+  const message = notice ? nonEmptyString(notice.message) : undefined;
+  if (!message || !ctx?.hasUI) return;
+  try {
+    ctx.ui?.notify?.(message, notice?.level === "warning" ? "warning" : "info");
+  } catch {
+    // The UI is optional.
+  }
+}
+
 export function createTicketTool(manager: TicketManager): ToolDefinition {
   // D33 phase 4: the tracker this profile operates is named in the descriptions and rows.
   const tracker = configuredTrackerLabel();
@@ -355,6 +394,7 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
               evidence: params.evidence,
               comment: params.comment,
               force: params.force === true,
+              learnings: params.learnings,
             });
             break;
           }
@@ -445,6 +485,8 @@ export function createTicketTool(manager: TicketManager): ToolDefinition {
           isError: true,
         };
       }
+
+      notifyFollowUp(result, ctx);
 
       let responseText = result.message ?? `Ticket operation '${action}' succeeded.`;
       if (result.contract) {

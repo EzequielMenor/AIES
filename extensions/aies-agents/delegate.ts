@@ -107,6 +107,8 @@ export interface CreateDelegateToolOptions {
    * the host sandbox.
    */
   isSandboxActive?: () => boolean;
+  /** Test seams: replace the child runners so a test can read exactly what a child would receive. */
+  runners?: { explore?: typeof runExploreAgent; worker?: typeof runWorkerAgent; verify?: typeof runVerifyAgent };
 }
 
 /** The delegated role, defaulting to 'explore' for an unrecognised input. */
@@ -256,6 +258,9 @@ export function createDelegateTool(
 ): ToolDefinition<typeof DelegateParamsSchema, DelegateHandoff> {
   const store = options?.verification;
   const isSandboxActive = options?.isSandboxActive ?? isSandboxSupported;
+  const exploreRunner = options?.runners?.explore ?? runExploreAgent;
+  const workerRunner = options?.runners?.worker ?? runWorkerAgent;
+  const verifyRunner = options?.runners?.verify ?? runVerifyAgent;
 
   return {
     name: "aies_delegate",
@@ -307,7 +312,7 @@ export function createDelegateTool(
       };
 
       if (role === "explore") {
-        const handoff = await runExploreAgent({
+        const handoff = await exploreRunner({
           task,
           context,
           cwd: ctx.cwd,
@@ -328,7 +333,7 @@ export function createDelegateTool(
         // A Worker started while a FAIL is pending is a repair cycle.
         const started = applyWorkerRepairStart(current);
 
-        const handoff = await runWorkerAgent({
+        const handoff = await workerRunner({
           task,
           context,
           cwd: ctx.cwd,
@@ -456,7 +461,7 @@ export function createDelegateTool(
         const changedPaths = stringList(params.changedPaths);
         const startedAt = Date.now();
 
-        const handoff = await runVerifyAgent({
+        const handoff = await verifyRunner({
           task,
           criteria,
           changedPaths,

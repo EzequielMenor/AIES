@@ -38,7 +38,7 @@ import {
 } from "./policy.ts";
 import { trackerLabel, trackerLabelForServer } from "./labels.ts";
 import { readFinalActionDirective, type PendingFinalAction } from "./pending-action.ts";
-import { HostMediatedPlaneTransport, PlaneWriteUnconfirmedError } from "./plane-transport.ts";
+import { HostMediatedPlaneTransport, isReadBackConfirmed, PlaneWriteUnconfirmedError } from "./plane-transport.ts";
 import {
   HostMediatedLinearTransport,
   isLinearRemoteRequired,
@@ -67,6 +67,35 @@ interface PendingRemote {
   directive: LinearRemoteDirective;
 }
 
+/**
+ * What the manager knows about a completion it has just finished, handed to `afterDone` (D42 phase 3).
+ * It is built from the transport and the Done Gate, never from tool input.
+ */
+export interface DoneCompletion {
+  ticket: ActiveTicket;
+  /** The Verify record as it stands now. */
+  verification: VerificationState;
+  confirmation: {
+    tracker: TrackerId;
+    /** The tracker state was confirmed by reading the work item back (Plane only). */
+    readBackConfirmed: boolean;
+    /** The type of the state the tracker reported after the write. */
+    stateType: string | undefined;
+    gateAllowed: boolean;
+    /** The Verify record the Done Gate judged. */
+    verification: { status: string; revision: number; verifiedRevision: number | undefined };
+  };
+  /** What the Parent proposed with `complete`; untrusted. */
+  learnings: unknown;
+}
+
+/** What `afterDone` adds to the result: one line for the Parent and, optionally, a notice for the user. */
+export interface DoneFollowUp {
+  line?: string;
+  /** Shown to the user by the caller that has a UI. */
+  notify?: { message: string; level: "info" | "warning" };
+}
+
 export interface TicketManagerOptions {
   transport?: TrackerTransport;
   getVerification: () => VerificationState;
@@ -87,6 +116,12 @@ export interface TicketManagerOptions {
    * the ticket was loaded, and it refuses what it cannot describe.
    */
   changeProbe?: { cwd: () => string };
+  /**
+   * Called once after a `complete` the tracker has accepted, when the operation had learnings attached.
+   * It runs after Done is final: its failure or its absence changes nothing about the completion, and the
+   * manager never repeats a tracker operation because of it. Absent in tests that do not need it.
+   */
+  afterDone?: (done: DoneCompletion) => Promise<DoneFollowUp | undefined>;
 }
 
 /** How many paths a diagnosis lists before it reports the rest as a count (EZE-496). */
@@ -220,6 +255,7 @@ export class TicketManager {
   private mcpProbe?: () => McpDiagnostic;
   private trackerSelector: () => TrackerSelection;
   private changeProbe?: { cwd: () => string };
+  private afterDone?: (done: DoneCompletion) => Promise<DoneFollowUp | undefined>;
   /** EZE-496: the commit the ticket's changes are measured from; undefined when it could not be recorded. */
   private baselineRev?: string;
   /** EZE-496: the change fingerprint the last Verify PASS covered; undefined when none is bound. */
@@ -229,6 +265,8 @@ export class TicketManager {
   private pendingRemote: PendingRemote | null = null;
   /** Answers already collected for the in-flight operation, keyed by directive key. */
   private remoteAnswers: Record<string, unknown> = {};
+  /** True once any answer of the in-flight operation came from the model instead of the captured `mcp` result. */
+  private modelAnswered = false;
 
   /** EZE-503: an explicit user request to hold the final step, if one stands. */
   private pendingFinalAction: PendingFinalAction | null = null;
@@ -239,6 +277,7 @@ export class TicketManager {
     this.mcpProbe = options.getMcpDiagnostic;
     this.trackerSelector = options.selectTracker ?? (() => selectTracker());
     this.changeProbe = options.changeProbe;
+    this.afterDone = options.afterDone;
   }
 
   setTransport(transport: TrackerTransport): void {
@@ -476,7 +515,7 @@ export class TicketManager {
    * truncated or identity-less answer fails clearly instead of activating a partial
    * ticket.
    */
-  async submitRemote(value: unknown, key?: string): Promise<TicketOperationResult> {
+  async submitRemote(value: unknown, key?: string, source: "model" | "capture" = "model"): Promise<TicketOperationResult> {
     const pending = this.pendingRemote;
     if (!pending) {
       return {
@@ -504,6 +543,9 @@ export class TicketManager {
     }
     const resolvedKey = key && key.trim() ? key.trim() : pending.directive.key;
     this.remoteAnswers = { ...this.remoteAnswers, [resolvedKey]: answer };
+    // An answer the model handed over (the `remote` fallback) is not evidence of anything the tracker said:
+    // a completion built on one is never confirmed for project memory (D42 phase 3).
+    if (source === "model") this.modelAnswered = true;
     this.pendingRemote = null;
     return this.run(pending.action, pending.input);
   }
@@ -533,7 +575,7 @@ export class TicketManager {
     // shares that call with an earlier one, so it is matched by the call and answered by its own key.
     const wanted = pending.directive;
     if (linearRemoteKey(server, tool, args) !== linearRemoteKey(wanted.server, wanted.tool, wanted.args)) return null;
-    return this.submitRemote(value, wanted.key);
+    return this.submitRemote(value, wanted.key, "capture");
   }
 
   /**
@@ -607,11 +649,14 @@ export class TicketManager {
     comment?: string;
     /** The user confirmed the held step; see `performComplete`. */
     force?: boolean;
+    /** Lessons the Parent proposes for project memory; untrusted, and only read after Done is final. */
+    learnings?: unknown;
   }): Promise<TicketOperationResult> {
     return this.run("complete", {
       evidence: options?.evidence,
       comment: options?.comment,
       force: options?.force === true,
+      learnings: options?.learnings,
     });
   }
 
@@ -657,8 +702,9 @@ export class TicketManager {
 
     try {
       const result = await this.perform(action, input);
+      const modelAnswered = this.modelAnswered;
       this.clearRemoteSession();
-      return result;
+      return action === "complete" ? await this.finishComplete(result, input, modelAnswered) : result;
     } catch (error) {
       if (isLinearRemoteRequired(error)) {
         const directive = error.directive;
@@ -765,6 +811,7 @@ export class TicketManager {
   private clearRemoteSession(): void {
     this.pendingRemote = null;
     this.remoteAnswers = {};
+    this.modelAnswered = false;
   }
 
   /** The commit to measure the ticket's changes from, or undefined when it cannot be recorded. */
@@ -1007,12 +1054,17 @@ export class TicketManager {
     }
 
     const moved: ActiveTicket = { ...active };
+    // D42 phase 3: whether the tracker confirmed Done by reading the work item back, and the state type it reported.
+    let readBackConfirmed = false;
+    let reportedStateType: string | undefined;
     try {
       const updated = await transport.updateIssue(active.identifier, { statusId: completedStatus.id });
       const state = readIssueState(updated);
       moved.status = state.name !== "Unknown" ? state.name : completedStatus.name;
       moved.statusId = state.id ?? completedStatus.id;
       moved.statusType = state.type ?? "completed";
+      reportedStateType = state.type;
+      readBackConfirmed = active.tracker === "plane" && isReadBackConfirmed(updated);
     } catch (err) {
       if (isLinearRemoteRequired(err)) throw err;
       const code = err instanceof LinearTransportError ? err.code : "sync_error";
@@ -1031,12 +1083,57 @@ export class TicketManager {
 
     this.activeTicket = moved;
     this.workState = "complete";
+    const completion: DoneCompletion["confirmation"] = {
+      tracker: active.tracker ?? DEFAULT_TRACKER_ID,
+      readBackConfirmed,
+      stateType: reportedStateType,
+      gateAllowed: gate.allowed,
+      verification: { status: verification.status, revision: verification.revision, verifiedRevision: verification.verifiedRevision },
+    };
     return {
       ok: true,
       ticket: this.getActiveTicket()!,
       workState: this.workState,
       message: `Ticket ${moved.identifier} marked Done in ${this.trackerName()}.`,
+      // Only Plane reports the indicator (the Linear result stays exactly as it was).
+      ...(active.tracker === "plane" ? { details: { completion } } : {}),
     };
+  }
+
+  /**
+   * D42 phase 3: after Done is final, hand the proposed learnings to `afterDone`. This runs once, on the pass
+   * that finished the operation, never on a replay. It cannot fail the completion or repeat a tracker call:
+   * the ticket is already closed and every error here is swallowed.
+   */
+  private async finishComplete(result: TicketOperationResult, input: Record<string, unknown>, modelAnswered: boolean): Promise<TicketOperationResult> {
+    if (!this.afterDone || !result.ok || !result.ticket) return result;
+    if (input.learnings === undefined || input.learnings === null) return result;
+    const verification = this.getVerification();
+    // Without the Plane indicator the tracker never confirmed Done by a read-back, so nothing will be stored.
+    const reported = result.details?.completion as DoneCompletion["confirmation"] | undefined;
+    const confirmation: DoneCompletion["confirmation"] = (reported && { ...reported, readBackConfirmed: reported.readBackConfirmed && !modelAnswered }) ?? {
+      tracker: result.ticket.tracker ?? DEFAULT_TRACKER_ID,
+      readBackConfirmed: false,
+      stateType: result.ticket.statusType,
+      gateAllowed: true,
+      verification: { status: verification.status, revision: verification.revision, verifiedRevision: verification.verifiedRevision },
+    };
+    try {
+      const follow = await this.afterDone({
+        ticket: result.ticket,
+        verification: { ...verification },
+        confirmation,
+        learnings: input.learnings,
+      });
+      if (!follow) return result;
+      return {
+        ...result,
+        ...(follow.line ? { message: result.message ? `${result.message}\n${follow.line}` : follow.line } : {}),
+        details: { ...result.details, ...(reported ? { completion: confirmation } : {}), ...(follow.notify ? { followUp: follow.notify } : {}) },
+      };
+    } catch {
+      return result;
+    }
   }
 
   private async performBlock(options: { evidence: string; comment?: string }): Promise<TicketOperationResult> {
