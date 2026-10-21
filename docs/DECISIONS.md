@@ -1999,6 +1999,104 @@ profile; that run belongs to phase 5 (D39) and is still pending.
 
 ---
 
+## D41 - Mem0 as the single persistent memory of AIES (replaces D34 for AIES)
+
+> **Superseded by D42 (discarded).** Mem0 needs an embedding model for every save and
+> search, against the zero-cost, no-model-call requirement. The text below is kept as
+> history; the findings that still apply are summarised in `docs/MEMORY.md` section 9.
+
+**Decision.** Full design in `docs/MEMORY.md` (the Mem0 design itself was replaced).
+1. Mem0 OSS (`mem0ai/oss`, Node library, pinned version) is the only persistent memory
+   of AIES. D34 (Engram) is superseded for AIES. The Engram installation used by other
+   tools is not touched and AIES does not read or write it.
+2. The integration is an in-process extension of the Parent (`extensions/aies-memory/`).
+   No MCP server, no Docker, no Python, no permanent service. Children keep no extensions
+   and no MCP (D17 item 9), so the Parent is the single reader and writer.
+3. Memories are written curated (`infer: false`): the Parent writes distilled, verified
+   facts. Mem0's v3 automatic extraction is add-only and costs one LLM call per write, so
+   it is not used.
+4. One SQLite store per scope under `$AIES_HOME/memory/`, where the scope is the project
+   key of the D40 binding. Tools take no scope argument; the scope is derived from the
+   active binding on every call and fails closed on any mismatch.
+5. Memory is recovery context, never authority (D34 item 7 stays): Git, code and
+   `docs/DECISIONS.md` win. Retrieved text is injected as ephemeral, delimited data and is
+   never an instruction. Memory never enters the Done Gate and never writes into a product
+   repository.
+6. Only the user deletes or edits memories. The Parent may supersede its own.
+
+**Why.** D34 was accepted but never implemented, so superseding it costs nothing. A
+library in the Parent process avoids a second trust template (D38), a process per
+session and a service. Curated writes keep unverified conversation out of memory and keep
+the model cost of memory at zero.
+
+**Consequence.** First native runtime dependency (`better-sqlite3`) and a third-party one
+(`mem0ai`). Nothing is implemented by this decision; phase P0 of `docs/MEMORY.md` is a
+spike with a go/no-go.
+
+**P0 spike findings** (details in `docs/MEMORY.md` section 7). Metadata-only `update()`
+works; the native build loads from a prebuilt binary; telemetry is on by default and
+contacts two external hosts unless `MEM0_TELEMETRY=false` is set before import; `infer:
+false` does not deduplicate; `"*"` is accepted as a scope id; `delete` leaves the text in
+the history database; the credential comes from `ctx.modelRegistry.getApiKeyForProvider`;
+`context`, `registerTool` and `registerCommand` exist in Pi 0.85.1.
+
+**Open.** Real embedding latency, search quality and cost are not measured: no embedder
+credential was available in the spike. The embedder choice remains a user decision.
+
+**Status.** Superseded by D42 (discarded before P1). It was never approved or implemented.
+
+---
+
+## D42 - ProjectMem as the persistent memory of AIES, through a CLI bridge (supersedes D41)
+
+**Decision.** Full design, spike and plan in `docs/MEMORY.md`.
+1. ProjectMem (`projectmem==0.3.4`, MIT, Python) is the storage engine of AIES memory. No
+   embeddings, no model calls, no permanent service. D34 stays superseded for AIES; Engram
+   and Mem0 are not part of AIES.
+2. The integration is one in-process extension of the Parent, `extensions/aies-memory/`,
+   that runs the `pjm` CLI with a `cwd` and `PROJECTMEM_HOME` chosen by AIES code from the
+   D40 binding. No MCP server in the runtime, so the closed MCP trust profile (D38) and the
+   no-MCP rule for children (D17 item 9) are unchanged.
+3. One store per project key under `$AIES_HOME/memory/<projectKey>/.projectmem/`, outside
+   every repository. `pjm init` is never run on a real repository; no hooks, no watcher, no
+   `CLAUDE.md`/`AGENTS.md` edits, no `pjm doctor --fix`. Global (cross-project) memory is not
+   exposed.
+4. Parent reads and writes (five defined cases, guarded by an AIES secret filter and size
+   cap); Explore and Worker receive only what the Parent passes; Verify receives constraints
+   and decisions, never attempts. Retirement is `--supersedes`; the user edits the log.
+5. Memory is recovery context, never authority: code, user instructions, `docs/DECISIONS.md`
+   and AIES protections win. It never enters the Done Gate. If `pjm` is unavailable, AIES
+   works without memory.
+
+**Why.** It meets the zero-cost, no-model, local, per-project requirements. Plain JSONL is
+portable. A CLI bridge reuses the Parent-only, in-process pattern and avoids widening the
+MCP trust profile; the pinned `pjm-mcp` would isolate correctly but add a stdio entry that
+children could not use anyway.
+
+**Spike findings** (`docs/MEMORY.md` section 6, executed in a throwaway directory). `init`
+with every `--no-*` flag creates only `.projectmem/` and a `.gitignore` in the target; the
+`pjm-mcp --root` pin refuses a foreign `project`; records persist across processes;
+`--supersedes` removes a decision from recall; ProjectMem's redaction caught `sk-...` but not
+`password=hunter2`; `pjm --help` without `PROJECTMEM_HOME` wrote a stray
+`~/.projectmem/projects.meta.json` (the wrapper must always set the variable).
+
+**Consequence.** Python becomes an optional dependency (an AIES-owned venv). Retrieval is
+lexical only.
+
+**Git-history features.** With the store outside the repository, ProjectMem's staleness
+check runs `git log` in the store directory, which is not a repository, so it does not work
+(checked). AIES V1 therefore never calls `brief`, `precheck` or relies on staleness.
+
+**Status.** Accepted (approved by the user; phases 1 to 3 implemented and verified). The
+adapter, the read tools `aies_memory_search`/`aies_memory_context` and `/memory` exist.
+Automatic injection of recalled text was removed: Pi 0.85.1 turns every custom message into
+the user role and has no lower-trust role, so memory reaches the model only as the result of a
+real tool call. Automatic writes exist only behind a code gate after a confirmed Done and with
+`memory.writes: true` (off by default); the model-facing `aies_memory_record` tool was
+retired. Details: `docs/MEMORY.md` sections 11 and 12.
+
+---
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)
