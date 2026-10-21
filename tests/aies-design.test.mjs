@@ -35,7 +35,7 @@ describe("/aies-design lifecycle", () => {
     assert.equal(h.messages.length, 1);
     assert.match(h.messages[0].message.content, /Improve checkout/);
     assert.match(h.messages[0].message.content, /inspect the real project/);
-    assert.match(h.messages[0].message.content, /styles, and assets/);
+    assert.match(h.messages[0].message.content, /styles, assets/);
     assert.match(h.hooks.get("before_agent_start")().message.content, /new product, redesign, or improvement/);
 
     await h.commands.get("aies-design").handler("complete", h.ctx);
@@ -165,10 +165,20 @@ describe("/aies-design lifecycle", () => {
     const h = harness();
     await h.commands.get("aies-design").handler("Improve checkout", h.ctx);
     const text = h.hooks.get("before_agent_start")().message.content;
-    const order = ["inspect the real project", "Never ask the user something the project can answer", "role \"explore\"", "propose an appropriately scoped design"].map((part) => text.indexOf(part));
+    const order = ["inspect the real project", "Never ask what the project can answer", "role \"explore\"", "Brief V0 covers"].map((part) => text.indexOf(part));
     assert.ok(order.every((index) => index >= 0), "all four steps are present");
     assert.deepEqual(order, [...order].sort((a, b) => a - b), "in the order inspect, do not ask, explore, propose");
-    assert.match(text, /still missing or the project is too large[^.]*aies_delegate tool is available/u, "Explore is conditional");
+    assert.match(text, /still missing or the project is too large[^.]*aies_delegate is available/u, "Explore is conditional");
+    assert.match(text, /compact, actionable Brief V0/u);
+    for (const section of ["product/screen goal", "primary user and task", "what to preserve", "what to change", "technical and brand constraints", "observable success criteria"]) {
+      assert.ok(text.includes(section), `Brief V0 includes ${section}`);
+    }
+    assert.match(text, /personality\/references only when needed/u);
+    assert.match(text, /Ask only about unresolved material decisions, explaining which Brief\/design decision/u);
+    assert.match(text, /Ask zero questions when evidence is sufficient/u);
+    assert.match(text, /never automatically write PRODUCT\.md, DESIGN\.md/u);
+    assert.match(text, /discovery only, not a new design direction or visual implementation/u);
+    assert.match(text, /do not use a fixed questionnaire/u);
     assert.doesNotMatch(text, /always (?:use|delegate|launch)/iu);
   });
 

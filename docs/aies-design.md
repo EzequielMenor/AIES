@@ -6,11 +6,23 @@ Design work is opt-in. Start with a concrete objective, for example:
 /aies-design Improve the onboarding flow
 ```
 
-The workflow first classifies the objective as a new product, redesign, or
-improvement. It inspects the real project structure, relevant documentation,
-current UI, styles, and assets before asking product questions or proposing a
-design; findings should describe what is actually present, not just list paths.
-It stays scoped to the objective and does not create a full design system.
+The workflow inspects the real project structure, relevant documentation,
+current UI, styles, assets, and existing technical/brand conventions before
+asking questions. It turns the objective and that evidence into a compact,
+actionable Brief V0: product/screen goal; primary user and task; what to preserve
+and change; existing technical and brand constraints; personality/references
+only when needed; and observable success criteria. Findings distinguish
+observations from inferences, and evidence should be described rather than just
+listing paths.
+
+Questions are limited to unresolved material decisions, with an explanation of
+the Brief/design decision each answer blocks. The workflow infers confidently
+from evidence, uses no fixed questionnaire, and asks zero questions when the
+evidence is sufficient. Explore delegation is conditional on relevant context
+remaining missing or the project being too large to inspect directly. This is
+discovery only: it does not open new design directions or implement visuals. The
+brief stays in this execution context/ticket; it is never automatically written
+to `PRODUCT.md`, `DESIGN.md`, or another planning artifact in the repository.
 
 End the workflow explicitly at any time with `/aies-design cancel`, `/aies-design
 exit`, or `/aies-design complete` (also `/aies-design done`). While it is active,
@@ -24,9 +36,11 @@ persisted or restored across a new, resumed, or forked session.
 ## Lifecycle details
 
 - **Inspection first.** The workflow instructs the model to inspect structure, docs,
-  UI, styles and assets with its normal read-only tools before asking or proposing,
-  and never to ask what the project can answer. There is no tool gate: a rigid guard
-  would block legitimate short objectives.
+  UI, styles, assets and conventions with its normal read-only tools before asking
+  questions. There is no tool gate: a rigid guard would block legitimate short
+  objectives. The prompt contract describes the required Brief V0, evidence-based
+  inference, material-question threshold and non-persistence boundary; it does
+  not prove live-model compliance.
 - **Explore when context is missing.** If inspection leaves relevant context missing
   or the project is too large to read directly, and `aies_delegate` exists, discovery
   goes to its `explore` role. It is never launched by obligation.
