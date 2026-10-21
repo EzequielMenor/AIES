@@ -30,11 +30,38 @@ function diagnosticLevel(code: string): "warning" | "error" {
  */
 const CANCEL_PENDING_TOKEN = "cancel-pending";
 
+/**
+ * D46: the user-only declaration that the active ticket has no code to verify
+ * (`/aies-ticket no-code <reason>`). Slash command, so the model cannot send it.
+ */
+const NO_CODE_TOKEN = "no-code";
+
 export function registerTicketCommand(pi: ExtensionAPI, manager: TicketManager): void {
   pi.registerCommand("aies-ticket", {
-    description: `Activate or show the active ${configuredTrackerLabel()} ticket for this session (/aies-ticket [ticketId] | cancel-pending)`,
+    description: `Activate or show the active ${configuredTrackerLabel()} ticket for this session (/aies-ticket [ticketId] | cancel-pending | no-code <reason>)`,
     handler: async (args, ctx) => {
       const ticketId = args?.trim();
+
+      if (ticketId === NO_CODE_TOKEN || ticketId?.startsWith(`${NO_CODE_TOKEN} `)) {
+        const reason = ticketId.slice(NO_CODE_TOKEN.length).trim();
+        const declared = manager.declareNoCodeException(reason);
+        if (!declared) {
+          ctx.ui.notify("Usage: /aies-ticket no-code <reason>. It needs an active ticket and a short justification.", "warning");
+          return;
+        }
+        const snapshot = manager.toSnapshot();
+        if (snapshot) {
+          try {
+            pi.appendEntry("aies-ticket", snapshot);
+          } catch {}
+        }
+        ctx.ui.notify(
+          `Recorded: ${declared.ticket} has no code to verify (${declared.reason}). ` +
+            "A visible code change, or a failed, blocked or running Verify, still refuses Done.",
+          "info",
+        );
+        return;
+      }
 
       if (ticketId === CANCEL_PENDING_TOKEN) {
         const cancelled = manager.cancelPendingFinalAction();

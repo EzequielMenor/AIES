@@ -281,10 +281,10 @@ describe("automatic writes after a confirmed Done (D42 phase 3)", { skip: !GIT_A
     });
 
   for (const kind of ["fail", "blocked", "stale"]) {
-    noWrite(`Done reached but Verify is ${kind} (no changed paths reported, so the gate allows)`, async () => {
+    noWrite(`Done reached but Verify is ${kind} with no visible change: the Done Gate denies it (D46)`, async () => {
       const { result } = await completeTicket({ learnings: LESSONS, verification: verificationState(kind) });
-      assert.equal(result.ok, true, "completion itself is unaffected");
-      assert.match(result.message, /no hay un PASS de Verify vigente/u);
+      assert.equal(result.ok, false);
+      assert.equal(result.error, "verify_gate_denied");
     });
     noWrite(`Verify is ${kind} and code changed: the Done Gate denies the completion`, async () => {
       const { result, manager } = await completeTicket({
@@ -298,8 +298,13 @@ describe("automatic writes after a confirmed Done (D42 phase 3)", { skip: !GIT_A
     });
   }
 
-  noWrite("no Verify record at all", async () => {
-    const { result } = await completeTicket({ learnings: LESSONS, verification: createVerificationState() });
+  noWrite("no Verify record at all, Done reached through the user's no-code exception", async () => {
+    const { result } = await completeTicket({
+      learnings: LESSONS,
+      verification: createVerificationState(),
+      before: (m) => m.declareNoCodeException("test fixture: no code"),
+    });
+    assert.equal(result.ok, true, "the exception completes the ticket");
     assert.match(result.message, /no hay un PASS de Verify vigente/u);
   });
 
@@ -879,9 +884,10 @@ process.stdout.write(JSON.stringify({ written: outcome.written, existing: outcom
     assert.equal(host.tools.has("aies_memory_record"), false);
     assert.equal(readFileSync(join(profile.memory, "ALPHA", ".projectmem", "events.jsonl"), "utf8"), before, "reading wrote nothing");
 
-    // A failing Verify still blocks the write, whatever memory says.
+    // A failing Verify still blocks the completion and so the write, whatever memory says.
     const { result } = await completeTicket({ learnings: LESSONS, verification: verificationState("fail") });
-    assert.match(result.message, /no hay un PASS de Verify vigente/u);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "verify_gate_denied");
     // And writes off still means off.
     writeAiesJson({ tracker: "plane", repos: { ALPHA: alpha } });
     const off = await completeTicket({ learnings: LESSONS });

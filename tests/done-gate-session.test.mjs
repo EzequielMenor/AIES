@@ -195,16 +195,28 @@ describe("EZE-496: the Done Gate sees the repository, not only the session", () 
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("completes a clean tree with a known baseline without Verify (no change to prove)", async () => {
+  it("refuses a clean tree with a known baseline and no Verify: work committed before the load is still unverified (D46)", async () => {
     const { manager, fake } = await loadedManager({ getVerification: () => createVerificationState() });
+    const result = await manager.completeTicket();
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "verify_gate_denied");
+    assert.match(result.message, /no user-declared no-code exception/u);
+    assert.equal(await planeState(fake), "Todo");
+  });
+
+  it("completes a clean tree without Verify only through the user's no-code exception", async () => {
+    const { manager, fake } = await loadedManager({ getVerification: () => createVerificationState() });
+    assert.ok(manager.declareNoCodeException("research ticket"));
     const result = await manager.completeTicket();
     assert.equal(result.ok, true, result.message);
     assert.equal(await planeState(fake), "Done");
   });
 
-  it("completes a documentation-only dirty tree without Verify", async () => {
+  it("completes a documentation-only dirty tree without Verify only through the exception", async () => {
     const { manager, fake } = await loadedManager({ getVerification: () => createVerificationState() });
     write(DOCS, "# Notes\n\nA clearer sentence.\n");
+    assert.equal((await manager.completeTicket()).ok, false, "docs-only alone no longer skips Verify");
+    assert.ok(manager.declareNoCodeException("docs only"));
     const result = await manager.completeTicket();
     assert.equal(result.ok, true, result.message);
     assert.equal(await planeState(fake), "Done");
@@ -334,6 +346,7 @@ describe("EZE-496: the Done Gate sees the repository, not only the session", () 
     const plain = join(root, "plain");
     mkdirSync(plain);
     const { manager, fake } = await loadedManager({ cwd: plain, getVerification: () => createVerificationState() });
+    assert.ok(manager.declareNoCodeException("no code"), "even a declared exception cannot open unknown evidence");
     const result = await manager.completeTicket();
     assert.equal(result.error, "verify_gate_denied");
     assert.match(result.message, /change state unknown/u);
@@ -387,7 +400,7 @@ describe("EZE-496: the Done Gate sees the repository, not only the session", () 
     await manager.loadTicket("AIES-39");
     write(CODE, "export const app = 2;\n");
     const hidden = await manager.completeTicket();
-    assert.equal(hidden.ok, true, "without a probe an unreported change is invisible, as before");
+    assert.equal(hidden.ok, false, "without a probe an unreported change is invisible, and invisible is not verified (D46)");
   });
 });
 
@@ -413,6 +426,7 @@ describe("EZE-496: direct completions are guarded by the same Done Gate", () => 
 
   it("refuses a Plane state write for completion while the gate denies, and passes it once the gate allows", async () => {
     const { manager } = await loadedManager({ getVerification: () => createVerificationState() });
+    assert.ok(manager.declareNoCodeException("no code"));
     const context = (doneGate) => ({
       pending: COMPLETE_DIRECTIVE,
       pendingAction: "complete",
@@ -538,6 +552,7 @@ describe("EZE-496: direct completions are guarded by the same Done Gate", () => 
       const manager = getActiveTicketManager();
       manager.setTransport(linear);
       assert.equal((await manager.loadTicket("EZE-496")).ok, true);
+      assert.ok(manager.declareNoCodeException("no code"));
 
       assert.equal(await host.toolCall("mcp", linearSave), null);
     });

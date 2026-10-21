@@ -3,6 +3,7 @@
  */
 
 import type { PendingFinalAction } from "./pending-action.ts";
+import type { NoCodeException } from "./policy.ts";
 
 /**
  * D33: the ticket tracker a profile uses. Only `linear` is operable today;
@@ -133,6 +134,8 @@ export interface TicketSnapshot {
    * resume so a session reload cannot quietly re-open the Done path the user paused.
    */
   pendingFinalAction?: PendingFinalAction | null;
+  /** D46: the user-declared no-code exception for this ticket, if any. */
+  noCodeException?: NoCodeException | null;
   /** D33: the tracker the snapshot came from. Absent in older snapshots, meaning `linear`. */
   tracker?: TrackerId;
   /** EZE-496: the commit the ticket's changes are measured from. Absent when it was not recorded (fails closed). */

@@ -178,27 +178,77 @@ afterEach(() => {
 });
 
 describe("EZE-496: show and complete reach the same Done Gate verdict", () => {
-  it("ALLOW on a clean tree with a known baseline, and complete agrees", async () => {
+  it("DENY on a clean tree loaded after the work was committed, with no PASS and no exception (D46)", async () => {
     const { manager, fake } = await loadedSession();
     const { gate, diagnosis, text } = await assertShowAgrees(manager);
 
-    assert.equal(diagnosis.decision, "ALLOW");
+    assert.equal(diagnosis.decision, "DENY");
+    assert.equal(diagnosis.code, "verify_gate_denied");
     assert.equal(diagnosis.evidence, "known");
-    assert.equal(diagnosis.probe, true);
     assert.match(diagnosis.baseline, /^[0-9a-f]{12}$/u);
     assert.deepEqual(diagnosis.effectivePaths, { items: [], more: 0 });
-    assert.match(text, /^Done Gate: ALLOW — Verification not required/mu);
+    assert.match(text, /^Done Gate: DENY — Verification required: no Verify PASS and no user-declared no-code exception/mu);
     await assertCompletionAgrees(manager, fake, gate);
   });
 
-  it("ALLOW on a documentation-only dirty tree, and complete agrees", async () => {
+  it("ALLOW on a clean tree once the user declared the ticket has no code, and complete agrees", async () => {
     const { manager, fake } = await loadedSession();
-    write(DOCS, "# Notes\n\nA clearer sentence.\n");
-    const { gate, diagnosis } = await assertShowAgrees(manager);
+    assert.ok(manager.declareNoCodeException("research ticket, nothing to build"));
+    const { gate, diagnosis, text } = await assertShowAgrees(manager);
 
     assert.equal(diagnosis.decision, "ALLOW");
-    assert.deepEqual(diagnosis.detectedPaths.items, [DOCS]);
+    assert.match(text, /^Done Gate: ALLOW — No-code exception declared by the user/mu);
     await assertCompletionAgrees(manager, fake, gate);
+  });
+
+  it("DENY on a documentation-only dirty tree without the exception, ALLOW with it", async () => {
+    const { manager, fake } = await loadedSession();
+    write(DOCS, "# Notes\n\nA clearer sentence.\n");
+    const denied = await assertShowAgrees(manager);
+    assert.equal(denied.diagnosis.decision, "DENY");
+    assert.deepEqual(denied.diagnosis.detectedPaths.items, [DOCS]);
+
+    assert.ok(manager.declareNoCodeException("docs only"));
+    const { gate, diagnosis } = await assertShowAgrees(manager);
+    assert.equal(diagnosis.decision, "ALLOW");
+    await assertCompletionAgrees(manager, fake, gate);
+  });
+
+  it("DENY on a clean tree with a PASS that was never bound to this ticket's tree (stale PASS)", async () => {
+    const { manager, fake } = await loadedSession({ getVerification: () => freshPass() });
+    const { gate, diagnosis } = await assertShowAgrees(manager);
+
+    assert.equal(diagnosis.decision, "DENY");
+    assert.match(diagnosis.reason, /not bound to the current changes/u);
+    await assertCompletionAgrees(manager, fake, gate);
+
+    manager.recordVerifiedState();
+    assert.equal(manager.evaluateDoneGate().allowed, true, "a PASS bound to the tree is what authorises");
+  });
+
+  it("the exception survives a snapshot round trip, only for its own ticket", async () => {
+    const { manager } = await loadedSession();
+    assert.ok(manager.declareNoCodeException("no code"));
+    const snapshot = manager.toSnapshot();
+    assert.equal(snapshot.noCodeException.reason, "no code");
+
+    manager.reset();
+    assert.equal(manager.restoreFromSnapshot(snapshot).ok, true);
+    assert.equal(manager.evaluateDoneGate().allowed, true);
+
+    manager.restoreFromSnapshot({ ...snapshot, noCodeException: { ...snapshot.noCodeException, ticket: "AIES-99" } });
+    assert.equal(manager.evaluateDoneGate().allowed, false, "an exception declared on another ticket does not count");
+  });
+
+  it("the exception never outranks a visible code change, and it dies with the ticket", async () => {
+    const { manager } = await loadedSession();
+    assert.ok(manager.declareNoCodeException("claims no code"));
+    write(CODE, "export const app = 2;\n");
+    assert.equal(manager.evaluateDoneGate().allowed, false, "visible code still needs a PASS");
+    assert.match(manager.evaluateDoneGate().reason, /Verification required/u);
+
+    manager.reset();
+    assert.equal(manager.declareNoCodeException("no ticket"), null, "no active ticket, no exception");
   });
 
   it("DENY on a behaviour-bearing dirty tree with no PASS, and complete agrees", async () => {
@@ -304,7 +354,7 @@ describe("EZE-496: show and complete reach the same Done Gate verdict", () => {
     write(CODE, "export const app = 2;\n");
     const { gate, diagnosis, text } = await assertShowAgrees(manager);
 
-    assert.equal(diagnosis.decision, "ALLOW", "without a probe an unreported change is invisible, as before");
+    assert.equal(diagnosis.decision, "DENY", "without a probe an unreported change is invisible, and invisible is not verified (D46)");
     assert.equal(diagnosis.probe, false);
     assert.equal(diagnosis.evidence, "not configured");
     assert.equal(diagnosis.baseline, "none");
@@ -319,6 +369,8 @@ describe("EZE-496: unknown Git evidence fails closed in show", () => {
     const plain = join(root, "plain");
     mkdirSync(plain);
     const { manager } = await loadedSession({ cwd: plain });
+    // Even a declared exception cannot open a gate whose Git evidence is unknown.
+    assert.ok(manager.declareNoCodeException("no code"));
     const { gate, diagnosis, text } = await assertShowAgrees(manager);
 
     assert.equal(gate.code, "verify_gate_denied");
@@ -420,6 +472,7 @@ describe("EZE-496: show does not leak secrets or unbounded output", () => {
 
   it("caps the path list inside a documentation-only reason at 20 with the number left out", async () => {
     const { manager } = await loadedSession();
+    assert.ok(manager.declareNoCodeException("docs only"));
     for (let i = 1; i <= 25; i += 1) write(`docs/note-${String(i).padStart(2, "0")}.md`, `# Note ${i}\n`);
 
     const diagnosis = manager.describeDoneGate();

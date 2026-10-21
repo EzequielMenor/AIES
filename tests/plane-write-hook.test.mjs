@@ -195,6 +195,7 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
     assert.equal(stateOf(), "In Progress");
 
     manager.recordChangedPaths(["docs/notes.md"]);
+    manager.declareNoCodeException("test fixture: documentation only");
     await manager.completeTicket();
     await drive(host, simulator, manager);
 
@@ -207,6 +208,7 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
     const manager = getActiveTicketManager();
     await loadAndStart(host, simulator, manager);
     manager.recordChangedPaths(["docs/notes.md"]);
+    manager.declareNoCodeException("test fixture: documentation only");
     await manager.completeTicket();
 
     const pending = await drive(host, simulator, manager, isStateUpdate);
@@ -234,6 +236,7 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
     const manager = getActiveTicketManager();
     await loadAndStart(host, simulator, manager);
     manager.recordChangedPaths(["docs/notes.md"]);
+    manager.declareNoCodeException("test fixture: documentation only");
     await manager.completeTicket();
     const pending = await drive(host, simulator, manager, isStateUpdate);
     assert.ok(isStateUpdate(pending));
@@ -252,6 +255,7 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
     const manager = getActiveTicketManager();
     await loadAndStart(host, simulator, manager);
     manager.recordChangedPaths(["docs/notes.md"]);
+    manager.declareNoCodeException("test fixture: documentation only");
     await manager.completeTicket();
     const pending = await drive(host, simulator, manager, isStateUpdate);
     assert.ok(isStateUpdate(pending));
@@ -267,6 +271,7 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
     const manager = getActiveTicketManager();
     await loadAndStart(host, simulator, manager);
     manager.recordChangedPaths(["docs/notes.md"]);
+    manager.declareNoCodeException("test fixture: documentation only");
     await manager.completeTicket();
     await drive(host, simulator, manager, isStateUpdate);
 
@@ -290,6 +295,7 @@ describe("D33 phase 4 (C): the Plane write guard through the real hook", () => {
     const manager = getActiveTicketManager();
     await loadAndStart(host, simulator, manager);
     manager.recordChangedPaths(["docs/notes.md"]);
+    manager.declareNoCodeException("test fixture: documentation only");
     await manager.completeTicket();
     await drive(host, simulator, manager, isStateUpdate);
 

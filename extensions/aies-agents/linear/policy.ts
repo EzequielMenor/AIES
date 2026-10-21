@@ -6,7 +6,8 @@
  * 2. Start transition only when concrete work begins.
  * 3. Done Gate: Behavior-bearing changes REQUIRE a valid fresh Verify PASS.
  *    Stale PASS, none, fail, or blocked DENY completion.
- *    Docs-only changes complete without Verify child when requiresVerification is false.
+ *    D46: nothing completes on "no visible change" alone. Without a Verify PASS the
+ *    only way out is a no-code exception the user declared with a slash command.
  * 4. EZE-503: an explicit user request to keep the last step (review or commit)
  *    outranks any verdict: while it stands, completion is denied without touching
  *    the verification record.
@@ -27,6 +28,17 @@ export interface DoneGateResult {
    * row never claim the evidence is missing when it is not.
    */
   code?: "pending_final_action" | "verify_gate_denied";
+}
+
+/**
+ * D46: the user's declaration that a ticket has no code to verify. It is recorded only by
+ * the user-only `/aies-ticket no-code <reason>` command, bound to one ticket, and it never
+ * outranks a visible code change or a standing Verify verdict.
+ */
+export interface NoCodeException {
+  ticket: string;
+  reason: string;
+  at: number;
 }
 
 export interface TicketSwitchCheck {
@@ -92,6 +104,7 @@ export function checkDoneGate(
   verification: VerificationState,
   changedPaths: string[],
   pendingFinalAction?: PendingFinalAction | null,
+  noCodeException?: NoCodeException | null,
 ): DoneGateResult {
   // EZE-503: Verify proves the work unit; only the user can authorise the last
   // step. The hold is evaluated first so it also covers a docs-only change (where
@@ -122,12 +135,28 @@ export function checkDoneGate(
 
   const requirement = requiresVerification(changedPaths);
 
-  // Docs-only or trivial change does not require Verify child
+  // D46: "no code is visible" is not evidence that no code needs verifying (the work may
+  // have been committed before the ticket was loaded), and neither is a docs-only diff.
+  // Without a PASS, only the user's explicit no-code exception completes the ticket.
   if (!requirement.required) {
-    return {
-      allowed: true,
-      reason: `Verification not required: ${requirement.reason}`,
-    };
+    if (verification.status === "pass") {
+      if (!isVerificationValid(verification)) {
+        return denied(
+          `Verification is stale: verified revision ${verification.verifiedRevision ?? "none"} does not match current revision ${verification.revision}`,
+        );
+      }
+      return { allowed: true, reason: `Verified PASS on revision ${verification.revision}` };
+    }
+    if (noCodeException) {
+      return {
+        allowed: true,
+        reason: `No-code exception declared by the user (${noCodeException.reason}); ${requirement.reason}`,
+      };
+    }
+    return denied(
+      `Verification required: no Verify PASS and no user-declared no-code exception (${requirement.reason}). ` +
+        "Run Verify, or ask the user to declare a ticket without code with /aies-ticket no-code <reason>.",
+    );
   }
 
   // Behavior-bearing change requires independent verification

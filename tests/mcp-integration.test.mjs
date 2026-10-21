@@ -461,10 +461,11 @@ describe("AIES MCP integration", () => {
 
     it("walks every Linear call before reporting Done, and only then", async () => {
       const manager = mediatedManager();
-      manager.recordChangedPaths(["README.md"]); // docs-only: no Verify required
+      manager.recordChangedPaths(["README.md"]); // docs-only: the user's no-code exception stands in for Verify
 
       await manager.loadTicket("EZE-422");
       assert.equal((await manager.submitRemote(issue)).ok, true);
+      assert.ok(manager.declareNoCodeException("test fixture: documentation only"));
 
       let step = await manager.startWork();
       assert.equal(step.directive.tool, "list_issue_statuses");

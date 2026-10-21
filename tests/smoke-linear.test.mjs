@@ -432,6 +432,7 @@ describe("AIES-008 Real Smoke: Linear Ticket Workflow End-to-End", () => {
 
       // Code changes and verified PASS
       manager.recordChangedPaths(["README.md"]); // docs only
+      manager.declareNoCodeException("test fixture: documentation only");
 
       // External user completes ticket in Linear web app while session was working
       fakeTransport.seedIssue({

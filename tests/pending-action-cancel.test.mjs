@@ -545,3 +545,26 @@ describe("standing prohibitions and cancel-pending", () => {
     });
   });
 });
+
+describe("D46: /aies-ticket no-code is a user-only declaration", () => {
+  it("records the exception, persists it and refuses an empty reason", async () => {
+    const { manager } = await loadedManager();
+    const host = createCommandHost(manager);
+
+    const refused = await host.run("no-code");
+    assert.equal(refused[0].type, "warning");
+    assert.equal(manager.toSnapshot().noCodeException, undefined);
+    assert.equal(host.entries.length, 0);
+
+    const accepted = await host.run("no-code research ticket, nothing to build");
+    assert.equal(accepted[0].type, "info");
+    assert.equal(manager.toSnapshot().noCodeException.reason, "research ticket, nothing to build");
+    assert.equal(host.entries.at(-1).data.noCodeException.reason, "research ticket, nothing to build");
+  });
+
+  it("is not an aies_ticket action the model can call", () => {
+    const manager = new TicketManager({ transport: undefined, getVerification: () => createVerificationState() });
+    const tool = createTicketTool(manager);
+    assert.equal(JSON.stringify(tool.parameters).includes("no-code"), false);
+  });
+});

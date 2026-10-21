@@ -35,6 +35,7 @@ import {
   detectRemoteConflict,
   resolveTargetStatus,
   type DoneGateResult,
+  type NoCodeException,
 } from "./policy.ts";
 import { trackerLabel, trackerLabelForServer } from "./labels.ts";
 import { readFinalActionDirective, type PendingFinalAction } from "./pending-action.ts";
@@ -222,7 +223,9 @@ function judgeDoneGate(gate: DoneGateResult, evidence: DoneGateEvidence): DoneGa
       reason: `change state unknown: ${changes.reason}. The changes cannot be checked against the Verify PASS, so completion is refused.`,
     };
   }
-  if (evidence.verificationRequired.required) {
+  // D46: a PASS must be bound to the working tree whether or not code is visible now; only the
+  // user's no-code exception opens the gate without one.
+  if (evidence.verification.status === "pass") {
     if (evidence.verifiedFingerprint === undefined) {
       return {
         allowed: false,
@@ -270,6 +273,8 @@ export class TicketManager {
 
   /** EZE-503: an explicit user request to hold the final step, if one stands. */
   private pendingFinalAction: PendingFinalAction | null = null;
+  /** D46: the user's no-code exception for the active ticket; set only by `/aies-ticket no-code`. */
+  private noCodeException: NoCodeException | null = null;
 
   constructor(options: TicketManagerOptions) {
     this.transportOverride = options.transport;
@@ -393,7 +398,7 @@ export class TicketManager {
     const recorded = Array.from(this.changedPaths);
     const changes = this.changeProbe ? this.observeChanges() : null;
     const effective = changes?.known ? [...new Set([...recorded, ...changes.paths])] : recorded;
-    const gate = checkDoneGate(verification, effective, this.pendingFinalAction);
+    const gate = checkDoneGate(verification, effective, this.pendingFinalAction, this.activeNoCodeException());
     const evidence: DoneGateEvidence = {
       baselineRev: this.baselineRev,
       changes,
@@ -480,6 +485,26 @@ export class TicketManager {
     const cleared = this.pendingFinalAction;
     this.pendingFinalAction = null;
     return cleared ? { ...cleared } : null;
+  }
+
+  /** The exception only counts for the ticket it was declared on. */
+  private activeNoCodeException(): NoCodeException | null {
+    const exception = this.noCodeException;
+    if (!exception || !this.activeTicket || exception.ticket !== this.activeTicket.identifier) return null;
+    return exception;
+  }
+
+  /**
+   * Record the user's declaration that the active ticket has no code to verify
+   * (`/aies-ticket no-code <reason>`, D46). Only the slash command calls this, so the
+   * model cannot grant it to itself. A visible code change or a standing Verify
+   * verdict still outranks it. Returns null when there is no ticket or no reason.
+   */
+  declareNoCodeException(reason: string): NoCodeException | null {
+    const text = reason.trim();
+    if (!this.activeTicket || !text) return null;
+    this.noCodeException = { ticket: this.activeTicket.identifier, reason: text.slice(0, 300), at: Date.now() };
+    return { ...this.noCodeException };
   }
 
   /** The Linear call the Parent still has to perform, if any. */
@@ -733,6 +758,7 @@ export class TicketManager {
       lastKnownLinearStatus: this.activeTicket.status,
       changedPaths: Array.from(this.changedPaths),
       pendingFinalAction: this.pendingFinalAction ? { ...this.pendingFinalAction } : null,
+      ...(this.noCodeException ? { noCodeException: { ...this.noCodeException } } : {}),
       tracker: this.activeTicket.tracker ?? DEFAULT_TRACKER_ID,
       ...(this.baselineRev !== undefined ? { baselineRev: this.baselineRev } : {}),
       ...(this.verifiedFingerprint !== undefined ? { verifiedFingerprint: this.verifiedFingerprint } : {}),
@@ -766,6 +792,7 @@ export class TicketManager {
     this.workState = snapshot.workState ?? "loaded";
     this.changedPaths = new Set(snapshot.changedPaths ?? []);
     this.pendingFinalAction = snapshot.pendingFinalAction ?? null;
+    this.noCodeException = snapshot.noCodeException ?? null;
     // EZE-496: a snapshot without a baseline (written before the change evidence existed) restores as
     // unknown, so the gate refuses completion until the ticket is loaded again or Verify runs.
     this.baselineRev = snapshot.baselineRev;
@@ -778,6 +805,7 @@ export class TicketManager {
     this.workState = "loaded";
     this.changedPaths.clear();
     this.pendingFinalAction = null;
+    this.noCodeException = null;
     this.baselineRev = undefined;
     this.verifiedFingerprint = undefined;
     this.clearRemoteSession();
@@ -918,6 +946,7 @@ export class TicketManager {
     }
     // The held step belonged to the previous work unit, not to this ticket.
     this.pendingFinalAction = null;
+    this.noCodeException = null;
 
     return {
       ok: true,

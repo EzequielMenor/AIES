@@ -455,14 +455,28 @@ Ensure timeout is bounded
     });
   });
 
-  describe("7. Docs-only completion (no Verify required)", () => {
-    it("completes immediately without verify run when changed files are docs/markdown only", async () => {
+  describe("7. Docs-only completion needs the user's no-code exception (D46)", () => {
+    it("refuses a docs-only ticket with no Verify run and no exception", async () => {
       await manager.loadTicket("EZE-101");
       await manager.startWork();
       manager.recordChangedPaths(["docs/ARCHITECTURE.md", "README.md"]);
 
       assert.equal(requiresVerification(["docs/ARCHITECTURE.md", "README.md"]).required, false);
       verificationState.status = "none"; // No verification was run
+
+      const result = await manager.completeTicket();
+
+      assert.equal(result.ok, false);
+      assert.match(result.message ?? "", /no-code exception/i);
+      assert.notEqual(manager.getWorkState(), "complete");
+    });
+
+    it("completes once the user declared the ticket has no code", async () => {
+      await manager.loadTicket("EZE-101");
+      await manager.startWork();
+      manager.recordChangedPaths(["docs/ARCHITECTURE.md", "README.md"]);
+      verificationState.status = "none";
+      assert.ok(manager.declareNoCodeException("docs only"));
 
       const result = await manager.completeTicket();
 
@@ -484,8 +498,19 @@ Ensure timeout is bounded
       }
     }
 
-    it("still completes a docs-only change when no Verify run exists", () => {
-      assert.equal(checkDoneGate(createVerificationState(), ["docs/ARCHITECTURE.md"]).allowed, true);
+    it("refuses a stale PASS even when no change is visible", () => {
+      const stale = { ...createVerificationState(), status: "pass", revision: 3, verifiedRevision: 2 };
+      assert.equal(checkDoneGate(stale, []).allowed, false);
+    });
+
+    it("lets only an explicit exception complete without a PASS, and never over a code change", () => {
+      const exception = { ticket: "EZE-1", reason: "research only", at: 1 };
+      assert.equal(checkDoneGate(createVerificationState(), [], null, exception).allowed, true);
+      assert.equal(checkDoneGate(createVerificationState(), ["src/app.ts"], null, exception).allowed, false);
+    });
+
+    it("refuses a docs-only change with no Verify run and no exception", () => {
+      assert.equal(checkDoneGate(createVerificationState(), ["docs/ARCHITECTURE.md"]).allowed, false);
     });
   });
 
@@ -538,6 +563,7 @@ Ensure timeout is bounded
       await manager.loadTicket("EZE-101");
       await manager.startWork();
       manager.recordChangedPaths(["README.md"]); // docs only for quick check
+      manager.declareNoCodeException("test fixture: documentation only");
 
       fakeTransport.queriedIssueIds = [];
       await manager.completeTicket();
@@ -552,6 +578,7 @@ Ensure timeout is bounded
       await manager.loadTicket("EZE-101");
       await manager.startWork();
       manager.recordChangedPaths(["README.md"]);
+      manager.declareNoCodeException("test fixture: documentation only");
 
       // Simulate external user closing ticket in Linear UI
       fakeTransport.seedIssue({
@@ -571,6 +598,7 @@ Ensure timeout is bounded
       await manager.loadTicket("EZE-101");
       await manager.startWork();
       manager.recordChangedPaths(["README.md"]);
+      manager.declareNoCodeException("test fixture: documentation only");
 
       fakeTransport.seedIssue({
         id: "issue-eze-101",
@@ -589,6 +617,7 @@ Ensure timeout is bounded
       await manager.loadTicket("EZE-101");
       await manager.startWork();
       manager.recordChangedPaths(["README.md"]);
+      manager.declareNoCodeException("test fixture: documentation only");
 
       fakeTransport.simulateConflictOnNextUpdate = true;
       const result = await manager.completeTicket();

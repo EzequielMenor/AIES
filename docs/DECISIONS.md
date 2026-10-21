@@ -2257,3 +2257,19 @@ in under 0.5 s, so the stall is model-side. The PASS used `gpt-6-luna` through a
 **Consequence.** Behavioural guarantees that depend on the model (inspecting first, using
 Explore sensibly, emitting the marker) are validated with a real model, not with mocks;
 mocks cover routing, isolation and closing.
+
+## D46 - Done needs a bound Verify PASS or the user's no-code exception, never "nothing visible" (refines D14)
+
+**Decision.**
+1. The Done Gate no longer reads "no changed paths" or "documentation-only" as "no
+   verification needed". Without a valid PASS bound to the working tree, completion is
+   refused, whatever Git shows. This closes the case of a ticket loaded after its
+   implementation was committed: the baseline then sees no change.
+2. `fail`, `blocked` and `running` always refuse, with or without visible changes.
+3. The only way to complete without a PASS is `/aies-ticket no-code <reason>`, a slash
+   command and therefore user-only. It is recorded per ticket, persisted in the snapshot,
+   cleared on load/reset, never an `aies_ticket` action, and it does not outrank a visible
+   code change, a standing Verify verdict, a pending final action or unknown Git evidence.
+
+**Consequence.** Documentation-only tickets also need the exception or a PASS (D14 allowed
+them to complete silently). Parent cannot declare a ticket code-free by itself.
