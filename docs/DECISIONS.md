@@ -2180,3 +2180,27 @@ and the two projects are unrelated in code, dependencies and design.
 
 **Needed decision.** Before any push: rename one of them, use a new repository,
 or explicitly declare this one a successor and archive the other.
+
+---
+
+## D45 - `/aies-design` lifecycle: guidance, not gates; no residual turn; the model closes it (AIES-21)
+
+**Decision.**
+1. Design is a session-local, opt-in mode with no persistent agent, no registered tool and
+   no persisted state. Its guidance reaches the model through the kickoff and a per-turn
+   hidden context message, both tagged with a workflow UUID and dropped by the `context`
+   hook once the workflow is no longer the active one.
+2. Inspection before design is a workflow instruction (inspect the real project, never ask
+   what it can answer) and not a tool gate: a gate cannot tell a trivial objective from one
+   that needs reading. Explore is used only when inspection leaves relevant context missing
+   or the project is too large, and only if `aies_delegate` exists.
+3. A kickoff sent while the session is busy is delivered `nextTurn`, never as a queued
+   follow-up. Pi gives extensions no way to withdraw a queued follow-up, so a cancel after
+   queuing would still be followed by a turn; a stored next-turn message cannot cause one.
+4. The workflow closes on `/aies-design cancel|exit|complete|done`, on the plain-text
+   cancellations, on session start/shutdown, or when the final assistant message ends with
+   a line containing exactly `AIES_DESIGN_DONE`.
+
+**Consequence.** Behavioural guarantees that depend on the model (inspecting first, using
+Explore sensibly, emitting the marker) are validated with a real model, not with mocks;
+mocks cover routing, isolation and closing.
