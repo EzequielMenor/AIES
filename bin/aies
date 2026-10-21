@@ -134,6 +134,26 @@ tracker_of_profile() {
   ' "$AIES_AGENT_DIR/aies.json"
 }
 
+# State of the project memory (D42): "available|unavailable (reason) project=<key> events=<n>".
+# Read-only; the check lives in extensions/aies-memory/scope.ts and never writes.
+memory_of_profile() {
+  if ! command -v node >/dev/null 2>&1; then
+    printf 'unavailable (node is not on PATH) project=none events=n/a'
+    return 0
+  fi
+  local line
+  line="$(node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    try {
+      const { describeMemory } = await import(pathToFileURL(process.argv[1]).href);
+      process.stdout.write((await describeMemory(process.cwd())).message);
+    } catch {
+      process.stdout.write("memory: unavailable (status check failed) project=none events=n/a");
+    }
+  ' "$AIES_REPO/extensions/aies-memory/scope.ts" 2>/dev/null || true)"
+  printf '%s' "${line#memory: }"
+}
+
 if [ "$print_info" -eq 1 ]; then
   printf 'AIES_REPO=%s\n' "$AIES_REPO"
   printf 'AIES_HOME=%s\n' "$AIES_HOME"
@@ -141,6 +161,7 @@ if [ "$print_info" -eq 1 ]; then
   project_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   printf 'AIES_PROJECT_ROOT=%s\n' "${project_root:-none}"
   printf 'tracker=%s\n' "$(tracker_of_profile)"
+  printf 'memory=%s\n' "$(memory_of_profile)"
   printf 'pi_bin=%s\n' "$(command -v pi)"
   printf 'pi_version=%s\n' "$(pi --version)"
   exit 0

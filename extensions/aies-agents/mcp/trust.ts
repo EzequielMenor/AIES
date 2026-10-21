@@ -59,7 +59,8 @@ export interface McpTrust {
  * The only tool names a call may have on an untrusted profile: Pi's built-in tools that AIES wraps
  * (`aies-runtime/quiet-tools.ts`, `QUIET_TOOL_NAMES`), `tgrep` (`aies-agents/tgrep.ts`, for Explore
  * agents), and the tools AIES registers (`aies_ticket` in `linear/tool.ts`, `aies_delegate` in
- * `delegate.ts`, `aies_verify_complete` in `verify.ts`). A new AIES tool is listed here; the test
+ * `delegate.ts`, `aies_verify_complete` in `verify.ts`, and the two read-only Parent memory tools in
+ * `aies-memory/index.ts`). A new AIES tool is listed here; the test
  * `tests/mcp-trust.test.mjs` fails when an `aies_*` name or a registered tool is missing.
  */
 export const NON_MCP_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -74,6 +75,8 @@ export const NON_MCP_TOOL_NAMES: ReadonlySet<string> = new Set([
   "aies_ticket",
   "aies_delegate",
   "aies_verify_complete",
+  "aies_memory_search",
+  "aies_memory_context",
 ]);
 
 /** The files the adapter 3.2.0 reads under exclusive mode (`config.ts`, `getConfigSources`). */

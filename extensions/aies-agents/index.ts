@@ -34,7 +34,8 @@ import { trackerLabelForServer } from "./linear/labels.ts";
 import { selectTracker } from "./linear/tracker.ts";
 import { checkTicketRepo, repoGuardBlockReason } from "./repo-guard.ts";
 import { describeWorkspaceNotice } from "./workspace-notice.ts";
-import { createTicketTool } from "./linear/tool.ts";
+import { createTicketTool, notifyFollowUp } from "./linear/tool.ts";
+import { learningsAfterDone } from "../aies-memory/learn.ts";
 import { registerTicketCommand } from "./linear/command.ts";
 import type { TicketOperationResult, TicketSnapshot } from "./linear/types.ts";
 import { AGENTS_CHANNEL, observatory, type ObservatorySnapshot } from "./observatory.ts";
@@ -186,6 +187,8 @@ export default function aiesAgents(pi: ExtensionAPI): void {
       diagnoseMcpServer(mcpState, { server: activeTrackerServer(), adapterToolNames: sessionToolNames(pi) }),
     // EZE-496: the Done Gate reads the working tree of the session, not only what this session reported.
     changeProbe: { cwd: () => process.cwd() },
+    // D42 phase 3: runs only after the tracker accepted Done. The runtime decides whether anything is stored.
+    afterDone: learningsAfterDone({ cwd: () => process.cwd() }),
   });
   activeTicketManager = ticketManager;
 
@@ -361,6 +364,7 @@ export default function aiesAgents(pi: ExtensionAPI): void {
           event.content,
         );
         if (resumed) {
+          notifyFollowUp(resumed, ctx);
           capturedContent = [...event.content, { type: "text", text: describeCapturedOutcome(resumed, trackerLabelForServer(input.server)) }];
         }
       }
