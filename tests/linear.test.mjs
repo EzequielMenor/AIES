@@ -473,6 +473,22 @@ Ensure timeout is bounded
     });
   });
 
+  describe("7b. A standing non-PASS verdict is never read as nothing to verify", () => {
+    for (const status of ["blocked", "fail", "running"]) {
+      for (const [label, paths] of [["no visible change", []], ["docs-only change", ["docs/ARCHITECTURE.md"]]]) {
+        it(`denies completion when Verify is ${status} and there is a ${label}`, () => {
+          const gate = checkDoneGate({ ...createVerificationState(), status }, paths);
+          assert.equal(gate.allowed, false);
+          assert.equal(gate.code, "verify_gate_denied");
+        });
+      }
+    }
+
+    it("still completes a docs-only change when no Verify run exists", () => {
+      assert.equal(checkDoneGate(createVerificationState(), ["docs/ARCHITECTURE.md"]).allowed, true);
+    });
+  });
+
   describe("8. PASS invalidation", () => {
     it("invalidates valid PASS when work unit changes and blocks Done until fresh PASS", async () => {
       await manager.loadTicket("EZE-101");

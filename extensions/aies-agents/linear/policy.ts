@@ -105,6 +105,21 @@ export function checkDoneGate(
     };
   }
 
+  // A Verify run that ended blocked, failed or is still running is a standing verdict on
+  // this work. It holds even when no change is visible now (for example work already
+  // committed before the ticket was loaded): "nothing to verify" must not read as a PASS.
+  if (verification.status === "fail") {
+    return denied("Verification failed: cannot complete ticket with failing verification (status: fail)");
+  }
+
+  if (verification.status === "blocked") {
+    return denied("Verification blocked: cannot complete ticket while verification is blocked (status: blocked)");
+  }
+
+  if (verification.status === "running") {
+    return denied("Verification in progress: cannot complete ticket while verification is running");
+  }
+
   const requirement = requiresVerification(changedPaths);
 
   // Docs-only or trivial change does not require Verify child
@@ -118,18 +133,6 @@ export function checkDoneGate(
   // Behavior-bearing change requires independent verification
   if (verification.status === "none") {
     return denied("Verification required: no verification run has been executed (status: none)");
-  }
-
-  if (verification.status === "fail") {
-    return denied("Verification failed: cannot complete ticket with failing verification (status: fail)");
-  }
-
-  if (verification.status === "blocked") {
-    return denied("Verification blocked: cannot complete ticket while verification is blocked (status: blocked)");
-  }
-
-  if (verification.status === "running") {
-    return denied("Verification in progress: cannot complete ticket while verification is running");
   }
 
   if (verification.status === "pass") {
