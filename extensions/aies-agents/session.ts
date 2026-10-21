@@ -24,6 +24,7 @@ import type {
   AgentObservatory,
   BeginAgentInput,
   FinishAgentInput,
+  UsageUpdate,
 } from "./observatory.ts";
 import type { AgentRole } from "./model.ts";
 
@@ -156,34 +157,98 @@ export interface ObservableChildEvent {
 export interface ObservableChildSession {
   subscribe(listener: (event: ObservableChildEvent) => void): () => void;
   getSessionStats(): unknown;
+  /** Optional: the child's own context occupancy, as Pi reports it. */
+  getContextUsage?(): unknown;
 }
 
-import { observableCost } from "../aies-ui/format.ts";
+import { isSubscriptionOrPlan, observableCost } from "../aies-ui/format.ts";
+
+/**
+ * How the child's cost is billed, read passively from the public ModelRuntime API.
+ * `isUsingSubscription(provider)` (an OAuth credential of a provider that declares
+ * `isSubscription`) means a subscription, so the amount Pi reports is an
+ * API-equivalent estimate. A plan provider recognised by `isSubscriptionOrPlan` is
+ * also a subscription: that is a heuristic on the provider id (never the model id)
+ * that predates this probe. OAuth without a declared subscription (for example a
+ * free tier) is not classified (`null`), and no OAuth means `api`. `null` is also the
+ * answer when a probe is unavailable, returns a non-boolean or throws.
+ */
+export function probeChildBilling(
+  runtime: unknown,
+  model?: { provider?: unknown },
+): "subscription" | "api" | null {
+  try {
+    const provider = typeof model?.provider === "string" ? model.provider : undefined;
+    if (provider && isSubscriptionOrPlan(provider)) return "subscription";
+    const api = runtime as { isUsingSubscription?: unknown; isUsingOAuth?: unknown } | undefined;
+    if (!provider || typeof api?.isUsingSubscription !== "function") return null;
+    const subscription: unknown = api.isUsingSubscription.call(runtime, provider);
+    if (typeof subscription !== "boolean") return null;
+    if (subscription) return "subscription";
+    if (typeof api.isUsingOAuth !== "function") return null;
+    const oauth: unknown = api.isUsingOAuth.call(runtime, provider);
+    if (typeof oauth !== "boolean") return null;
+    return oauth ? null : "api";
+  } catch {
+    return null;
+  }
+}
 
 /** The lifecycle boundaries that sample the child's own usage once. */
 const USAGE_EVENT_TYPES = new Set(["turn_end", "agent_settled", "agent_end"]);
 
-/** Read the real usage fields off `SessionStats`: `tokens.total` and `cost`. */
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Read the real usage fields off `SessionStats`: the token breakdown and `cost`. */
 function readChildUsage(
   stats: unknown,
   model?: { id?: string; provider?: string },
-): { totalTokens: number; cost: number | null } {
-  const record = (stats ?? {}) as { tokens?: { total?: unknown }; cost?: unknown };
-  const total = record.tokens?.total;
+): UsageUpdate {
+  const record = (stats ?? {}) as {
+    tokens?: { total?: unknown; input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown };
+    cost?: unknown;
+  };
+  const tokens = record.tokens;
+  const total = tokens?.total;
   const rawCost = typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : null;
-  const cost = observableCost(rawCost, model?.id, model?.provider);
   return {
     totalTokens: typeof total === "number" && Number.isFinite(total) ? total : 0,
-    cost,
+    cost: observableCost(rawCost, model?.id, model?.provider),
+    inputTokens: finiteOrNull(tokens?.input),
+    outputTokens: finiteOrNull(tokens?.output),
+    cacheReadTokens: finiteOrNull(tokens?.cacheRead),
+    cacheWriteTokens: finiteOrNull(tokens?.cacheWrite),
+  };
+}
+
+/**
+ * The child's context occupancy exactly as `getContextUsage()` reports it. A
+ * `null` field (for example the tokens right after a compaction) stays `null`;
+ * nothing is ever derived from the accumulated token totals.
+ */
+function readChildContext(usage: unknown): UsageUpdate {
+  // Anything that is not an object is an unknown reading: all three fields go null.
+  if (!usage || typeof usage !== "object") {
+    return { contextTokens: null, contextWindow: null, contextPercent: null };
+  }
+  const record = usage as { tokens?: unknown; contextWindow?: unknown; percent?: unknown };
+  return {
+    contextTokens: finiteOrNull(record.tokens),
+    contextWindow: finiteOrNull(record.contextWindow),
+    contextPercent: finiteOrNull(record.percent),
   };
 }
 
 /**
  * Attach exactly one event-driven listener to a child session and return its
  * unsubscribe function. Tool lifecycle starts become mechanical activities;
- * turn end / agent settled / agent end sample the child's own usage. Every path
- * is guarded so a broken observer or a session that no longer answers can never
- * fail the child run. No timer and no polling are used.
+ * turn end / agent settled / agent end sample the child's own stats and context
+ * usage. Every read is guarded on its own, so a broken observer, a failing
+ * metric or a session that no longer answers can never fail the child run, and a
+ * failing context read never discards a good stats sample. No timer and no
+ * polling are used.
  */
 export function attachChildObservatory(
   session: ObservableChildSession,
@@ -201,7 +266,23 @@ export function attachChildObservatory(
         return;
       }
       if (typeof event?.type === "string" && USAGE_EVENT_TYPES.has(event.type)) {
-        observatory.updateUsage(agentId, readChildUsage(session.getSessionStats(), model));
+        const sample: UsageUpdate = {};
+        try {
+          Object.assign(sample, readChildUsage(session.getSessionStats(), model));
+        } catch {
+          // Stats are best effort: the previous sample stays.
+        }
+        // A context read that is absent, throws or answers nothing usable is an
+        // unknown context (null), never the previous reading presented as current.
+        try {
+          Object.assign(
+            sample,
+            readChildContext(typeof session.getContextUsage === "function" ? session.getContextUsage() : undefined),
+          );
+        } catch {
+          Object.assign(sample, readChildContext(undefined));
+        }
+        if (Object.keys(sample).length > 0) observatory.updateUsage(agentId, sample);
       }
     } catch {
       // Observation is presentation only: it must never fail the child run.
@@ -496,6 +577,14 @@ export async function executeChildSession(options: ChildSessionOptions): Promise
     customTools,
     tools,
   });
+
+  if (observatory && agentId) {
+    try {
+      observatory.updateUsage(agentId, { billing: probeChildBilling(childRuntime, model) });
+    } catch {
+      // Billing is presentation only.
+    }
+  }
 
   const unsubscribe =
     observatory && agentId ? attachChildObservatory(session, observatory, agentId, model) : undefined;

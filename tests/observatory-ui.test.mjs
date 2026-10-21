@@ -437,7 +437,7 @@ describe("observatory UI seam", () => {
     await pending;
   });
 
-  it("moves the /agents selection with ↑↓ and j/k and never acts on Enter", async () => {
+  it("moves the /agents selection with ↑↓ and j/k and Enter toggles the expanded card without closing", async () => {
     const host = createHost();
     await host.start();
     observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
@@ -461,9 +461,32 @@ describe("observatory UI seam", () => {
     component.handleInput("\x1b[A"); // up arrow -> worker
     assert.match(component.render(100).join("\n"), /Qwen 3\.8 Flash/u);
 
-    component.handleInput("\r"); // Enter is not an action
+    component.handleInput("\r"); // Enter expands the selected agent
     assert.match(component.render(100).join("\n"), /Qwen 3\.8 Flash/u);
     assert.equal(host.customComponents.length, 1, "Enter must not settle the modal");
+
+    component.handleInput("\x1b");
+    await pending;
+  });
+
+  it("toggles between the list and the expanded card with Enter and Tab", async () => {
+    const host = createHost();
+    await host.start();
+    observatory.begin({ role: "worker", modelLabel: "Qwen 3.8 Flash", at: START_MS });
+
+    const pending = host.commands.get("agents").handler("", host.ctx);
+    await Promise.resolve();
+    const { component } = host.customComponents.at(-1);
+    const list = component.render(100).join("\n");
+    assert.equal(list.includes("historial reciente"), false);
+
+    component.handleInput("\r");
+    assert.match(component.render(100).join("\n"), /historial reciente/u);
+    component.handleInput("\t");
+    assert.equal(component.render(100).join("\n"), list, "Tab returns to the list");
+    component.handleInput("\t");
+    assert.match(component.render(100).join("\n"), /historial reciente/u);
+    assert.equal(host.customComponents.length, 1, "toggling never settles the modal");
 
     component.handleInput("\x1b");
     await pending;
@@ -480,10 +503,10 @@ describe("observatory UI seam", () => {
     const { component } = host.customComponents.at(-1);
     const before = component.render(100).join("\n");
 
-    // Enter, newline, space, tab and plain letters are not navigation or close:
+    // Space and plain letters are not navigation, toggle or close:
     // the read-only observer must neither move the selection, settle the modal
     // nor reach a session, model or tool surface.
-    for (const key of ["\r", "\n", " ", "\t", "x", "s", "return"]) {
+    for (const key of [" ", "x", "s", "return"]) {
       component.handleInput(key);
     }
 

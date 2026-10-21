@@ -174,7 +174,7 @@ describe("renderAgentsView", () => {
     for (const label of ["modelo", "proveedor", "tokens", "coste", "contexto", "herramientas", "archivos", "resultado"]) {
       const row = bare.split("\n").find((line) => line.includes(label));
       assert.ok(row, `missing ${label} row:\n${bare}`);
-      assert.match(row, /—/u, `${label} must be — when unavailable: ${row}`);
+      assert.match(row, label === "coste" ? /n\/d/u : /—/u, `${label} must be unavailable: ${row}`);
     }
   });
 

@@ -125,10 +125,52 @@ export function roleLabel(value: string, fallback = "Agente"): string {
  * text is cut, so the result stays a single terminal cell wide per character.
  */
 export function clip(text: string, width: number): string {
-  const flat = singleLine(text);
+  return clipToWidth(singleLine(text), width);
+}
+
+/** Terminal cells of one code point: 0 for combining marks, 2 for CJK, fullwidth and emoji, else 1. */
+function codePointWidth(cp: number): number {
+  if (cp === 0x200d || (cp >= 0x300 && cp <= 0x36f) || (cp >= 0xfe00 && cp <= 0xfe0f)) return 0;
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd)
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+/** Visible width of a plain string in terminal cells (no ANSI is expected in the input). */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const char of text) width += codePointWidth(char.codePointAt(0) ?? 0);
+  return width;
+}
+
+/** Cut a plain string to at most `width` cells, ending in `…` when it was cut. */
+export function clipToWidth(text: string, width: number): string {
   const limit = Math.max(0, Math.floor(Number.isFinite(width) ? width : 0));
-  if (flat.length <= limit) return flat;
-  if (limit <= 0) return "";
-  if (limit === 1) return "…";
-  return `${flat.slice(0, limit - 1)}…`;
+  if (displayWidth(text) <= limit) return text;
+  if (limit === 0) return "";
+  let out = "";
+  let used = 0;
+  for (const char of text) {
+    const w = codePointWidth(char.codePointAt(0) ?? 0);
+    if (used + w > limit - 1) break;
+    out += char;
+    used += w;
+  }
+  return `${out}…`;
+}
+
+/** Pad a plain string with spaces up to `width` cells. */
+export function padToWidth(text: string, width: number): string {
+  return `${text}${" ".repeat(Math.max(0, width - displayWidth(text)))}`;
 }

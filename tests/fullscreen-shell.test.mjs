@@ -366,7 +366,7 @@ describe("right rail product composition", () => {
     // contract under pressure is unchanged: every active child first, then the
     // collapsed Todos line.
     const text = renderRightRail(snapOf(state), T0, { width: 46, height: 14 }).join("\n");
-    assert.match(text, /Worker activo/u, text);
+    assert.match(text, /Worker #\d esperando/u, text);
     assert.match(text, /Todos · \d+\/\d+/u, text);
   });
 });
@@ -533,7 +533,7 @@ describe("right rail projection", () => {
 
     assert.match(text, /Status/u);
     assert.match(text, /Agents/u);
-    assert.match(text, /◆ Worker activo/u);
+    assert.match(text, /◇ Worker #1\s+esperando/u);
     assert.ok(text.split("\n").every((line) => line.length <= 46), text);
   });
 

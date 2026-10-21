@@ -177,7 +177,7 @@ describe("right rail hierarchy: titles and tones", () => {
   it("paints each agent row with the tone of its lifecycle state", () => {
     let state = applyDelegationStart(createState(T0), "worker", T0);
     state = applyAgents(state, [
-      record({ id: "worker-1", role: "worker", status: "running" }),
+      record({ id: "worker-1", role: "worker", status: "running", currentActivity: "Editando a/b.ts" }),
       record({ id: "explore-1", role: "explore", status: "completed", startedAt: T0 + 1, finishedAt: T0 + 5_000 }),
       record({ id: "verify-1", role: "verify", status: "failed", startedAt: T0 + 2, finishedAt: T0 + 6_000 }),
     ]);
@@ -185,9 +185,9 @@ describe("right rail hierarchy: titles and tones", () => {
     const paint = recordingPaint();
     renderRightRail(snapOf(state), T0 + 31_000, { width: 46, paint });
 
-    assert.ok(callsWith(paint, "running", (text) => text.includes("activo")).length > 0, "running agent not painted running");
-    assert.ok(callsWith(paint, "success", (text) => text.includes("completado")).length > 0, "completed agent not painted success");
-    assert.ok(callsWith(paint, "error", (text) => text.includes("falló")).length > 0, "failed agent not painted error");
+    assert.ok(callsWith(paint, "running", (text) => text.includes("trabajando")).length > 0, "running agent not painted running");
+    assert.ok(callsWith(paint, "success", (text) => text.includes("terminado")).length > 0, "completed agent not painted success");
+    assert.ok(callsWith(paint, "error", (text) => text.includes("error")).length > 0, "failed agent not painted error");
   });
 
   it("paints a blocked agent with the warning tone", () => {

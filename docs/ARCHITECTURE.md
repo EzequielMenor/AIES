@@ -799,8 +799,8 @@ independent indicators and are never folded into the stage.
 | Startup ticket header | `ctx.ui.setHeader` | `aies-runtime` | until cleared or session end; renders no lines while the panel is visible |
 | Widget `aies-activity` | `ctx.ui.setWidget` (factory, above editor) | `aies-runtime` | while a child runs and no rail is showing; cleared as soon as it finishes |
 | Widget `aies-panel` | `ctx.ui.setWidget` (factory, below editor) | `aies-runtime` | while the terminal is at least 80 columns and no rail is showing |
-| Optional physical right rail | private fullscreen layout hook, one guarded module | `aies-runtime` | while a supported fullscreen host is at least 120 columns |
-| `/agents` view | `ctx.ui.custom` | `aies-runtime` | until Escape |
+| Optional physical right rail | private fullscreen layout hook, one guarded module | `aies-runtime` | while a supported fullscreen host is at least 120 columns; 46 content columns, 58 from 160 columns. Its `Agents` section is an adaptive monitor (D43): one card per agent (state, model, cost, tokens, own-context bar, current tool, redacted reason), one line per agent when the width (< 40) or the height is tight, at most 3 agents plus `+N más`, and a totals footer whose cost is marked partial when any agent cost is unknown |
+| `/agents` view | `ctx.ui.custom` | `aies-runtime` | until Escape; lists every agent, Enter or Tab toggles the selected agent's expanded card (current tool, 12-entry history with relative times, edited paths, token breakdown, context, cost, redacted result or error) |
 | Finished child / DONE / BLOCKED entries | `pi.appendEntry` + `pi.registerEntryRenderer` | `aies-runtime` | persisted in the session file |
 | Quiet generic tool rows | `pi.registerTool` with `renderCall`/`renderResult` | `aies-runtime` | re-registered once per working directory |
 | Permission prompt | `ctx.ui.confirm` | `aies-agents` | until answered |
@@ -829,7 +829,7 @@ the narrow footer as the fallback. Pi still owns the whole fullscreen lifecycle.
 One timer exists, owned by `aies-runtime`: 1s while a child is active, 5s
 otherwise, cleared on shutdown and unreferenced so it can never hold the process
 open. The observatory adds no timer of its own; its projection repaints from the
-registry subscription and that single clock.
+registry subscription and that single clock. The `AGENTS_CHANNEL` subscriber skips the repaint when the published snapshot is identical to the previous one.
 
 ### Profile theme and role model preferences (`extensions/aies-models/`)
 
@@ -986,7 +986,7 @@ the real Pi profile), so the suite proves both isolation and override.
 | Verify completion authority (AIES-010B) | the schema-validated `aies_verify_complete` tool as the sole verdict source, `protocol_error` separated from `pass`/`fail`/`blocked`, one attempt with zero repairs and no rerun, and a captured verdict that survives a failing final prose (`tests/verify.test.mjs`, `tests/smoke-verify.test.mjs`) |
 | Spanish presentation (AIES-010B) | the resident Parent rule, the Spanish identity/footer/status/approval copy, the responsive ticket header, and the absence of a raw child summary in the card or entry, driven directly (`tests/spanish-ux.test.mjs`) |
 | AIES tool rendering (AIES-010B) | `aies_ticket`/`aies_delegate` compact pending/success/error rows, visible collapsed errors and byte-identical expanded content (`tests/tool-rendering.test.mjs`), plus the effective compact MCP presentation settings (`tests/isolation.test.mjs`) |
-| observatory registry (AIES-010C) | the pure module boundary (no Pi, filesystem or network), sequential `<role>-<ordinal>` ids, the bounded 5-entry activity ring, mechanical Spanish wording, changed paths, live/final usage, missing cost and the Main/Agents/Total reduction without double counting (`tests/agent-observatory.test.mjs`) |
+| observatory registry (AIES-010C) | the pure module boundary (no Pi, filesystem or network), sequential `<role>-<ordinal>` ids, the bounded 12-entry activity ring, redaction of secrets before storing, the token/context breakdown and the failure-tolerant sampling, mechanical Spanish wording, changed paths, live/final usage, missing cost and the Main/Agents/Total reduction without double counting (`tests/agent-observatory.test.mjs`) |
 | observatory child wiring (AIES-010C) | exactly one `subscribe` listener per child, usage sampled only on lifecycle boundaries, the last sample surviving disposal, and a throwing observer or unavailable `subscribe` never failing the run (`tests/agent-observatory-wiring.test.mjs`) |
 | run telemetry (AIES-010C) | the run baseline subtracted from Parent lifetime usage, run start/restart, Main kept Parent-only, Agents as the registry sum, and an unknown cost propagating as `null` (`tests/run-telemetry.test.mjs`) |
 | status panel (AIES-010C) | the wide borderless / mid box / hidden tiers and their breakpoints, row omission with no value, and `formatCost` rendering an em dash for an unknown value (`tests/aies-panel.test.mjs`) |

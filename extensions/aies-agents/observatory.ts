@@ -15,7 +15,7 @@
 export type AgentStatus = "running" | "completed" | "failed" | "blocked";
 
 /** How many mechanical activity entries a record keeps. */
-export const MAX_ACTIVITIES = 5;
+export const MAX_ACTIVITIES = 12;
 
 /**
  * The stable `pi.events` channel that carries observatory snapshots between
@@ -29,6 +29,51 @@ const ACTIVITY_TEXT_MAX = 80;
 const COMMAND_MAX = 60;
 const RESULT_MAX = 160;
 const PATH_SEGMENTS = 2;
+const LABEL_MAX = 80;
+const REDACTED = "[redacted]";
+/** Longest text a redaction pass reads; the rest is dropped before any regex runs. */
+const REDACT_INPUT_MAX = 4096;
+
+/**
+ * Secret-shaped substrings removed from every text the registry stores. Each rule
+ * keeps the surrounding shape (`password=[redacted]`) so the line stays readable
+ * but never carries the value. The rules run before clipping, so a secret cut in
+ * half by a length limit cannot slip through.
+ */
+const REDACTION_RULES: ReadonlyArray<readonly [RegExp, string]> = [
+  // `scheme://user:password@host` -> `scheme://[redacted]@host`
+  [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/giu, `$1${REDACTED}@`],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu, REDACTED],
+  // `Authorization: <any scheme> <value>` (Basic, Bearer, Digest, token...), whole header value.
+  [/\bAuthorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9_-]*\s+)?[^\s,;&"']+/giu, `Authorization: ${REDACTED}`],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, `Bearer ${REDACTED}`],
+  // Flag values: `--token abc`, `--password=abc`, `--api-key abc`.
+  [/(--(?:token|password|passwd|secret|api-key|apikey|access-key|auth-token)(?:\s+|=))(?!--)[^\s]+/giu, `$1${REDACTED}`],
+  [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/gu, REDACTED],
+  [/\bsk-[A-Za-z0-9_-]{8,}/gu, REDACTED],
+  [/\bgh[pousr]_[A-Za-z0-9]{16,}/gu, REDACTED],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/gu, REDACTED],
+  [/\b(?:glpat|xox[abprs])-[A-Za-z0-9-]{10,}/gu, REDACTED],
+  [/\bAKIA[0-9A-Z]{16}\b/gu, REDACTED],
+  // `password=...`, `api_key: ...`, `MY_TOKEN=...`: the value, quoted or not.
+  [
+    // No unbounded prefix: the keyword is found first, then at most a short
+    // identifier prefix and suffix are consumed, so matching stays linear.
+    /((?:[A-Za-z0-9_-]{0,32})(?:password|passwd|pwd|secret|token(?!s)|api[ _-]?key|access[ _-]?key|credential)[A-Za-z0-9_-]{0,32})\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/giu,
+    `$1=${REDACTED}`,
+  ],
+  [/\bapi[ _-]key\s+[A-Za-z0-9_-]{16,}/giu, `api key ${REDACTED}`],
+  // Any `UPPER_SNAKE=value` environment assignment.
+  [/\b([A-Z][A-Z0-9_]{2,})=(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gu, `$1=${REDACTED}`],
+];
+
+/** Remove credentials and secret-shaped values from a text before it is stored or shown. */
+export function redactSensitive(text: unknown): string {
+  let out = typeof text === "string" ? text : text == null ? "" : String(text);
+  if (out.length > REDACT_INPUT_MAX) out = out.slice(0, REDACT_INPUT_MAX);
+  for (const [pattern, replacement] of REDACTION_RULES) out = out.replace(pattern, replacement);
+  return out;
+}
 
 /** One mechanically worded tool event. */
 export interface AgentActivity {
@@ -50,7 +95,28 @@ export interface AgentRecord {
   providerLabel: string | null;
   currentActivity: string | null;
   totalTokens: number;
+  /** Token breakdown from the child's own stats; `null` until a sample reports it. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /**
+   * The child's own context occupancy, only as `getContextUsage()` reported it.
+   * `null` when unknown (never sampled, or right after a compaction); it is never
+   * derived from the accumulated token totals.
+   */
+  contextTokens: number | null;
+  contextWindow: number | null;
+  contextPercent: number | null;
   cost: number | null;
+  /**
+   * How the cost is billed: `subscription` (an OAuth credential or a plan
+   * provider: the amount is an API-equivalent estimate, never billed spend),
+   * `api`, or `null` when unknown. Probed passively, never inferred from a model id.
+   */
+  billing: "subscription" | "api" | null;
+  /** The tool the child is running right now, or `null`. */
+  currentTool: string | null;
   toolCount: number;
   changedPaths: string[];
   activities: AgentActivity[];
@@ -85,6 +151,14 @@ export interface FinishAgentInput {
 export interface UsageUpdate {
   totalTokens?: number | null;
   cost?: number | null;
+  billing?: "subscription" | "api" | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  contextTokens?: number | null;
+  contextWindow?: number | null;
+  contextPercent?: number | null;
 }
 
 const PATH_KEYS = ["path", "filePath", "file_path"] as const;
@@ -95,6 +169,10 @@ function stringOrNull(value: unknown): string | null {
 
 function timestampOf(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Date.now();
+}
+
+function countOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function clipText(text: string, max: number): string {
@@ -197,7 +275,7 @@ export function describeActivity(
 
   const path = shortPath(pathArg(args));
   const command = firstCommandLine(argString(args, ["command"]));
-  const pattern = clipText(argString(args, ["pattern"]), COMMAND_MAX);
+  const pattern = clipText(redactSensitive(argString(args, ["pattern"])), COMMAND_MAX);
 
   switch (tool) {
     case "read":
@@ -231,6 +309,11 @@ export function changedPathOf(
   return raw || null;
 }
 
+function safeLabel(value: string | null): string | null {
+  if (value === null) return null;
+  return clipText(redactSensitive(value), LABEL_MAX) || null;
+}
+
 function freezeRecord(record: AgentRecord): AgentRecord {
   const activities = Object.freeze(record.activities.map((activity) => Object.freeze({ ...activity })));
   const changedPaths = Object.freeze([...record.changedPaths]);
@@ -260,8 +343,8 @@ export class AgentObservatory {
     this.ordinals.set(role, ordinal);
     const id = `${role}-${ordinal}`;
 
-    const modelId = stringOrNull(input?.modelId);
-    const providerId = stringOrNull(input?.providerId);
+    const modelId = safeLabel(stringOrNull(input?.modelId));
+    const providerId = safeLabel(stringOrNull(input?.providerId));
 
     this.records.push({
       id,
@@ -270,12 +353,21 @@ export class AgentObservatory {
       startedAt: timestampOf(input?.at),
       finishedAt: null,
       modelId,
-      modelLabel: stringOrNull(input?.modelLabel) ?? modelId,
+      modelLabel: safeLabel(stringOrNull(input?.modelLabel) ?? modelId),
       providerId,
-      providerLabel: stringOrNull(input?.providerLabel) ?? providerId,
+      providerLabel: safeLabel(stringOrNull(input?.providerLabel) ?? providerId),
       currentActivity: null,
       totalTokens: 0,
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      contextTokens: null,
+      contextWindow: null,
+      contextPercent: null,
       cost: null,
+      billing: null,
+      currentTool: null,
       toolCount: 0,
       changedPaths: [],
       activities: [],
@@ -299,15 +391,19 @@ export class AgentObservatory {
     const tool = typeof toolName === "string" ? toolName.trim() : "";
     record.toolCount += 1;
 
-    const text = describeActivity(tool, args);
-    if (text) {
+    const described = describeActivity(tool, args);
+    if (described) {
+      const text = redactSensitive(described);
+      const toolLabel = clipText(redactSensitive(tool), LABEL_MAX) || "unknown";
       record.currentActivity = text;
-      record.activities.unshift({ tool: tool || "unknown", text, at: timestampOf(at) });
+      record.currentTool = toolLabel;
+      record.activities.unshift({ tool: toolLabel, text, at: timestampOf(at) });
       if (record.activities.length > MAX_ACTIVITIES) record.activities.length = MAX_ACTIVITIES;
     }
 
     const changed = changedPathOf(tool, args);
-    if (changed && !record.changedPaths.includes(changed)) record.changedPaths.push(changed);
+    const safeChanged = changed ? redactSensitive(changed) : null;
+    if (safeChanged && !record.changedPaths.includes(safeChanged)) record.changedPaths.push(safeChanged);
 
     this.emit();
   }
@@ -328,6 +424,22 @@ export class AgentObservatory {
         typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : null;
     }
 
+    if ("billing" in usage) {
+      record.billing = usage.billing === "subscription" || usage.billing === "api" ? usage.billing : null;
+    }
+    const counts = [
+      ["inputTokens", usage.inputTokens],
+      ["outputTokens", usage.outputTokens],
+      ["cacheReadTokens", usage.cacheReadTokens],
+      ["cacheWriteTokens", usage.cacheWriteTokens],
+      ["contextTokens", usage.contextTokens],
+      ["contextWindow", usage.contextWindow],
+      ["contextPercent", usage.contextPercent],
+    ] as const;
+    for (const [key, value] of counts) {
+      if (key in usage) record[key] = countOrNull(value);
+    }
+
     this.emit();
   }
 
@@ -339,13 +451,15 @@ export class AgentObservatory {
     const status = input.status;
     record.status = status === "failed" || status === "blocked" || status === "completed" ? status : "completed";
     record.finishedAt = timestampOf(input.at);
-    record.result = input.result == null ? null : clipText(String(input.result), RESULT_MAX) || null;
+    record.result =
+      input.result == null ? null : clipText(redactSensitive(String(input.result)), RESULT_MAX) || null;
     record.currentActivity = null;
+    record.currentTool = null;
 
     if (Array.isArray(input.paths)) {
       for (const p of input.paths) {
         if (typeof p === "string" && p.trim()) {
-          const normalized = p.trim().replace(/\\/gu, "/").replace(/^\.\//u, "");
+          const normalized = redactSensitive(p.trim().replace(/\\/gu, "/").replace(/^\.\//u, ""));
           if (!record.changedPaths.includes(normalized)) {
             record.changedPaths.push(normalized);
           }

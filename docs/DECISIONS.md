@@ -2097,6 +2097,50 @@ retired. Details: `docs/MEMORY.md` sections 11 and 12.
 
 ---
 
+## D43 - Subagent monitor V1: passive observation, partial cost never a total, context only from `getContextUsage`
+
+**Decision.**
+1. The rail's `Agents` section and `/agents` become a readable monitor of Explore, Worker
+   and Verify. It is passive observation: no new capability, no change to delegation,
+   limits, sandbox, Verify or cancellation.
+2. The child observer samples `getSessionStats()` (token breakdown, cost) and
+   `getContextUsage()` on the existing `turn_end` / `agent_settled` / `agent_end` events.
+   No timer, no polling, no model call; each read is guarded on its own, so a failing
+   metric never fails the run.
+3. Context (`contextTokens`, `contextWindow`, `contextPercent`) comes only from
+   `getContextUsage()`. Unknown or `null` (for example after a compaction) renders
+   `ctx desconocido`, never a bar derived from accumulated tokens.
+4. Cost keeps "unknown is null, never zero" (D20). A subscription model shows `coste n/d`;
+   a total with any unknown agent cost is marked `$x+ parcial`, or `coste n/d` when none is
+   known, and is never shown as complete.
+5. Secrets (keys, Bearer, `sk-`, `ghp_`, JWT, `password=`/`secret=`, `KEY=value`, URLs with
+   credentials) are redacted before an activity, error, result or label is stored in the
+   registry, so no surface can show them. Bash commands stay unshown (category only).
+6. The rail grows from 46 to 58 content columns from 160 terminal columns; the 120-column
+   floor and the D25 version guards are unchanged. Rejections before start (sandbox,
+   stale runtime) are not recorded in V1.
+
+**Why.** The rail showed only a state word per agent. The new data is already exposed by
+Pi, so reading it passively costs nothing and cannot touch the run, while redacting at the
+source is the only place that covers every present and future surface.
+
+**Appendix (cost, context, cache).**
+- Cost under a subscription is an API-equivalent estimate, never billed spend. The child
+  record carries `billing` (`subscription` | `api` | `null`), probed once and passively
+  from the public `ModelRuntime.isUsingSubscription(providerId)` (an OAuth credential of a
+  provider that declares `isSubscription`; openai-codex does), plus the pre-existing
+  provider-id heuristic `isSubscriptionOrPlan`. OAuth that is not a declared subscription
+  (for example a free tier) stays `null` (unclassified); no OAuth is `api`. It is never
+  inferred from a model id; a missing, non-boolean or throwing probe leaves `null`.
+  Estimates render with `≈`; a known cost with unknown billing is never shown as billed:
+  totals read `≈$x est.`, `$x sin clasificar`, or `$a API + ≈$b est. + $c sin clas.` when mixed,
+  and keep the `+ parcial` rule when any cost is missing. The footer puts the cost first and
+  falls back to a compact wording and, only as a last resort, to `s/c`, so the qualifiers survive a 46-column rail. The Status block's Main/Agents/Total (D20) is
+  unchanged and does not distinguish estimates.
+- A real context percent above 0 and below 1 renders `<1%`; exactly 0 renders `0%`.
+- The total token count may include cache, so it need not equal input + output; the rail
+  adds `+caché` when cache tokens were measured and `/agents` states it.
+
 ## Open issues
 
 ### O1 - Broken global `pre-commit` hook (resolved)

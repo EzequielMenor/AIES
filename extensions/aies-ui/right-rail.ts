@@ -32,8 +32,22 @@
 import { runStartedAt } from "../aies-runtime/state.ts";
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import type { AgentsSnapshot } from "./agents.ts";
-import { formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
-import { agentFact, sectionHeading, statusBox, statusTitle, type StatusRow } from "./panel.ts";
+import {
+  agentContextText,
+  agentCostText,
+  agentElapsed,
+  agentName,
+  agentReason,
+  agentStateView,
+  agentTokensText,
+  agentToolText,
+  CONTEXT_UNKNOWN,
+  COST_UNAVAILABLE,
+  totalsLine,
+  type AgentStateView,
+} from "./agent-monitor.ts";
+import { clipToWidth, displayWidth, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import { sectionHeading, statusBox, statusTitle, type StatusRow } from "./panel.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, GLYPH, isCompacting, isContextPressure, SPACING, STAGE_TONE, type Stage } from "./vocabulary.ts";
 import { deriveTodos, renderTodos } from "./todos.ts";
@@ -43,6 +57,30 @@ export const RIGHT_RAIL_MIN_WIDTH = 120;
 
 /** The rail's own column budget. */
 export const RIGHT_RAIL_CONTENT_WIDTH = 46;
+
+/** From this terminal width the rail grows to `RIGHT_RAIL_WIDE_CONTENT_WIDTH` columns. */
+export const RIGHT_RAIL_WIDE_MIN_WIDTH = 160;
+
+/** The rail's column budget on a wide terminal; below the breakpoint it stays at 46. */
+export const RIGHT_RAIL_WIDE_CONTENT_WIDTH = 58;
+
+/** The rail column budget for a terminal width (the rail itself needs `RIGHT_RAIL_MIN_WIDTH`). */
+export function railContentWidth(terminalColumns: number): number {
+  return terminalColumns >= RIGHT_RAIL_WIDE_MIN_WIDTH ? RIGHT_RAIL_WIDE_CONTENT_WIDTH : RIGHT_RAIL_CONTENT_WIDTH;
+}
+
+/** Below this content width an agent is one line; at or above it a full card may be drawn. */
+export const RAIL_CARD_MIN_WIDTH = 40;
+
+/** The frame's top and bottom borders: a card is drawn only when they fit too. */
+const RAIL_FRAME_ROWS = 2;
+
+/**
+ * Rows the rail keeps for what follows the agent cards (the blank line, the
+ * collapsed Todos line and the totals footer). A card is drawn only when the
+ * height budget still covers it plus this reserve; otherwise the agent is one line.
+ */
+export const RAIL_AFTER_AGENTS_RESERVE = 3;
 
 /** Below this the rail content is not worth drawing at all. */
 const MIN_CONTENT_WIDTH = 30;
@@ -167,7 +205,7 @@ export interface RightRailOptions {
 }
 
 /** Rows the rail's Agents section shows before collapsing the rest. */
-const MAX_RAIL_AGENTS = 3;
+export const MAX_RAIL_AGENTS = 3;
 
 /**
  * The longest Status label (`Tiempo total`) fixes the value column: every label is
@@ -193,61 +231,89 @@ const STAGE_GLYPH: Record<Stage, string> = {
   DONE: GLYPH.done,
 };
 
-/** The semantic tone of a child's lifecycle state, from the one status vocabulary. */
-function agentStatusTone(status: AgentRecord["status"]): SemanticColor {
-  switch (status) {
-    case "running":
-      return "running";
-    case "completed":
-      return "success";
-    case "failed":
-      return "error";
-    case "blocked":
-      return "warning";
-    default:
-      return "dim";
-  }
-}
-
-/** One ordered agent row plus whether it represents an active child. */
-interface RailAgentRow extends StatusRow {
-  active: boolean;
-  /** The `en espera` placeholder, which is not a hidden agent. */
-  placeholder?: boolean;
-}
-
 /** Elapsed time of a child, omitted for a running child with nothing to show yet. */
 function railElapsed(record: AgentRecord, now: number): string | undefined {
   if (typeof record.startedAt !== "number") return undefined;
   const hasDetail = Boolean(record.currentActivity) || (Array.isArray(record.changedPaths) && record.changedPaths.length > 0);
   if (record.status === "running" && !hasDetail) return undefined;
-  const end = typeof record.finishedAt === "number" ? record.finishedAt : now;
-  return formatDuration(Math.max(0, end - record.startedAt));
+  return agentElapsed(record, now);
 }
 
-/**
- * The bounded Agents section: active children first, then the newest finished
- * ones, never more than `MAX_RAIL_AGENTS` rows. An idle run keeps the section
- * explicit and quiet instead of leaving an unexplained hole under the heading.
- */
-function railAgentRows(snapshot: AgentsSnapshot, now: number, paint: Paint): RailAgentRow[] {
+/** Active children first, then the newest. */
+function orderedAgents(snapshot: AgentsSnapshot): AgentRecord[] {
   const records = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  if (records.length === 0) {
-    return [{ text: "en espera", painted: paint.fg("dim", "en espera"), active: false, placeholder: true }];
-  }
-
-  const ordered = [...records].sort((left, right) => {
+  return [...records].sort((left, right) => {
     if (left.status === "running" && right.status !== "running") return -1;
     if (right.status === "running" && left.status !== "running") return 1;
     return right.startedAt - left.startedAt;
   });
+}
 
-  return ordered.map((record) => {
-    const elapsed = railElapsed(record, now);
-    const fact = elapsed ? `${agentFact(record)} · agente ${elapsed}` : agentFact(record);
-    // Each child is painted with the tone of its own lifecycle state.
-    return { text: fact, painted: paint.fg(agentStatusTone(record.status), fact), active: record.status === "running" };
-  });
+/** Clip a plain cell to `width` terminal cells (CJK and emoji count two) without collapsing spacing. */
+function fit(text: string, width: number): string {
+  return clipToWidth(text, width);
+}
+
+function plainRow(text: string, paint: Paint, tone: SemanticColor, inner: number): StatusRow {
+  const fitted = fit(text, inner);
+  return { text: fitted, painted: paint.fg(tone, fitted) };
+}
+
+/** The one-line form of an agent: state, name, time, and the reason when it failed or is blocked. */
+function railAgentLine(
+  record: AgentRecord,
+  index: number,
+  view: AgentStateView,
+  now: number,
+  paint: Paint,
+  inner: number,
+): StatusRow {
+  const elapsed = railElapsed(record, now);
+  const cost = agentCostText(record) === COST_UNAVAILABLE ? "" : ` · ${agentCostText(record)}`;
+  const head = `${view.glyph} ${agentName(record, index)} ${view.label}${elapsed ? ` ${elapsed}` : ""}${cost}`;
+  const reason = view.state === "error" || view.state === "blocked" ? ` · ${agentReason(record)}` : "";
+  return plainRow(`${head}${reason}`, paint, view.tone, inner);
+}
+
+/**
+ * The full card of an agent: header, model/cost/tokens, the context bar, and one
+ * line for the current tool or, on error/blocked, the redacted reason.
+ */
+function railAgentCard(
+  record: AgentRecord,
+  index: number,
+  view: AgentStateView,
+  now: number,
+  paint: Paint,
+  inner: number,
+): StatusRow[] {
+  const elapsed = railElapsed(record, now);
+  const rows: StatusRow[] = [
+    plainRow(`${view.glyph} ${agentName(record, index)}  ${view.label}${elapsed ? `  ${elapsed}` : ""}`, paint, view.tone, inner),
+  ];
+
+  const suffix = ` · ${agentCostText(record)} · ${agentTokensText(record)}`;
+  const model = singleLine(record.modelLabel ?? record.modelId ?? "");
+  const modelRoom = inner - 2 - displayWidth(suffix);
+  const metrics = modelRoom >= 4 && model ? `${fit(model, modelRoom)}${suffix}` : suffix.slice(3);
+  rows.push(plainRow(`  ${metrics}`, paint, "muted", inner));
+
+  const context = agentContextText(record);
+  rows.push(plainRow(`  ${context}`, paint, context === CONTEXT_UNKNOWN ? "dim" : "muted", inner));
+
+  if (view.state === "error" || view.state === "blocked") {
+    rows.push(plainRow(`  ↳ ${agentReason(record)}`, paint, view.tone, inner));
+  } else if (view.state === "working") {
+    const tool = agentToolText(record);
+    if (tool) rows.push(plainRow(`  ▸ ${tool}`, paint, "text", inner));
+  }
+  return rows;
+}
+
+/** Rows a card takes for this record (header, metrics, context, optional detail line). */
+function railCardHeight(record: AgentRecord, view: AgentStateView): number {
+  if (view.state === "error" || view.state === "blocked") return 4;
+  return view.state === "working" && agentToolText(record) ? 4 : 3;
 }
 
 /**
@@ -385,7 +451,7 @@ export function renderRightRail(
   if (columns === undefined || columns < MIN_CONTENT_WIDTH) return [];
 
   const paint = options.paint ?? PLAIN_PAINT;
-  const width = Math.min(columns, RIGHT_RAIL_CONTENT_WIDTH);
+  const width = Math.min(columns, railContentWidth(columns));
   const project = projectLabel(options.project);
   const branch = projectBranch({
     changeBranch: options.changeBranch,
@@ -399,31 +465,48 @@ export function renderRightRail(
   ];
   lines.push({ text: "Agents", painted: sectionHeading("Agents", paint, "accent") });
 
-  // Agent budget: at most `MAX_RAIL_AGENTS` ordered rows, active children first.
-  const ordered = railAgentRows(snapshot, now, paint);
-  const considered = ordered.slice(0, MAX_RAIL_AGENTS);
-  const active = considered.filter((row) => row.active);
-  const finished = considered.filter((row) => !row.active);
-
-  // Height pressure order: Status (already drawn), then every active child, then
-  // Todos (collapsing to a single line), and only then finished children.
+  // Agent budget: at most `MAX_RAIL_AGENTS` agents, active children first. Each is
+  // a card when the width and the height budget allow it, otherwise one line.
+  const ordered = orderedAgents(snapshot);
+  const inner = width - 4;
+  const cardsFit = width >= RAIL_CARD_MIN_WIDTH;
   const height = usableHeight(options.height);
   let remaining = height === undefined ? Number.POSITIVE_INFINITY : height - lines.length;
 
-  for (const row of active) {
-    lines.push(row);
+  if (ordered.length === 0) {
+    lines.push({ text: "en espera", painted: paint.fg("dim", "en espera") });
     remaining -= 1;
-  }
-  let shownFinished = 0;
-  for (const row of finished) {
-    if (remaining - SPACING.gap <= 0) break;
-    lines.push(row);
-    remaining -= 1;
-    shownFinished += 1;
   }
 
-  const hidden = ordered.filter((row) => !row.placeholder).length - active.length - shownFinished;
-  if (hidden > 0) lines.push(`… ${hidden} más`);
+  let shown = 0;
+  for (const [position, record] of ordered.slice(0, MAX_RAIL_AGENTS).entries()) {
+    const active = record.status === "running";
+    // A finished child is dropped under height pressure; an active one never is.
+    if (!active && remaining - SPACING.gap <= 0) break;
+    const view = agentStateView(record);
+    const index = ordered.length - 1 - position;
+    const cardRows = railCardHeight(record, view);
+    if (cardsFit && remaining - cardRows >= RAIL_AFTER_AGENTS_RESERVE + RAIL_FRAME_ROWS) {
+      lines.push(...railAgentCard(record, index, view, now, paint, inner));
+      remaining -= cardRows;
+    } else {
+      lines.push(railAgentLine(record, index, view, now, paint, inner));
+      remaining -= 1;
+    }
+    shown += 1;
+  }
+
+  const hidden = ordered.length - shown;
+  if (hidden > 0) {
+    lines.push(plainRow(`+${hidden} más · ver /agents`, paint, "dim", inner));
+    remaining -= 1;
+  }
+
+  // Totals over every agent, never only the visible ones.
+  if (ordered.length > 0 && remaining >= RAIL_AFTER_AGENTS_RESERVE) {
+    lines.push(plainRow(totalsLine(ordered, now, inner), paint, "muted", inner));
+    remaining -= 1;
+  }
 
   // Todos last: with room the full checklist, otherwise the `Todos · n/m` line.
   lines.push("");
@@ -522,20 +605,18 @@ export function installRightRail(tui: unknown, options: RightRailInstallOptions)
       invalidate() {},
       [LAYOUT_NODE]: () => original.call(root),
     };
+    const railEntry: Record<string, unknown> = {
+      component: rail,
+      basis: RIGHT_RAIL_CONTENT_WIDTH,
+      grow: 0,
+      shrink: 0,
+      minSize: RIGHT_RAIL_CONTENT_WIDTH,
+    };
     const stack: RailLayoutNode = {
       type: "hstack",
       gap: 2,
       align: "stretch",
-      entries: [
-        { component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-        {
-          component: rail,
-          basis: RIGHT_RAIL_CONTENT_WIDTH,
-          grow: 0,
-          shrink: 0,
-          minSize: RIGHT_RAIL_CONTENT_WIDTH,
-        },
-      ],
+      entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, railEntry],
     };
 
     const replacement = (): unknown => {
@@ -581,6 +662,10 @@ export function installRightRail(tui: unknown, options: RightRailInstallOptions)
       }
       railLines = lines;
       showing = true;
+      // The rail column follows the terminal: 46 columns, 58 from 160 columns.
+      const contentWidth = railContentWidth(columns);
+      railEntry.basis = contentWidth;
+      railEntry.minSize = contentWidth;
       return stack;
     };
 

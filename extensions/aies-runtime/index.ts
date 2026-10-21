@@ -567,6 +567,8 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
    * simply leaves the projection empty: the registry is optional observation and
    * must never crash the runtime. Returns the bus unsubscribe for shutdown.
    */
+  let lastAgentsSignature: string | undefined;
+
   function subscribeToAgentsBus(ctx: ExtensionContext): (() => void) | undefined {
     const events = eventsOf(pi);
     if (!events || typeof events.on !== "function") return undefined;
@@ -574,7 +576,13 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     try {
       const unsubscribe = events.on(AGENTS_CHANNEL, (payload: unknown) => {
         guard(() => {
-          state = applyAgents(state, asAgentSnapshot(payload));
+          const snapshot = asAgentSnapshot(payload);
+          state = applyAgents(state, snapshot);
+          // An identical payload changes nothing on screen: skip the repaints.
+          // The single clock keeps the elapsed times moving.
+          const signature = JSON.stringify(snapshot);
+          if (signature === lastAgentsSignature) return;
+          lastAgentsSignature = signature;
           // Repaint the open observatory through its own scoped handle, then the
           // shell. A closed overlay has no handle and is never repainted.
           activeAgentsOverlay?.requestRender();
@@ -1530,6 +1538,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
 
     state = createState(now);
     state = applyAgents(state, []);
+    lastAgentsSignature = undefined;
     state = applySessionMeta(state, {
       sessionId: ctx.sessionManager.getSessionId(),
       sessionFile: ctx.sessionManager.getSessionFile(),
@@ -1680,6 +1689,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
     stopClock();
     observatoryUnsubscribe?.();
     observatoryUnsubscribe = undefined;
+    lastAgentsSignature = undefined;
     activeAgentsOverlay?.dispose();
     activeAgentsOverlay = undefined;
   });
@@ -1726,6 +1736,7 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
         // A reopen always starts on the first current record: no selection and no
         // repaint handle survive a close.
         let selectedId: string | undefined;
+        let expanded = false;
         let disposed = false;
         let handle: ActiveAgentsOverlay | undefined;
 
@@ -1760,12 +1771,18 @@ export default function aiesRuntime(pi: ExtensionAPI): void {
                 return renderAgentsView(records, index, Date.now(), {
                   width,
                   paint: themePaint(theme as ThemeLike | undefined),
+                  expanded,
                 });
               },
               handleInput: (data: string): void => {
                 if (disposed) return;
                 if (keys.cancel(data) || keys.quit(data)) {
                   settle();
+                  return;
+                }
+                if (keys.toggle(data)) {
+                  expanded = !expanded;
+                  requestOverlay();
                   return;
                 }
                 const direction = keys.direction(data);
@@ -1843,6 +1860,8 @@ interface AgentKeys {
   direction(data: string): "up" | "down" | "left" | "right" | undefined;
   cancel(data: string): boolean;
   quit(data: string): boolean;
+  /** Enter or Tab: switch between the list and the selected agent's card. */
+  toggle(data: string): boolean;
 }
 
 /** The scoped repaint handle of an open `/agents` overlay. */
@@ -1862,7 +1881,7 @@ function selectedAgentIndex(records: readonly AgentRecord[], selectedId: string 
  * Bind the `/agents` keys to the injected keybinding manager when the host
  * provides one, with raw arrow/escape fallbacks so a partial host still works.
  * ↑/↓ (and j/k) move the selection; Esc and q close; the horizontal arrows stay
- * compatible. There is no Enter action.
+ * compatible. Enter and Tab toggle the expanded card.
  */
 function agentKeys(keybindings: unknown): AgentKeys {
   const manager = keybindings as KeybindingsLike | undefined;
@@ -1887,5 +1906,6 @@ function agentKeys(keybindings: unknown): AgentKeys {
     },
     cancel: (data) => matches(data, "tui.select.cancel") || data === "\x1b" || data === "escape",
     quit: (data) => data === "q",
+    toggle: (data) => matches(data, "tui.select.confirm") || data === "\r" || data === "\n" || data === "\t",
   };
 }

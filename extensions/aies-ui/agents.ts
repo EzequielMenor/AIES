@@ -18,15 +18,28 @@
  * every line fits the host width and colors still come from the injected Paint.
  */
 
-import { shortPath, type AgentRecord } from "../aies-agents/observatory.ts";
+import { MAX_ACTIVITIES, shortPath, type AgentRecord } from "../aies-agents/observatory.ts";
 import type { AiesSnapshot } from "../aies-runtime/state.ts";
 import { MODAL_FRAME_CHROME, MODAL_MAX_WIDTH, renderModalFrame, type ModalLine } from "./modal.ts";
-import { capitalize, formatCost, formatDuration, formatTokens, singleLine } from "./format.ts";
+import {
+  agentContextText,
+  agentCostNote,
+  agentCostValue,
+  agentName,
+  agentReason,
+  agentStateView,
+  agentToolText,
+  CONTEXT_UNKNOWN,
+  formatRelative,
+} from "./agent-monitor.ts";
+import { formatDuration, formatTokens, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
-import { GLYPH } from "./vocabulary.ts";
 
 /** Mechanical activity entries the detail block shows. */
 const MAX_RECENT = 5;
+
+/** Edited paths the expanded card lists before it collapses the rest into `… N más`. */
+const MAX_EXPANDED_PATHS = 8;
 
 /** Paths the `/agents` detail row lists before it collapses the rest into `… N más`. */
 const MAX_DETAIL_PATHS = 3;
@@ -49,7 +62,8 @@ export const AGENTS_SPLIT_MIN_WIDTH = 68;
 export const AGENTS_VISIBLE_ROWS = 8;
 
 const AGENTS_TITLE = "AIES Agents";
-const AGENTS_HELP = "↑↓ j/k agente · esc/q cerrar";
+const AGENTS_HELP = "↑↓ j/k agente · enter/tab detalle · esc/q cerrar";
+const AGENTS_HELP_EXPANDED = "↑↓ j/k agente · enter/tab lista · esc/q cerrar";
 
 /** The one placeholder for telemetry the observatory did not measure. */
 const UNAVAILABLE = "—";
@@ -60,6 +74,8 @@ export type AgentDirection = "left" | "right" | "up" | "down" | (string & {});
 export interface AgentsOptions {
   width?: number;
   paint?: Paint;
+  /** Show the selected agent's full card instead of the list plus summary. */
+  expanded?: boolean;
 }
 
 function positiveWidth(width: number | undefined): number | undefined {
@@ -75,22 +91,9 @@ function hardClip(text: string, width: number): string {
   return `${text.slice(0, width - 1)}…`;
 }
 
-function hasActivity(record: AgentRecord): boolean {
-  return Boolean(record.currentActivity) || (Array.isArray(record.changedPaths) && record.changedPaths.length > 0);
-}
-
-/** The status glyph: a running child is live once it reports activity, queued before. */
+/** The status glyph: a running child is live once it reports work, queued before. */
 function statusGlyph(record: AgentRecord): string {
-  switch (record.status) {
-    case "completed":
-      return GLYPH.done;
-    case "failed":
-      return GLYPH.failed;
-    case "blocked":
-      return GLYPH.blocked;
-    default:
-      return hasActivity(record) ? GLYPH.running : GLYPH.pending;
-  }
+  return agentStateView(record).glyph;
 }
 
 function elapsedBetween(record: AgentRecord, now: number): string | undefined {
@@ -135,10 +138,7 @@ export function selectAgent(
 
 /** `Worker #1`: the role plus the observatory's per-role ordinal. */
 function agentLabel(record: AgentRecord, index: number): string {
-  const id = singleLine(record.id ?? "");
-  const match = /^(.+)-(\d+)$/u.exec(id);
-  if (match) return `${capitalize(match[1])} #${match[2]}`;
-  return `${capitalize(record.role)} #${index + 1}`;
+  return agentName(record, index);
 }
 
 /**
@@ -164,25 +164,18 @@ function tokensValue(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? formatTokens(value) : "";
 }
 
-/** Cost exactly as the observatory reported it; never recalculated. */
-function costValue(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? formatCost(value) : "";
-}
-
 function countValue(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? String(value) : "";
 }
 
 /**
- * Context tokens for a child. The Observatory's `AgentRecord` and its per-child
- * usage bucket expose no context field today, so this reads a structural
- * `contextTokens` only if a future record adds one and otherwise returns empty,
- * which the row renders as `—`. It is never derived from the Parent's context
- * window: a child's context is a different measurement and must not be faked.
+ * The child's own context bar, only from the `getContextUsage()` reading the
+ * observatory recorded. Unknown (never sampled, or null after a compaction) is
+ * empty, which the row renders as `—`; it is never derived from token totals.
  */
 function contextValue(record: AgentRecord): string {
-  const tokens = (record as AgentRecord & { contextTokens?: unknown }).contextTokens;
-  return tokensValue(tokens);
+  const text = agentContextText(record);
+  return text === CONTEXT_UNKNOWN ? "" : text.replace(/^ctx /u, "");
 }
 
 function filesValue(record: AgentRecord): string {
@@ -212,11 +205,13 @@ function detailLines(record: AgentRecord, now: number, width: number): ModalLine
   add("proveedor", textValue(record.providerLabel ?? record.providerId));
   add("tiempo", elapsedBetween(record, now) ?? "");
   add("tokens", tokensValue(record.totalTokens));
-  add("coste", costValue(record.cost));
+  add("coste", agentCostValue(record));
   add("contexto", contextValue(record));
   add("herramientas", countValue(record.toolCount));
   add("archivos", filesValue(record));
   add("resultado final", textValue(record.result));
+  const costNote = agentCostNote(record);
+  if (costNote) rows.push(`  ${costNote}`);
 
   const activities = Array.isArray(record.activities) ? record.activities.slice(0, MAX_RECENT) : [];
   if (activities.length > 0) {
@@ -228,6 +223,71 @@ function detailLines(record: AgentRecord, now: number, width: number): ModalLine
   }
 
   return rows.map((text) => ({ text: hardClip(text, width), color: "text" as const }));
+}
+
+/**
+ * The selected agent's full card: state, current tool, token breakdown, context,
+ * cost, edited paths, the recent history with relative times, and the redacted
+ * result or reason. Every value is the observatory's own; an unmeasured one is `—`.
+ */
+function expandedLines(
+  record: AgentRecord,
+  index: number,
+  count: number,
+  now: number,
+  width: number,
+): ModalLine[] {
+  const view = agentStateView(record);
+  const rows: ModalLine[] = [];
+  const push = (text: string, color: SemanticColor = "text"): void => {
+    rows.push({ text: hardClip(text, width), color });
+  };
+  const add = (label: string, value: string): void => {
+    push(`  ${label.padEnd(VIEW_LABEL_WIDTH)}${singleLine(value) || UNAVAILABLE}`);
+  };
+  const tokenCount = (value: unknown): string =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? formatTokens(value) : "";
+
+  const elapsed = elapsedBetween(record, now);
+  push(`${view.glyph} ${agentLabel(record, index)}  ${view.label}${elapsed ? `  ${elapsed}` : ""}  (${index + 1}/${count})`, view.tone);
+  add("modelo", textValue(record.modelLabel ?? record.modelId));
+  add("proveedor", textValue(record.providerLabel ?? record.providerId));
+  add("herramienta", agentToolText(record));
+  add("tokens", tokensValue(record.totalTokens));
+  push("    el total puede incluir caché: no es entrada + salida");
+  add("entrada/salida", [tokenCount(record.inputTokens), tokenCount(record.outputTokens)].every(Boolean)
+    ? `${tokenCount(record.inputTokens)}↓ ${tokenCount(record.outputTokens)}↑`
+    : "");
+  add("caché", [tokenCount(record.cacheReadTokens), tokenCount(record.cacheWriteTokens)].every(Boolean)
+    ? `lectura ${tokenCount(record.cacheReadTokens)} · escritura ${tokenCount(record.cacheWriteTokens)}`
+    : "");
+  add("contexto", agentContextText(record));
+  add("coste", agentCostValue(record));
+  const costNote = agentCostNote(record);
+  if (costNote) push(`    ${costNote}`);
+  add("herramientas", countValue(record.toolCount));
+
+  const outcome = view.state === "error" || view.state === "blocked";
+  add(outcome ? "motivo" : "resultado final", outcome ? agentReason(record) : textValue(record.result));
+
+  const paths = (Array.isArray(record.changedPaths) ? record.changedPaths : [])
+    .map((path) => shortPath(path))
+    .filter(Boolean);
+  push("  rutas editadas");
+  if (paths.length === 0) push(`    ${UNAVAILABLE}`);
+  for (const path of paths.slice(0, MAX_EXPANDED_PATHS)) push(`    ${path}`);
+  if (paths.length > MAX_EXPANDED_PATHS) push(`    … ${paths.length - MAX_EXPANDED_PATHS} más`);
+
+  const activities = Array.isArray(record.activities) ? record.activities.slice(0, MAX_ACTIVITIES) : [];
+  push("  historial reciente");
+  if (activities.length === 0) push(`    ${UNAVAILABLE}`);
+  for (const activity of activities) {
+    const text = textValue(activity?.text);
+    if (!text) continue;
+    const age = typeof activity.at === "number" ? `${formatRelative(activity.at, now)}  ` : "";
+    push(`    ${age}${text}`);
+  }
+  return rows;
 }
 
 /**
@@ -325,6 +385,7 @@ function renderAgentsContent(
   selectedIndex: number,
   now: number,
   innerWidth: number,
+  expanded: boolean,
 ): ModalLine[] {
   const list = Array.isArray(records) ? records : [];
   if (list.length === 0) {
@@ -333,6 +394,8 @@ function renderAgentsContent(
 
   const index = clampIndex(selectedIndex, list.length);
   const record = list[index];
+
+  if (expanded) return expandedLines(record, index, list.length, now, innerWidth);
 
   if (innerWidth >= AGENTS_SPLIT_MIN_WIDTH) {
     const listWidth = Math.min(LIST_COLUMN_WIDTH, Math.max(1, innerWidth - COLUMN_GAP - 1));
@@ -368,12 +431,13 @@ export function renderAgentsView(
   const available = positiveWidth(options.width) ?? 80;
   const frameWidth = Math.min(available, AGENTS_MODAL_WIDTH);
   const innerWidth = Math.max(1, frameWidth - MODAL_FRAME_CHROME);
-  const lines = renderAgentsContent(records, selectedIndex, now, innerWidth);
+  const expanded = options.expanded === true;
+  const lines = renderAgentsContent(records, selectedIndex, now, innerWidth, expanded);
 
   return renderModalFrame({
     title: AGENTS_TITLE,
     lines,
-    help: AGENTS_HELP,
+    help: expanded ? AGENTS_HELP_EXPANDED : AGENTS_HELP,
     width: available,
     preferredWidth: AGENTS_MODAL_WIDTH,
     paint,

@@ -1,6 +1,6 @@
 import type { AgentRecord } from "../aies-agents/observatory.ts";
 import { runStartedAt } from "../aies-runtime/state.ts";
-import { clip, formatCost, formatDuration, formatTokens, roleLabel, singleLine } from "./format.ts";
+import { clip, clipToWidth, displayWidth, formatCost, padToWidth, formatDuration, formatTokens, roleLabel, singleLine } from "./format.ts";
 import { PLAIN_PAINT, type Paint, type SemanticColor } from "./paint.ts";
 import { deriveStage, isCompacting, isContextPressure, statusGlyph } from "./vocabulary.ts";
 import type { AgentsSnapshot } from "./agents.ts";
@@ -167,21 +167,38 @@ export interface StatusRow {
   painted?: string;
 }
 
-/** Clip a plain cell to `width` without collapsing its intentional column padding. */
+/** Clip a plain cell to `width` cells without collapsing its intentional column padding. */
 function cellClip(text: string, width: number): string {
-  if (width <= 0) return "";
-  if (text.length <= width) return text;
-  if (width === 1) return "…";
-  return `${text.slice(0, width - 1)}…`;
+  return clipToWidth(text, width);
 }
 
 /** Frame one content row: measure the plain text, emit its painted form when it fits. */
 function framedRow(row: StatusRow, inner: number): string {
   const plain = cellClip(row.text, inner);
   if (plain !== row.text || typeof row.painted !== "string") {
-    return `│ ${plain.padEnd(inner)} │`;
+    return `│ ${padToWidth(plain, inner)} │`;
   }
-  return `│ ${row.painted}${" ".repeat(Math.max(0, inner - plain.length))} │`;
+  return `│ ${row.painted}${" ".repeat(Math.max(0, inner - displayWidth(plain)))} │`;
+}
+
+/** Strip SGR escape sequences so a painted cell can be measured by what the terminal shows. */
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/gu, "");
+}
+
+/**
+ * A bare string row, possibly already painted. It is measured without its escape
+ * sequences; a row that fits keeps its colors, one that does not is clipped from
+ * its plain text (unpainted) so an escape is never cut in half.
+ */
+function stringRow(rawRow: string, inner: number): string {
+  // Whitespace collapses as it always did; escapes hold no whitespace, so this is safe on painted text.
+  const row = singleLine(rawRow);
+  const plain = stripAnsi(row);
+  if (displayWidth(plain) <= inner) {
+    return `│ ${row}${" ".repeat(Math.max(0, inner - displayWidth(plain)))} │`;
+  }
+  return `│ ${padToWidth(clipToWidth(plain, inner), inner)} │`;
 }
 
 /** Box a title and its bounded rows; exported for the rail's reused framing. */
@@ -196,7 +213,7 @@ export function statusBox(
   const top = `╭─${label}${"─".repeat(Math.max(0, width - 3 - label.length))}╮`;
   return [
     paint.fg("accent", top),
-    ...rows.map((row) => (typeof row === "string" ? `│ ${clip(row, inner).padEnd(inner)} │` : framedRow(row, inner))),
+    ...rows.map((row) => (typeof row === "string" ? stringRow(row, inner) : framedRow(row, inner))),
     paint.fg("accent", `╰${"─".repeat(width - 2)}╯`),
   ];
 }

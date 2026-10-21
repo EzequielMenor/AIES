@@ -301,7 +301,7 @@ describe("AIES-010C activity and usage observation", () => {
     );
   });
 
-  it("keeps at most five recent activities, newest first", () => {
+  it("keeps at most MAX_ACTIVITIES (12) recent activities, newest first", () => {
     const obs = registry();
     obs.begin({ role: "worker" });
     for (let index = 0; index < MAX_ACTIVITIES + 3; index += 1) {
@@ -310,7 +310,8 @@ describe("AIES-010C activity and usage observation", () => {
 
     const [record] = obs.snapshot();
     assert.equal(record.activities.length, MAX_ACTIVITIES);
-    assert.equal(record.activities[0].text, "Leyendo src/file-7.ts");
+    assert.equal(MAX_ACTIVITIES, 12);
+    assert.equal(record.activities[0].text, `Leyendo src/file-${MAX_ACTIVITIES + 2}.ts`);
     assert.equal(record.activities.at(-1).text, "Leyendo src/file-3.ts");
     assert.equal(record.toolCount, MAX_ACTIVITIES + 3);
   });

@@ -155,12 +155,12 @@ describe("right rail live time (Tiempo)", () => {
     state = { ...state, agents: [record({ startedAt: T0 + 20_000, currentActivity: "Editing" })] };
     let text = renderRightRail(snapOf(state), T0 + 31_000, { width: 46 }).join("\n");
     assert.equal(railStatusValue(text, "Tiempo total"), "00:31");
-    assert.match(text, /Worker activo · agente 00:11/u);
+    assert.match(text, /◆ Worker #1\s+trabajando\s+00:11/u);
     state = applyDelegationEnd(state, "done", T0 + 35_000);
     state = { ...state, agents: [record({ startedAt: T0 + 20_000, finishedAt: T0 + 35_000, status: "completed" })] };
     text = renderRightRail(snapOf(state), T0 + 50_000, { width: 46 }).join("\n");
     assert.equal(railStatusValue(text, "Tiempo total"), "00:50");
-    assert.match(text, /Worker completado · agente 00:15/u);
+    assert.match(text, /✓ Worker #1\s+terminado\s+00:15/u);
   });
 
   it("falls back to the run start while the run is active without a stage", () => {
