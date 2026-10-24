@@ -1,19 +1,136 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import Hero from '../components/Hero.astro';
-import ProblemSection from '../components/ProblemSection.astro';
-import ArchitectureSection from '../components/ArchitectureSection.astro';
-import QuickstartSection from '../components/QuickstartSection.astro';
-import SupportSection from '../components/SupportSection.astro';
+import Shot from '../components/Shot.astro';
+import { INSTALL_COMMAND, REPO_URL } from '../content';
+
+const steps = [
+  { name: 'parent', delay: '0s' },
+  { name: 'explore', delay: '2s' },
+  { name: 'worker', delay: '4s' },
+  { name: 'verify', delay: '6s' },
+  { name: 'done', delay: '8s' },
+];
+
+const roles = [
+  { tag: 'PARENT', title: 'Coordina', text: 'Decide qué delegar y lleva el ticket. Es el único que habla con el tracker.' },
+  { tag: 'EXPLORE', title: 'Lee', text: 'Solo lectura. Trae contexto del código sin ensuciar la sesión principal.' },
+  { tag: 'WORKER', title: 'Cambia', text: 'Implementa dentro de límites de ejecución y con un sandbox del sistema operativo.' },
+  { tag: 'VERIFY', title: 'Comprueba', text: 'Contexto fresco e independiente. Emite PASS o FAIL con evidencia.' },
+];
+
+const trust = [
+  { title: 'Done Gate', text: 'Un ticket solo se cierra con un PASS de Verify vigente sobre la revisión actual, o con una excepción de «sin código» declarada por ti.' },
+  { title: 'Perfil aislado', text: 'Todo vive en un directorio propio. Pruébalo sin riesgo: no hay nada que deshacer en tu instalación de Pi.' },
+  { title: 'Memoria como contexto', text: 'ProjectMem guarda decisiones fuera de tus repos, con procedencia. Nunca manda sobre el código ni sobre los tickets.' },
+];
+
+const section = 'mx-auto max-w-[1120px] border-t border-line px-4 py-10 md:px-6 md:py-[72px]';
+const eyebrow = 'mb-3 font-mono text-xs text-amber md:text-[13px]';
+const h2 = 'text-[26px] font-semibold leading-tight md:text-[34px] md:tracking-[-0.01em]';
+const frame = 'rounded-xl border border-line bg-surface';
 ---
 
 <Layout>
-  <!-- Main Container with generous breathing room (inspired by omp.sh / openchamber.dev) -->
-  <main class="max-w-5xl mx-auto px-6 pb-24">
-    <Hero />
-    <ProblemSection />
-    <ArchitectureSection />
-    <QuickstartSection />
-    <SupportSection />
+  <header class="mx-auto flex max-w-[1120px] items-center justify-between gap-4 px-4 py-4 md:px-6 md:py-6">
+    <a href="#top" class="font-mono text-lg font-bold text-ink hover:no-underline">aies<span class="blink text-accent">_</span></a>
+    <nav aria-label="Principal" class="flex items-center gap-6 text-sm">
+      <a href="#que-es" class="hidden text-muted hover:text-ink md:inline">Qué es</a>
+      <a href="#tarea" class="hidden text-muted hover:text-ink md:inline">Una tarea</a>
+      <a href="#confianza" class="hidden text-muted hover:text-ink md:inline">Confianza</a>
+      <a href="#instalar" class="hidden text-muted hover:text-ink md:inline">Instalar</a>
+      <a href={REPO_URL} class="py-3 text-ink hover:text-accent">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section id="top" class="mx-auto max-w-[1120px] px-4 pb-8 pt-10 md:px-6 md:pb-12 md:pt-[72px]">
+      <p class="rise d1 mb-4 font-mono text-xs text-accent md:mb-5 md:text-[13px]">harness sobre Pi · perfil aislado · verificación independiente</p>
+      <h1 class="rise d2 max-w-[820px] text-4xl font-semibold leading-[1.1] tracking-[-0.02em] md:text-[56px] md:leading-[1.08]">Un agente para programar que no se corrige a sí mismo.</h1>
+      <p class="rise d3 mt-5 max-w-[680px] text-base leading-relaxed text-muted md:mt-6 md:text-[19px] md:leading-[1.6]">AIES es la capa de políticas y extensiones que va encima de Pi. Una sesión investiga, otra implementa y una tercera, con contexto limpio, verifica. Nada se da por terminado sin evidencia.</p>
+
+      <div class="rise d4 mt-6 flex flex-col gap-3 md:mt-8 md:flex-row md:flex-wrap md:items-center">
+        <div class="flex max-w-full items-center gap-3 overflow-x-auto rounded-lg border border-line bg-surface px-4 py-3.5 font-mono text-[13px] md:text-sm">
+          <span class="text-accent" aria-hidden="true">$</span>
+          <code class="select-all whitespace-nowrap text-ink">{INSTALL_COMMAND}</code><span class="caret" aria-hidden="true"></span>
+        </div>
+        <a href="#instalar" class="rounded-lg bg-accent px-5 py-3.5 text-center text-sm font-semibold text-bg hover:no-underline md:text-sm">Ver instalación</a>
+      </div>
+
+      <div class={`rise d5 mt-8 overflow-hidden md:mt-14 ${frame}`}>
+        <div class="border-b border-line px-4 py-3 font-mono text-xs text-muted">aies · sesión real</div>
+        <Shot title="AIES en ejecución" detail="footer de estado, right rail y un Verify en marcha" file="hero-sesion.png" class="h-[260px] md:h-[420px]" />
+      </div>
+    </section>
+
+    <section id="que-es" class={`reveal ${section}`}>
+      <div class="flex flex-col gap-6 md:flex-row md:gap-12">
+        <div class="min-w-0 md:flex-1">
+          <p class={eyebrow}>01 · qué es</p>
+          <h2 class={h2}>Pi es el runtime. AIES es la opinión.</h2>
+        </div>
+        <div class="flex min-w-0 flex-col gap-5 text-base leading-[1.65] text-muted md:flex-[2] md:text-[17px]">
+          <p>AIES no bifurca ni reimplementa Pi: usa el binario oficial y un perfil propio, así que nunca toca tu configuración, credenciales ni sesiones de Pi.</p>
+          <p>Encima añade lo que hace falta para trabajar con agentes sin perder el control: roles con límites claros, un gate de cierre y memoria de proyecto fuera de tus repositorios.</p>
+          <p class="font-mono text-sm text-ink">el comando es <span class="text-accent">aies</span>; por debajo es <span class="text-accent">pi</span>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tarea" class={`reveal ${section}`}>
+      <p class={eyebrow}>02 · una tarea de principio a fin</p>
+      <h2 class={`${h2} mb-6 max-w-[700px] md:mb-10`}>Cuatro roles, cada uno con lo mínimo que necesita.</h2>
+
+      <ol class="mb-5 flex flex-wrap items-center gap-2 font-mono text-xs md:mb-8 md:gap-3 md:text-[13px]" aria-label="Flujo de una tarea">
+        {steps.map((s, i) => (
+          <>
+            <li class={`step ${s.name === 'done' ? 'step-done' : ''} rounded-full border border-line bg-surface px-3 py-2 md:px-4 md:py-2.5 ${s.name === 'done' ? 'text-ok' : 'text-muted'}`} style={`animation-delay:${s.delay}`}>{s.name}</li>
+            {i < steps.length - 1 && <li aria-hidden="true" class="list-none text-muted">→</li>}
+          </>
+        ))}
+      </ol>
+
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-4 md:gap-4">
+        {roles.map((r) => (
+          <article class="card min-w-0 rounded-[10px] border border-line bg-surface p-5 md:p-6">
+            <p class="mb-2 font-mono text-xs text-accent">{r.tag}</p>
+            <h3 class="mb-2.5 text-lg font-semibold">{r.title}</h3>
+            <p class="text-[15px] leading-relaxed text-muted">{r.text}</p>
+          </article>
+        ))}
+      </div>
+
+      <div class={`mt-5 md:mt-6 ${frame}`}>
+        <Shot title="Explore → Worker → Verify → Done" detail="en una tarea pequeña de un proyecto real" file="tarea-roles.png" class="h-[220px] md:h-[320px]" />
+      </div>
+    </section>
+
+    <section id="confianza" class={`reveal ${section}`}>
+      <p class={eyebrow}>03 · por qué confiar en él</p>
+      <h2 class={`${h2} mb-6 max-w-[700px] md:mb-10`}>Una afirmación sin evidencia es una hipótesis.</h2>
+      <div class="grid grid-cols-1 gap-6 md:grid-cols-3 md:gap-8">
+        {trust.map((t) => (
+          <div class="min-w-0">
+            <h3 class="mb-2.5 text-[17px] font-semibold md:text-lg">{t.title}</h3>
+            <p class="text-[15px] leading-[1.65] text-muted">{t.text}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <section id="instalar" class={`reveal ${section} pb-14 md:pb-24`}>
+      <p class={eyebrow}>04 · instalar</p>
+      <h2 class={`${h2} mb-3 md:mb-4`}>Un comando y una comprobación.</h2>
+      <p class="mb-5 max-w-[640px] text-[15px] leading-relaxed text-muted md:mb-8 md:text-base">Necesitas <code class="font-mono text-ink">pi</code> en el PATH, Node 22 o superior y bash. El instalador comprueba los requisitos antes de tocar nada.</p>
+      <div class="overflow-x-auto rounded-[10px] border border-line bg-surface p-[18px] font-mono text-xs leading-loose md:p-6 md:text-sm">
+        <div class="whitespace-nowrap"><span class="text-accent" aria-hidden="true">$</span> <code class="select-all">{INSTALL_COMMAND}</code></div>
+        <div class="whitespace-nowrap"><span class="text-accent" aria-hidden="true">$</span> <code class="select-all">aies --aies-info</code></div>
+      </div>
+      <p class="mt-4 max-w-[640px] text-sm leading-relaxed text-muted md:text-[15px]">La primera sesión no trae credenciales a propósito: ejecuta <code class="font-mono text-ink">aies</code> y haz <code class="font-mono text-ink">/login</code> dentro de AIES.</p>
+    </section>
   </main>
+
+  <footer class="mx-auto flex max-w-[1120px] flex-wrap justify-between gap-4 border-t border-line px-4 pb-10 pt-6 text-[13px] text-muted md:px-6 md:pb-12 md:pt-8">
+    <span>AIES · MIT · por Ezequiel Menor</span>
+    <a href={REPO_URL}>github.com/EzequielMenor/AIES</a>
+  </footer>
 </Layout>
