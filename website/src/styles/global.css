@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+  background: #181b21;
+}
+
+body {
+  background-color: #181b21;
+  background-image: radial-gradient(#262b36 1px, transparent 1px);
+  background-size: 26px 26px;
+  color: #e1e4ea;
+  font-family: Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: #5aa9e6;
+  color: #181b21;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+@keyframes glow {
+  0%, 16% { border-color: #5aa9e6; background: #262b36; color: #e1e4ea; }
+  22%, 100% { border-color: #3a3f4b; background: #20242e; color: #8b93a7; }
+}
+/* The final step keeps its own text color once the glow has passed. */
+@keyframes glow-done {
+  0%, 16% { border-color: #4caf72; background: #262b36; color: #e1e4ea; }
+  22%, 100% { border-color: #3a3f4b; background: #20242e; color: #4caf72; }
+}
+
+.rise { animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.d1 { animation-delay: 0.05s; }
+.d2 { animation-delay: 0.15s; }
+.d3 { animation-delay: 0.25s; }
+.d4 { animation-delay: 0.35s; }
+.d5 { animation-delay: 0.5s; }
+
+.blink { animation: blink 1.1s steps(1) infinite; }
+.caret {
+  display: inline-block;
+  width: 8px;
+  height: 1em;
+  margin-left: 4px;
+  background: #5aa9e6;
+  vertical-align: text-bottom;
+  animation: blink 1.1s steps(1) infinite;
+}
+
+.step { animation: glow 10s infinite; }
+.step-done { animation-name: glow-done; }
+
+.card { transition: transform 0.2s ease, border-color 0.2s ease; }
+.card:hover { transform: translateY(-3px); border-color: #5aa9e6; }
+
+@supports (animation-timeline: view()) {
+  .reveal {
+    animation: rise linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 35%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .rise, .blink, .caret, .step, .reveal { animation: none !important; }
+  .card { transition: none; }
+  .card:hover { transform: none; }
+}
+
+a { color: #5aa9e6; text-decoration: none; }
+a:hover { text-decoration: underline; }

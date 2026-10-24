@@ -1,0 +1,21 @@
+---
+// Placeholder for a real screenshot the user supplies. Replace with an <img>
+// pointing at `file` once it exists; the page is not publishable while any remain.
+interface Props {
+  title: string;
+  detail: string;
+  file: string;
+  class?: string;
+}
+const { title, detail, file, class: className = '' } = Astro.props;
+---
+
+<div
+  role="img"
+  aria-label={`Hueco para captura real: ${title}`}
+  class={`flex flex-col items-center justify-center gap-2 p-6 text-center font-mono text-sm leading-relaxed text-muted ${className}`}
+>
+  <span>[CAPTURA REAL · {title}]</span>
+  <span>{detail}</span>
+  <span class="text-xs">ruta esperada: website/public/shots/{file}</span>
+</div>
