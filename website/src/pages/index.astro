@@ -1,6 +1,5 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import Shot from '../components/Shot.astro';
 import { INSTALL_COMMAND, REPO_URL } from '../content';
 
 const steps = [
@@ -57,8 +56,8 @@ const frame = 'rounded-xl border border-line bg-surface';
       </div>
 
       <div class={`rise d5 mt-8 overflow-hidden md:mt-14 ${frame}`}>
-        <div class="border-b border-line px-4 py-3 font-mono text-xs text-muted">aies · sesión real</div>
-        <Shot title="AIES en ejecución" detail="footer de estado, right rail y un Verify en marcha" file="hero-sesion.png" class="h-[260px] md:h-[420px]" />
+        <div class="border-b border-line px-4 py-3 font-mono text-xs text-muted">aies · sesión real (proyecto de ejemplo)</div>
+        <img src="/shots/hero-sesion.png" width="2223" height="1302" alt="Sesión de AIES con el right rail abierto: Explore y Worker terminados y un Verify en marcha ejecutando tests sobre un proyecto de ejemplo." class="block h-auto w-full" />
       </div>
     </section>
 
@@ -99,8 +98,8 @@ const frame = 'rounded-xl border border-line bg-surface';
         ))}
       </div>
 
-      <div class={`mt-5 md:mt-6 ${frame}`}>
-        <Shot title="Explore → Worker → Verify → Done" detail="en una tarea pequeña de un proyecto real" file="tarea-roles.png" class="h-[220px] md:h-[320px]" />
+      <div class={`mt-5 overflow-hidden md:mt-6 ${frame}`}>
+        <img src="/shots/tarea-roles.png" width="2223" height="1302" alt="Misma sesión al terminar: Explore, Worker y Verify con PASS 3/3 criterios, tarea completada y todos los pasos marcados." loading="lazy" class="block h-auto w-full" />
       </div>
     </section>
 
